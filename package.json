@@ -1,0 +1,30 @@
+{
+  "name": "bus-game",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist-electron/main.js",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Steel-Horse-Simulations/bus-game.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Steel-Horse-Simulations/bus-game/issues"
+  },
+  "homepage": "https://github.com/Steel-Horse-Simulations/bus-game#readme",
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "playwright-core": "^1.62.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vite-plugin-electron": "^1.1.1",
+    "vite-plugin-electron-renderer": "^1.0.0"
+  }
+}

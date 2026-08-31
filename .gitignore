@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+target/
+src/renderer/wasm/
+*.pmtiles
+*.osm.pbf
