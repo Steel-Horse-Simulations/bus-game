@@ -11,6 +11,8 @@ fs.mkdirSync(SHOT_DIR, { recursive: true });
 
 let app = null;
 let page = null;
+let consoleLog = [];
+let netLog = [];
 
 const electronBin = path.join(APP_DIR, "node_modules/electron/dist/electron.exe");
 
@@ -23,9 +25,26 @@ const COMMANDS = {
       timeout: 30_000,
     });
     page = await app.firstWindow();
+    consoleLog = [];
+    page.on("console", (msg) => consoleLog.push(`[${msg.type()}] ${msg.text()}`));
+    page.on("pageerror", (err) => consoleLog.push(`[pageerror] ${err.message}`));
+    netLog = [];
+    page.on("request", (req) => netLog.push(`-> ${req.method()} ${req.url()}`));
+    page.on("requestfailed", (req) => netLog.push(`XX FAILED ${req.url()} ${req.failure()?.errorText}`));
+    page.on("response", (res) => netLog.push(`<- ${res.status()} ${res.url()}`));
     await page.waitForLoadState("domcontentloaded");
     console.log("launched.", app.windows().length, "window(s):");
     for (const w of app.windows()) console.log(" ", w.url());
+  },
+
+  async console() {
+    if (!page) return console.log("ERROR: launch first");
+    console.log(consoleLog.length === 0 ? "(no console output captured)" : consoleLog.join("\n"));
+  },
+
+  async net() {
+    if (!page) return console.log("ERROR: launch first");
+    console.log(netLog.length === 0 ? "(no network activity captured)" : netLog.join("\n"));
   },
 
   async ss(name) {
@@ -52,6 +71,14 @@ const COMMANDS = {
     } catch (e) {
       console.log("ERROR:", e.message);
     }
+  },
+
+  async click(args) {
+    if (!page) return console.log("ERROR: launch first");
+    const [x, y] = (args || "").split(/\s+/).map(Number);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return console.log("usage: click <x> <y>");
+    await page.mouse.click(x, y);
+    console.log(`clicked (${x}, ${y})`);
   },
 
   async windows() {

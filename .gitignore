@@ -3,5 +3,10 @@ dist/
 dist-electron/
 target/
 src/renderer/wasm/
+src/renderer/public/
 *.pmtiles
 *.osm.pbf
+pipeline-data/
+/data/
+release/
+.driver-shots/

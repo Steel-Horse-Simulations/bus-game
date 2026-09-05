@@ -1,0 +1,279 @@
+/* Base dark dashboard theme (management-UI chrome only — the map style in
+   basemap-style.json is untouched). One shared theme file so every screen
+   — route panel, timetables, rotas, finance, purchasing, staff lists —
+   reads as one consistent app rather than being styled per-screen. */
+
+:root {
+  --bg-page: #18181b;
+  --bg-surface-0: #141416;
+  --bg-surface-1: #1e1e21;
+  --bg-surface-2: #27272b;
+  --bg-accent: #1c2a3d;
+  --bg-warning: #3a2f14;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: #3f3f46;
+  --border-accent: #3b82f6;
+
+  --text-primary: #f0f0f2;
+  --text-secondary: #a1a1aa;
+  --text-muted: #6b6b73;
+  --text-accent: #60a5fa;
+  --text-warning: #eab308;
+  --text-danger: #f87171;
+  --text-success: #4ade80;
+
+  --font: -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font: 12px/1.4 var(--font);
+}
+
+/* Panels — rounded rectangles on --bg-surface-2, sitting on a
+   --bg-surface-1 background. Sections inside separate with a border,
+   not spacing alone. */
+.panel {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+  font: 12px/1.4 var(--font);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.panel-header {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-section {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-section:last-child {
+  border-bottom: none;
+}
+
+.label-muted {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Controls */
+.btn {
+  font: 12px var(--font);
+  color: var(--text-primary);
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: var(--text-secondary);
+}
+.btn:active {
+  background: var(--bg-surface-0);
+}
+.btn.is-active {
+  border-color: var(--border-accent);
+  background: var(--bg-accent);
+  color: var(--text-accent);
+}
+.btn-icon {
+  padding: 4px 7px;
+  line-height: 1;
+  min-width: 26px;
+}
+.btn-danger:hover {
+  border-color: var(--text-danger);
+  color: var(--text-danger);
+}
+
+.field {
+  font: 12px var(--font);
+  color: var(--text-primary);
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 5px 8px;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+.field::placeholder {
+  color: var(--text-muted);
+}
+
+/* MapLibre's own popup (stop/bus-station assignment popups,
+   stops-layer.ts) — restyled to match the dark theme rather than its
+   default white card. The map itself is untouched; this is app UI that
+   happens to be anchored to map coordinates.
+   `body` prefix is deliberate, not decorative: maplibre-gl.css defines the
+   same classes at equal specificity, and Vite happens to bundle it after
+   this file, so a plain `.maplibregl-popup-content` rule here silently
+   lost to maplibre's own `background:#fff` (source order decided the tie).
+   The extra `body` ancestor bumps specificity just enough to win
+   regardless of bundle order — found by screenshotting a popup and
+   noticing it was still the old white card despite this rule "being
+   there". */
+body .maplibregl-popup-content {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+  padding: 10px 12px;
+  font: 12px/1.4 var(--font);
+}
+body .maplibregl-popup-close-button {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+body .maplibregl-popup-close-button:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+body .maplibregl-popup-anchor-top .maplibregl-popup-tip,
+body .maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+body .maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: var(--bg-surface-2);
+}
+body .maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+body .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+body .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: var(--bg-surface-2);
+}
+body .maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: var(--bg-surface-2);
+}
+body .maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: var(--bg-surface-2);
+}
+
+/* Custom dropdown — see dropdown.ts. Replaces native <select>, whose open
+   option list can't be restyled to match the dark theme. */
+.dropdown {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.dropdown-trigger {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.dropdown-trigger.is-active {
+  border-color: var(--border-accent);
+}
+.dropdown-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdown-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-muted);
+}
+.dropdown-menu {
+  position: fixed;
+  z-index: 20;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.dropdown-item {
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dropdown-item:hover {
+  background: var(--bg-surface-1);
+}
+.dropdown-item.is-selected {
+  background: var(--bg-accent);
+  color: var(--text-accent);
+}
+
+/* Route/livery colour swatches — rounded squares, not circles. */
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* Status badges — 15% opacity background of the status colour, full
+   opacity text. */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.badge-warning {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--text-warning);
+}
+.badge-danger {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--text-danger);
+}
+.badge-success {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--text-success);
+}
+.badge-info {
+  background: rgba(96, 165, 250, 0.15);
+  color: var(--text-accent);
+}
+
+/* Data tables/grids. */
+.data-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font: 12px var(--font);
+}
+.data-grid th {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 400;
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface-2);
+}
+.data-grid td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.data-grid .num {
+  font-size: 13px;
+  font-weight: 600;
+}

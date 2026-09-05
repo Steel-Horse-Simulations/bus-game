@@ -3,9 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <title>Bus Game</title>
+    <link rel="stylesheet" href="./theme.css" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      #map { position: absolute; inset: 0; }
+      /* MapLibre's attribution control has no color rule of its own for
+         plain (non-link) text, so it inherits from body — which the dark
+         theme sets to near-white. That's unreadable against the control's
+         own light background, so pin it back to dark here rather than in
+         theme.css, since this is the map's own required OSM/OpenMapTiles
+         legal text, not app chrome. */
+      .maplibregl-ctrl-attrib { color: rgba(0, 0, 0, 0.75); }
+      #status {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        z-index: 1;
+        background: var(--bg-surface-2);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font: 12px -apple-system, "Segoe UI", system-ui, sans-serif;
+        padding: 5px 9px;
+        border-radius: 6px;
+      }
+    </style>
   </head>
   <body>
-    <div id="app">Loading…</div>
+    <div id="map"></div>
+    <div id="status">Loading…</div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

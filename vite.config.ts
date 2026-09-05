@@ -9,6 +9,14 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "dist"),
   },
+  // maplibre-gl constructs its own Web Worker internally (maplibre-gl-worker),
+  // which Vite's esbuild-based dep pre-bundler mishandles — dev mode logs
+  // "file does not exist ... maplibre-gl-worker.mjs" and tiles silently never
+  // load (the worker never starts, so no tile fetch/parse ever happens).
+  // Documented Vite/MapLibre workaround: exclude it from pre-bundling.
+  optimizeDeps: {
+    exclude: ["maplibre-gl"],
+  },
   plugins: [
     electron({
       main: {
