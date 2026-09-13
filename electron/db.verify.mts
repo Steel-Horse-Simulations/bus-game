@@ -15,6 +15,7 @@ import {
   listRoutes,
   updateRoute,
   deleteRoute,
+  setRoutePickupDropoffOverride,
   upsertRouteTimetable,
   listRouteTimetablesForRoute,
   listAllRouteTimetables,
@@ -94,6 +95,35 @@ assert(route.id > 0, "route created with a real id");
 assert(listRoutes(db).some((r) => r.id === route.id && r.number === "1"), "created route is listed");
 assert(route.colour === "#3b82f6", "route created with the requested colour");
 assert(route.name === null, "route created with no name defaults to null");
+assert(route.pickupDropoffOverrides.length === 0, "route created with no pickup/dropoff overrides");
+
+setRoutePickupDropoffOverride(db, route.id, 1, "setdown_only");
+let afterOverride = listRoutes(db).find((r) => r.id === route.id)!;
+assert(
+  afterOverride.pickupDropoffOverrides.length === 1 &&
+    afterOverride.pickupDropoffOverrides[0].pointIndex === 1 &&
+    afterOverride.pickupDropoffOverrides[0].value === "setdown_only",
+  "setRoutePickupDropoffOverride sets an override",
+);
+
+setRoutePickupDropoffOverride(db, route.id, 0, "pickup_only");
+afterOverride = listRoutes(db).find((r) => r.id === route.id)!;
+assert(afterOverride.pickupDropoffOverrides.length === 2, "a second override on a different stop adds rather than replaces");
+
+setRoutePickupDropoffOverride(db, route.id, 1, "pickup_only");
+afterOverride = listRoutes(db).find((r) => r.id === route.id)!;
+assert(
+  afterOverride.pickupDropoffOverrides.length === 2 &&
+    afterOverride.pickupDropoffOverrides.find((o) => o.pointIndex === 1)?.value === "pickup_only",
+  "setting an override on the same stop again replaces rather than duplicates",
+);
+
+setRoutePickupDropoffOverride(db, route.id, 1, null);
+afterOverride = listRoutes(db).find((r) => r.id === route.id)!;
+assert(
+  afterOverride.pickupDropoffOverrides.length === 1 && afterOverride.pickupDropoffOverrides[0].pointIndex === 0,
+  "passing null clears an override",
+);
 
 // --- route timetables ---
 assert(listRouteTimetablesForRoute(db, route.id).length === 0, "a new route starts with no timetables");
@@ -105,13 +135,13 @@ const tt = upsertRouteTimetable(
   360,
   1140,
   30,
-  [{ pointIndex: 1, waitSeconds: 60 }],
+  [{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }],
   [0, 500],
   [0, 560],
 );
 assert(tt.dayType === "monday_friday" && tt.startMinutes === 360, "route timetable created with the right fields");
 assert(
-  JSON.stringify(tt.timingPoints) === JSON.stringify([{ pointIndex: 1, waitSeconds: 60 }]),
+  JSON.stringify(tt.timingPoints) === JSON.stringify([{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }]),
   "timing points round-trip through JSON",
 );
 assert(
@@ -160,6 +190,10 @@ const updated = updateRoute(
 assert(updated.number === "1A" && updated.points.length === 3, "updateRoute changes the route's own fields");
 assert(updated.colour === "#ef4444", "updateRoute changes the route's colour too");
 assert(updated.name === "Gordon Street Express", "updateRoute changes the route's name too");
+assert(
+  updated.pickupDropoffOverrides.length === 0,
+  "updateRoute clears pickup/dropoff overrides too, since the points list may have changed shape",
+);
 assert(listRoutes(db).find((r) => r.id === route.id)?.number === "1A", "the update is reflected in listRoutes");
 assert(
   listRouteTimetablesForRoute(db, route.id).length === 0,

@@ -14,23 +14,10 @@
          theme.css, since this is the map's own required OSM/OpenMapTiles
          legal text, not app chrome. */
       .maplibregl-ctrl-attrib { color: rgba(0, 0, 0, 0.75); }
-      #status {
-        position: absolute;
-        top: 8px;
-        left: 8px;
-        z-index: 1;
-        background: var(--bg-surface-2);
-        border: 1px solid var(--border);
-        color: var(--text-secondary);
-        font: 12px -apple-system, "Segoe UI", system-ui, sans-serif;
-        padding: 5px 9px;
-        border-radius: 6px;
-      }
     </style>
   </head>
   <body>
     <div id="map"></div>
-    <div id="status">Loading…</div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

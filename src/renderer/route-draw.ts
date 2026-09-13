@@ -325,7 +325,7 @@ export async function mountRouteDrawTool(
   // mounts `el` into its own persistent left-hand slot (DESIGN.md §11) and
   // controls when it's visible.
   const panel = document.createElement("div");
-  panel.className = "panel";
+  panel.className = "panel panel-flush";
   panel.style.height = "100%";
   panel.style.display = "flex";
   panel.style.flexDirection = "column";

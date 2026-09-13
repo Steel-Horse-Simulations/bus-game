@@ -21,6 +21,7 @@ import {
   listRoutes,
   updateRoute,
   deleteRoute,
+  setRoutePickupDropoffOverride,
   type DayType,
   type TimingPoint,
   upsertRouteTimetable,
@@ -181,6 +182,11 @@ function registerRouteHandlers(): void {
     ) => updateRoute(save, id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name),
   );
   ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
+  ipcMain.handle(
+    "routes:setPickupDropoffOverride",
+    (_e, routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | null) =>
+      setRoutePickupDropoffOverride(save, routeId, pointIndex, value),
+  );
 }
 
 // Route timetables (DESIGN.md §7) — see electron/db.mts for what's built so

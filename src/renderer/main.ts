@@ -1,4 +1,4 @@
-import init, { add, Router } from "./wasm/game_wasm.js";
+import init, { Router } from "./wasm/game_wasm.js";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
@@ -39,9 +39,7 @@ registerMapIcons(map);
 mountDepotGroupsPanel();
 (window as unknown as { __map: maplibregl.Map }).__map = map;
 
-const status = document.getElementById("status")!;
 init().then(async () => {
-  status.textContent = `Rust/WASM round trip: add(2, 3) = ${add(2, 3)}`;
   await registerSupportVehicleIcons(map);
   await drawStops(map);
   const router = await loadRouter();

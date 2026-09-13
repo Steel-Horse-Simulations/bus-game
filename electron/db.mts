@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- back to. It's a manual stand-in for the real destination display DESIGN.md
 -- §6/§7 describes (built from variations/extensions), which needs those
 -- systems and doesn't exist yet.
+-- "pickup_dropoff_overrides" is a JSON array of {pointIndex, value} —
+-- value is 'pickup_only' or 'setdown_only' — overriding, for this route
+-- only, the stop's own global pick-up/set-down default (an osm_overrides
+-- entry, entityType 'stop', field 'pickupDropoff'). Absence at either level
+-- means unrestricted ("both"). Indexed against this route's own "points",
+-- so cleared on any edit the same way timing points are, since the points
+-- list (and therefore what a given pointIndex means) may have changed.
 CREATE TABLE IF NOT EXISTS routes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -56,7 +63,8 @@ CREATE TABLE IF NOT EXISTS routes (
   terminus_index INTEGER,
   start_index INTEGER,
   colour TEXT NOT NULL DEFAULT '#3b82f6',
-  name TEXT
+  name TEXT,
+  pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]'
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -150,6 +158,12 @@ export function openSave(path: string): SaveDb {
     // Existing rows get null, same as the list already treats "no name set".
     db.exec("ALTER TABLE routes ADD COLUMN name TEXT");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 9) {
+    // v9 -> v10: routes gained per-route pick-up/set-down overrides,
+    // alongside the stop's own global default (an osm_overrides entry).
+    // Existing rows get none, same as "no override set" already means.
+    db.exec("ALTER TABLE routes ADD COLUMN pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
       `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
@@ -236,6 +250,11 @@ export interface RoutePoint {
   lat: number;
 }
 
+export interface RoutePickupDropoffOverride {
+  pointIndex: number;
+  value: "pickup_only" | "setdown_only";
+}
+
 export interface Route {
   id: number;
   depotGroupId: number;
@@ -246,6 +265,7 @@ export interface Route {
   startIndex: number | null;
   colour: string;
   name: string | null;
+  pickupDropoffOverrides: RoutePickupDropoffOverride[];
 }
 
 interface RouteRow {
@@ -258,6 +278,7 @@ interface RouteRow {
   start_index: number | null;
   colour: string;
   name: string | null;
+  pickup_dropoff_overrides: string;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -271,6 +292,7 @@ function routeFromRow(row: RouteRow): Route {
     startIndex: row.start_index === null ? null : Number(row.start_index),
     colour: row.colour,
     name: row.name,
+    pickupDropoffOverrides: JSON.parse(row.pickup_dropoff_overrides) as RoutePickupDropoffOverride[],
   };
 }
 
@@ -300,6 +322,7 @@ export function createRoute(
     startIndex,
     colour,
     name,
+    pickupDropoffOverrides: [],
   };
 }
 
@@ -325,17 +348,42 @@ export function updateRoute(
   name: string | null,
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]'
      WHERE id = ?`,
   ).run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, colour, name, id);
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
-  return { id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name };
+  return { id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name, pickupDropoffOverrides: [] };
+}
+
+// A per-route override of a stop's pick-up/set-down restriction (see the
+// routes table's own comment in SCHEMA) — independent of updateRoute, and
+// deliberately doesn't touch route_timetables, since it's unrelated to the
+// route's points shape. Pass value = null to clear the override (falling
+// back to the stop's own global default, an osm_overrides entry).
+export function setRoutePickupDropoffOverride(
+  db: SaveDb,
+  routeId: number,
+  pointIndex: number,
+  value: "pickup_only" | "setdown_only" | null,
+): void {
+  const row = db.prepare("SELECT pickup_dropoff_overrides FROM routes WHERE id = ?").get(routeId) as
+    | { pickup_dropoff_overrides: string }
+    | undefined;
+  if (!row) return;
+  const overrides = (JSON.parse(row.pickup_dropoff_overrides) as RoutePickupDropoffOverride[]).filter(
+    (o) => o.pointIndex !== pointIndex,
+  );
+  if (value !== null) overrides.push({ pointIndex, value });
+  db.prepare("UPDATE routes SET pickup_dropoff_overrides = ? WHERE id = ?").run(
+    JSON.stringify(overrides),
+    routeId,
+  );
 }
 
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
@@ -355,9 +403,15 @@ export function deleteRoute(db: SaveDb, id: number): void {
 export type DayType = "monday_friday" | "saturday" | "sunday";
 export const DAY_TYPES: readonly DayType[] = ["monday_friday", "saturday", "sunday"];
 
+// A timing point is a published scheduling location, not every physical
+// stop (route-timetable.mts's own comment has the full reasoning).
+// "legMinutes" is the published running time, in whole minutes, from the
+// previous timing point (or point 0) to this one's arrival; "dwellSeconds"
+// is an optional layover (departure - arrival), 0 for the common case.
 export interface TimingPoint {
   pointIndex: number;
-  waitSeconds: number;
+  legMinutes: number;
+  dwellSeconds: number;
 }
 
 export interface RouteTimetable {

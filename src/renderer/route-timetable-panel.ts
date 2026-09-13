@@ -14,6 +14,7 @@ import {
   validateTimingPoints,
   computeOffsets,
 } from "./route-timetable.mts";
+import { timetableEditorState } from "./timetable-editor-state";
 
 const DAY_TYPE_LABELS: Record<DayType, string> = {
   monday_friday: "Monday-Friday",
@@ -66,7 +67,7 @@ export function createRouteTimetableEditor(
   onClose: () => void,
 ): RouteTimetableEditor {
   const panel = document.createElement("div");
-  panel.className = "panel";
+  panel.className = "panel panel-flush";
   panel.style.height = "100%";
   panel.style.display = "flex";
   panel.style.flexDirection = "column";
@@ -114,71 +115,48 @@ export function createRouteTimetableEditor(
   intervalInput.min = "1";
   intervalInput.placeholder = "Interval (minutes)";
 
-  const stopRows: { pointIndex: number; checkbox: HTMLInputElement; waitInput: HTMLInputElement }[] = [];
-  const stopsSection = document.createElement("div");
-  stopsSection.style.display = "flex";
-  stopsSection.style.flexDirection = "column";
-  stopsSection.style.gap = "4px";
-
-  route.points.forEach((p, i) => {
-    if (p.kind !== "stop") return;
-    const row = document.createElement("div");
-    row.style.display = "flex";
-    row.style.alignItems = "center";
-    row.style.gap = "6px";
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    const label = document.createElement("span");
-    label.textContent = `Stop ${i + 1}`;
-    label.style.flex = "1";
-    const waitInput = document.createElement("input");
-    waitInput.className = "field";
-    waitInput.type = "number";
-    waitInput.min = "0";
-    waitInput.value = "0";
-    waitInput.style.width = "70px";
-    waitInput.disabled = true;
-    waitInput.placeholder = "Wait (s)";
-
-    checkbox.addEventListener("change", () => {
-      waitInput.disabled = !checkbox.checked;
-    });
-
-    row.appendChild(checkbox);
-    row.appendChild(label);
-    row.appendChild(waitInput);
-    stopsSection.appendChild(row);
-    stopRows.push({ pointIndex: i, checkbox, waitInput });
-  });
+  // Timing points are no longer set here — DESIGN.md §4/§7's redesign
+  // moved that to each stop's own little menu in the locked route list on
+  // the left (route-panel.ts), coordinated through timetableEditorState so
+  // this module still owns which day type is selected and still persists
+  // the result. This is just a live count, and a warning line for anything
+  // scheduled faster than the route can actually be driven.
+  const timingPointsHint = document.createElement("div");
+  timingPointsHint.className = "label-muted";
+  timingPointsHint.style.padding = "0 12px";
 
   const saveButton = document.createElement("button");
   saveButton.className = "btn";
   saveButton.textContent = "Save timetable for this day type";
 
+  timetableEditorState.onTimingPointsEdited = refreshTimingPointsHint;
+
+  function refreshTimingPointsHint(): void {
+    const count = timetableEditorState.timingPoints.length;
+    timingPointsHint.textContent =
+      count === 0
+        ? "No timing points set — click a stop on the left to add one."
+        : `${count} timing point${count === 1 ? "" : "s"} set — click a stop on the left to edit.`;
+  }
+
   async function loadDayType(dayType: DayType): Promise<void> {
     const existing = (await window.routeTimetables.listForRoute(route.id)).find((t) => t.dayType === dayType);
+    timetableEditorState.dayType = dayType;
+    // A fresh array, not the loaded one directly — the stop list mutates
+    // this in place, and re-loading (e.g. switching day type and back)
+    // shouldn't leave it aliased to a previous load's array.
+    timetableEditorState.timingPoints = existing ? [...existing.timingPoints] : [];
+    refreshTimingPointsHint();
+    timetableEditorState.onDayTypeChanged?.();
     if (existing) {
       startInput.value = minutesToHHMM(existing.startMinutes);
       endInput.value = minutesToHHMM(existing.endMinutes);
       intervalInput.value = String(existing.intervalMinutes);
-      const waitByIndex = new Map(existing.timingPoints.map((tp) => [tp.pointIndex, tp.waitSeconds]));
-      for (const row of stopRows) {
-        const wait = waitByIndex.get(row.pointIndex);
-        row.checkbox.checked = wait !== undefined;
-        row.waitInput.disabled = wait === undefined;
-        row.waitInput.value = String(wait ?? 0);
-      }
       statusLine.textContent = `Existing ${DAY_TYPE_LABELS[dayType]} timetable loaded.`;
     } else {
       startInput.value = "";
       endInput.value = "";
       intervalInput.value = "";
-      for (const row of stopRows) {
-        row.checkbox.checked = false;
-        row.waitInput.disabled = true;
-        row.waitInput.value = "0";
-      }
       statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]} timetable yet.`;
     }
   }
@@ -206,9 +184,7 @@ export function createRouteTimetableEditor(
       statusLine.textContent = freqError;
       return;
     }
-    const timingPoints: TimingPoint[] = stopRows
-      .filter((r) => r.checkbox.checked)
-      .map((r) => ({ pointIndex: r.pointIndex, waitSeconds: Number(r.waitInput.value) || 0 }));
+    const timingPoints = timetableEditorState.timingPoints;
     const tpError = validateTimingPoints(route.points, timingPoints);
     if (tpError) {
       statusLine.textContent = tpError;
@@ -217,7 +193,7 @@ export function createRouteTimetableEditor(
 
     statusLine.textContent = "Computing running times…";
     const legTimesSeconds = computeLegTimesSeconds(router, route.points);
-    const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsets(
+    const { arrivalOffsetsSeconds, departureOffsetsSeconds, infeasiblePointIndexes } = computeOffsets(
       route.points.length,
       legTimesSeconds,
       timingPoints,
@@ -233,18 +209,19 @@ export function createRouteTimetableEditor(
       departureOffsetsSeconds,
     );
     const totalMinutes = Math.round(arrivalOffsetsSeconds[arrivalOffsetsSeconds.length - 1] / 60);
-    statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
+    statusLine.textContent =
+      infeasiblePointIndexes.length > 0
+        ? `Saved, but ${infeasiblePointIndexes.length} timing point${infeasiblePointIndexes.length === 1 ? "" : "s"} ` +
+          `published faster than the route can be driven — scheduled at the fastest achievable time instead. ` +
+          `End-to-end running time: ${totalMinutes} min.`
+        : `Saved. End-to-end running time: ${totalMinutes} min.`;
   });
 
   body.appendChild(dayTypeDropdown.el);
   body.appendChild(startInput);
   body.appendChild(endInput);
   body.appendChild(intervalInput);
-  const stopsLabel = document.createElement("div");
-  stopsLabel.className = "label-muted";
-  stopsLabel.textContent = "Timing points";
-  body.appendChild(stopsLabel);
-  body.appendChild(stopsSection);
+  body.appendChild(timingPointsHint);
   body.appendChild(saveButton);
 
   void loadDayType(DAY_TYPES[0]);

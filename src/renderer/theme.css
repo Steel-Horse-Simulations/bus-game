@@ -45,6 +45,13 @@ body {
   overflow: hidden;
 }
 
+/* For a panel that fills its slot edge-to-edge (routes list, route drawing,
+   locked route reference, timetable) — no rounded corners, since they no
+   longer sit as a floating box with a gap around them. */
+.panel-flush {
+  border-radius: 0;
+}
+
 .panel-header {
   font-size: 13px;
   font-weight: 600;

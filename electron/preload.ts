@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld("routes", {
       name,
     ) as Promise<Route>,
   delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
+  setPickupDropoffOverride: (routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | null) =>
+    ipcRenderer.invoke("routes:setPickupDropoffOverride", routeId, pointIndex, value) as Promise<void>,
 });
 
 // Route timetables (DESIGN.md §7) — the renderer's only way to persist a

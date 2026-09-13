@@ -22,6 +22,17 @@ import { createRouteTimetableEditor } from "./route-timetable-panel";
 import { stopsPanelState, busStationsState } from "./stops-layer";
 import { pickContrastColorForHex } from "./icon-contrast";
 import { onewayArrowImageId } from "./map-icons";
+import { createDropdown } from "./dropdown";
+import { PICKUP_DROPOFF_LABELS, pickupDropoffBadge, effectivePickupDropoff, type PickupDropoff, type PickupDropoffOrBoth } from "./pickup-dropoff";
+import { timetableEditorState } from "./timetable-editor-state";
+
+// Start/terminus colours (DESIGN.md §6) — read-only, derived entirely from
+// the route's own startIndex/terminusIndex, never a per-stop toggle. A
+// point can be both at once (an early terminus with no real loop, the two
+// indexes equal) — BOTH_COLOUR disambiguates that from either alone.
+const START_COLOUR = "#22c55e";
+const TERMINUS_COLOUR = "#ef4444";
+const BOTH_START_TERMINUS_COLOUR = "#f59e0b";
 
 const emptyFeatureCollection: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -205,25 +216,27 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
   });
 
   // The persistent left-hand slot (DESIGN.md §11). Always the same size and
-  // position; only its single child changes with `mode`. Starts below the
-  // status readout box, same offset the old "Draw route" toggle used.
+  // position; only its single child changes with `mode`. Flush against the
+  // left, top and bottom edges of the screen — the old top offset existed
+  // only to clear the now-removed WASM status readout.
   const slot = document.createElement("div");
   slot.style.position = "absolute";
-  slot.style.top = "44px";
-  slot.style.left = "8px";
-  slot.style.bottom = "8px";
+  slot.style.top = "0";
+  slot.style.left = "0";
+  slot.style.bottom = "0";
   slot.style.width = "320px";
   slot.style.zIndex = "2";
   document.body.appendChild(slot);
 
   // The right-hand slot, occupied only in timetable mode — "the timetable
-  // grid fills the rest of the screen to the right."
+  // grid fills the rest of the screen to the right." Flush against the
+  // list slot and the top/bottom/right screen edges, same as the slot above.
   const timetableSlot = document.createElement("div");
   timetableSlot.style.position = "absolute";
-  timetableSlot.style.top = "44px";
-  timetableSlot.style.left = "336px";
-  timetableSlot.style.right = "8px";
-  timetableSlot.style.bottom = "8px";
+  timetableSlot.style.top = "0";
+  timetableSlot.style.left = "320px";
+  timetableSlot.style.right = "0";
+  timetableSlot.style.bottom = "0";
   timetableSlot.style.zIndex = "2";
   timetableSlot.style.display = "none";
   document.body.appendChild(timetableSlot);
@@ -254,6 +267,14 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       if (next.editRoute) drawController.startEditing(next.editRoute);
       else drawController.startDrawing();
     } else {
+      // Cleared up front — buildLockedRoutePanel's first render runs before
+      // createRouteTimetableEditor's own async day-type load resolves, so
+      // without this it would briefly show whichever route's timing points
+      // were left over from the last time timetable mode was open.
+      timetableEditorState.dayType = null;
+      timetableEditorState.timingPoints = [];
+      timetableEditorState.onDayTypeChanged = null;
+      timetableEditorState.onTimingPointsEdited = null;
       slot.appendChild(buildLockedRoutePanel(next.route));
       const editor = createRouteTimetableEditor(next.route, router, () => setMode({ kind: "list" }));
       timetableSlot.appendChild(editor.el);
@@ -264,7 +285,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
 
   function buildListPanel(): HTMLElement {
     const panel = document.createElement("div");
-    panel.className = "panel";
+    panel.className = "panel panel-flush";
     panel.style.height = "100%";
     panel.style.display = "flex";
     panel.style.flexDirection = "column";
@@ -487,7 +508,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
 
   function buildLockedRoutePanel(route: Route): HTMLElement {
     const panel = document.createElement("div");
-    panel.className = "panel";
+    panel.className = "panel panel-flush";
     panel.style.height = "100%";
     panel.style.display = "flex";
     panel.style.flexDirection = "column";
@@ -503,6 +524,16 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     hint.textContent = "Stops can't be added or removed while building a timetable.";
     panel.appendChild(hint);
 
+    // Hides every stop that's neither a timing point nor the route's own
+    // start/terminus — the ones that actually matter for working out a
+    // timetable, once a route has many more physical stops than published
+    // times (route-timetable.mts's own reasoning).
+    let hideNonTimingPoints = false;
+    const hideToggle = document.createElement("button");
+    hideToggle.className = "btn";
+    hideToggle.style.margin = "0 12px 8px";
+    panel.appendChild(hideToggle);
+
     const list = document.createElement("div");
     list.className = "panel-section";
     list.style.flex = "1 1 auto";
@@ -511,22 +542,243 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     list.style.padding = "0";
     panel.appendChild(list);
 
-    let stopNumber = 0;
-    for (const point of route.points) {
-      const row = document.createElement("div");
-      row.style.padding = "6px 12px";
-      row.style.borderBottom = "1px solid var(--border)";
-      if (point.kind === "stop") {
+    // Read-only — derived from the route's own fields, never a per-stop
+    // toggle (DESIGN.md §6 "Start and terminus stops"). Defaults to
+    // points[0]/points[last] when neither index is set, same as everywhere
+    // else this pair is used.
+    const startIdx = route.startIndex ?? 0;
+    const terminusIdx = route.terminusIndex ?? route.points.length - 1;
+
+    // Which stop's row (by index into route.points) currently has its
+    // controls expanded — at most one at a time, same collapsed-by-default
+    // pattern as the route list's own row actions.
+    let expandedPointIndex: number | null = null;
+
+    // renderList awaits an overrides lookup per stop, so two calls can
+    // overlap (e.g. a click firing a re-render before a previous one's
+    // awaits have all settled) — without this guard, an older call's
+    // still-pending appends land after a newer call has already cleared
+    // and started rebuilding the list, producing duplicated rows. Each
+    // call captures its own generation and bails as soon as a newer one
+    // has started.
+    let renderGeneration = 0;
+
+    hideToggle.addEventListener("click", () => {
+      hideNonTimingPoints = !hideNonTimingPoints;
+      void renderList();
+    });
+
+    // route-timetable-panel.ts calls this whenever the day type switches
+    // (or a timetable first loads), so this list re-renders against
+    // whichever day type's timing points are now current.
+    timetableEditorState.onDayTypeChanged = () => void renderList();
+
+    async function renderList(): Promise<void> {
+      const myGeneration = ++renderGeneration;
+      hideToggle.textContent = hideNonTimingPoints ? "Show all stops" : "Hide non-timing-point stops";
+      list.innerHTML = "";
+      const routeOverrideByIndex = new Map(route.pickupDropoffOverrides.map((o) => [o.pointIndex, o.value]));
+      const timingPointByIndex = new Map(timetableEditorState.timingPoints.map((tp) => [tp.pointIndex, tp]));
+
+      let stopNumber = 0;
+      for (let i = 0; i < route.points.length; i++) {
+        if (myGeneration !== renderGeneration) return;
+        const point = route.points[i];
+        const isStart = i === startIdx;
+        const isTerminus = i === terminusIdx;
+        const isTimingPoint = timingPointByIndex.has(i);
+
+        if (point.kind !== "stop" || point.osmId === undefined) {
+          if (hideNonTimingPoints) continue;
+          const row = document.createElement("div");
+          row.style.borderBottom = "1px solid var(--border)";
+          const line = document.createElement("div");
+          line.style.display = "flex";
+          line.style.alignItems = "center";
+          line.style.gap = "6px";
+          line.style.padding = "6px 12px";
+          line.textContent = "Waypoint";
+          line.style.color = "var(--text-muted)";
+          line.style.fontStyle = "italic";
+          row.appendChild(line);
+          list.appendChild(row);
+          continue;
+        }
+
         stopNumber += 1;
-        row.textContent = `${stopNumber}. ${stopLabel(point)}`;
-      } else {
-        row.textContent = "Waypoint";
-        row.style.color = "var(--text-muted)";
-        row.style.fontStyle = "italic";
+        if (hideNonTimingPoints && !isStart && !isTerminus && !isTimingPoint) continue;
+
+        const row = document.createElement("div");
+        row.style.borderBottom = "1px solid var(--border)";
+
+        const line = document.createElement("div");
+        line.style.display = "flex";
+        line.style.alignItems = "center";
+        line.style.gap = "6px";
+        line.style.padding = "6px 12px";
+        const osmId = point.osmId;
+
+        const label = document.createElement("span");
+        label.style.flex = "1";
+        label.style.overflow = "hidden";
+        label.style.textOverflow = "ellipsis";
+        label.style.whiteSpace = "nowrap";
+        label.textContent = `${stopNumber}. ${stopLabel(point)}`;
+        if (isStart && isTerminus) label.style.color = BOTH_START_TERMINUS_COLOUR;
+        else if (isStart) label.style.color = START_COLOUR;
+        else if (isTerminus) label.style.color = TERMINUS_COLOUR;
+        line.appendChild(label);
+
+        const routeOverride = routeOverrideByIndex.get(i) ?? null;
+        const globalOverride = await window.overrides.get<PickupDropoffOrBoth>("stop", osmId, "pickupDropoff");
+        if (myGeneration !== renderGeneration) return;
+        const effective = effectivePickupDropoff(routeOverride, globalOverride);
+        const badgeLetter = pickupDropoffBadge(effective);
+        if (badgeLetter) {
+          const badge = document.createElement("span");
+          badge.className = "badge badge-info";
+          badge.textContent = badgeLetter;
+          badge.title = PICKUP_DROPOFF_LABELS[effective];
+          line.appendChild(badge);
+        }
+
+        const timingPoint = timingPointByIndex.get(i) ?? null;
+        if (timingPoint) {
+          const tpBadge = document.createElement("span");
+          tpBadge.className = "badge badge-warning";
+          tpBadge.textContent = "T";
+          tpBadge.title = `Timing point — ${timingPoint.legMinutes} min from the previous one`;
+          line.appendChild(tpBadge);
+        }
+
+        row.style.cursor = "pointer";
+        row.addEventListener("click", () => {
+          expandedPointIndex = expandedPointIndex === i ? null : i;
+          void renderList();
+        });
+        row.appendChild(line);
+
+        if (expandedPointIndex === i) {
+          const controls = document.createElement("div");
+          controls.style.padding = "0 12px 10px";
+          controls.style.display = "flex";
+          controls.style.flexDirection = "column";
+          controls.style.gap = "6px";
+          controls.addEventListener("click", (e) => e.stopPropagation());
+
+          if (i === 0) {
+            const tpNote = document.createElement("div");
+            tpNote.className = "label-muted";
+            tpNote.textContent = "Point 0 is always the journey's own published departure — no timing point needed.";
+            controls.appendChild(tpNote);
+          } else {
+            const tpToggleRow = document.createElement("label");
+            tpToggleRow.style.display = "flex";
+            tpToggleRow.style.alignItems = "center";
+            tpToggleRow.style.gap = "6px";
+            const tpCheckbox = document.createElement("input");
+            tpCheckbox.type = "checkbox";
+            tpCheckbox.checked = timingPoint !== null;
+            tpToggleRow.appendChild(tpCheckbox);
+            tpToggleRow.appendChild(document.createTextNode("Timing point (this route)"));
+            controls.appendChild(tpToggleRow);
+
+            const legMinutesInput = document.createElement("input");
+            legMinutesInput.className = "field";
+            legMinutesInput.type = "number";
+            legMinutesInput.min = "0";
+            legMinutesInput.step = "1";
+            legMinutesInput.placeholder = "Minutes from the previous timing point";
+            legMinutesInput.value = String(timingPoint?.legMinutes ?? "");
+            legMinutesInput.disabled = timingPoint === null;
+            controls.appendChild(legMinutesInput);
+
+            const dwellInput = document.createElement("input");
+            dwellInput.className = "field";
+            dwellInput.type = "number";
+            dwellInput.min = "0";
+            dwellInput.step = "1";
+            dwellInput.placeholder = "Dwell/layover (seconds, 0 if none)";
+            dwellInput.value = String(timingPoint?.dwellSeconds ?? 0);
+            dwellInput.disabled = timingPoint === null;
+            controls.appendChild(dwellInput);
+
+            const commitTimingPoint = (): void => {
+              timetableEditorState.timingPoints = timetableEditorState.timingPoints.filter(
+                (tp) => tp.pointIndex !== i,
+              );
+              if (tpCheckbox.checked) {
+                const legMinutes = Math.max(0, Math.round(Number(legMinutesInput.value) || 0));
+                const dwellSeconds = Math.max(0, Math.round(Number(dwellInput.value) || 0));
+                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellSeconds });
+              }
+              timetableEditorState.onTimingPointsEdited?.();
+              void renderList();
+            };
+
+            tpCheckbox.addEventListener("change", () => {
+              legMinutesInput.disabled = !tpCheckbox.checked;
+              dwellInput.disabled = !tpCheckbox.checked;
+              if (tpCheckbox.checked && legMinutesInput.value === "") legMinutesInput.value = "1";
+              commitTimingPoint();
+            });
+            legMinutesInput.addEventListener("change", commitTimingPoint);
+            dwellInput.addEventListener("change", commitTimingPoint);
+          }
+
+          const THIS_ROUTE_DEFAULT = "Use stop default";
+          const thisRouteLabel = document.createElement("div");
+          thisRouteLabel.className = "label-muted";
+          thisRouteLabel.textContent = "This route:";
+          controls.appendChild(thisRouteLabel);
+          const thisRouteDropdown = createDropdown(
+            [THIS_ROUTE_DEFAULT, PICKUP_DROPOFF_LABELS.pickup_only, PICKUP_DROPOFF_LABELS.setdown_only],
+            routeOverride === null ? THIS_ROUTE_DEFAULT : PICKUP_DROPOFF_LABELS[routeOverride],
+            (chosenLabel) => {
+              const value: PickupDropoff | null =
+                chosenLabel === PICKUP_DROPOFF_LABELS.pickup_only
+                  ? "pickup_only"
+                  : chosenLabel === PICKUP_DROPOFF_LABELS.setdown_only
+                    ? "setdown_only"
+                    : null;
+              void window.routes.setPickupDropoffOverride(route.id, i, value).then(() => {
+                route.pickupDropoffOverrides = route.pickupDropoffOverrides.filter((o) => o.pointIndex !== i);
+                if (value !== null) route.pickupDropoffOverrides.push({ pointIndex: i, value });
+                void renderList();
+              });
+            },
+          );
+          thisRouteDropdown.el.style.width = "100%";
+          controls.appendChild(thisRouteDropdown.el);
+
+          const globalLabel = document.createElement("div");
+          globalLabel.className = "label-muted";
+          globalLabel.textContent = "All routes (this stop's default):";
+          controls.appendChild(globalLabel);
+          const globalDropdown = createDropdown(
+            Object.values(PICKUP_DROPOFF_LABELS),
+            PICKUP_DROPOFF_LABELS[globalOverride ?? "both"],
+            (chosenLabel) => {
+              const value = (Object.entries(PICKUP_DROPOFF_LABELS).find(([, l]) => l === chosenLabel)?.[0] ??
+                "both") as PickupDropoffOrBoth;
+              const write =
+                value === "both"
+                  ? window.overrides.reset("stop", osmId, "pickupDropoff")
+                  : window.overrides.set("stop", osmId, "pickupDropoff", value);
+              void write.then(() => void renderList());
+            },
+          );
+          globalDropdown.el.style.width = "100%";
+          controls.appendChild(globalDropdown.el);
+
+          row.appendChild(controls);
+        }
+
+        list.appendChild(row);
       }
-      list.appendChild(row);
     }
 
+    void renderList();
     return panel;
   }
 

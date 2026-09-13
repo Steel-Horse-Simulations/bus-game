@@ -22,6 +22,11 @@ interface RoutePoint {
   lat: number;
 }
 
+interface RoutePickupDropoffOverride {
+  pointIndex: number;
+  value: "pickup_only" | "setdown_only";
+}
+
 interface Route {
   id: number;
   depotGroupId: number;
@@ -32,6 +37,7 @@ interface Route {
   startIndex: number | null;
   colour: string;
   name: string | null;
+  pickupDropoffOverrides: RoutePickupDropoffOverride[];
 }
 
 interface RoutesApi {
@@ -58,13 +64,19 @@ interface RoutesApi {
     name: string | null,
   ): Promise<Route>;
   delete(id: number): Promise<void>;
+  setPickupDropoffOverride(
+    routeId: number,
+    pointIndex: number,
+    value: "pickup_only" | "setdown_only" | null,
+  ): Promise<void>;
 }
 
 type DayType = "monday_friday" | "saturday" | "sunday";
 
 interface TimingPoint {
   pointIndex: number;
-  waitSeconds: number;
+  legMinutes: number;
+  dwellSeconds: number;
 }
 
 interface RouteTimetable {

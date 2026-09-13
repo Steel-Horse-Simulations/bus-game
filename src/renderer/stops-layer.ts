@@ -7,6 +7,7 @@ import type { GeoJSON } from "geojson";
 import { decode_stops, decode_stop_areas } from "./wasm/game_wasm.js";
 import { routeDrawState } from "./route-draw";
 import { createDropdown } from "./dropdown";
+import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropoff";
 
 interface DecodedStop {
   lon: number;
@@ -518,7 +519,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     // Available on any visible stop, whether it's an ordinary street stop or
     // a currently-revealed station stand — reassigning or clearing either
     // way is the same action.
-    const openStopPopup = (stop: DecodedStop) => {
+    const openStopPopup = async (stop: DecodedStop) => {
       stationPopup?.remove();
       const osmId = stop.osmId;
       const coords: [number, number] = [stop.lon, stop.lat];
@@ -559,6 +560,32 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       dropdown.el.style.width = "100%";
       container.appendChild(dropdown.el);
 
+      // The stop's own global pick-up/set-down default (DESIGN.md §6's
+      // per-express-variation lists are a separate, route-scoped thing —
+      // this is the stop's own physical default, e.g. a stance that's
+      // always pick-up only). A route can still override this for itself
+      // (route-panel.ts's locked stop list), which wins over this default.
+      const pickupDropoffLabel = document.createElement("div");
+      pickupDropoffLabel.className = "label-muted";
+      pickupDropoffLabel.style.marginTop = "6px";
+      pickupDropoffLabel.textContent = "Pick-up / set-down (this stop, all routes)";
+      container.appendChild(pickupDropoffLabel);
+
+      const currentPickupDropoff =
+        (await window.overrides.get<PickupDropoffOrBoth>("stop", osmId, "pickupDropoff")) ?? "both";
+      const pickupDropoffDropdown = createDropdown(
+        Object.values(PICKUP_DROPOFF_LABELS),
+        PICKUP_DROPOFF_LABELS[currentPickupDropoff],
+        (chosenLabel) => {
+          const value = (Object.entries(PICKUP_DROPOFF_LABELS).find(([, l]) => l === chosenLabel)?.[0] ??
+            "both") as PickupDropoffOrBoth;
+          if (value === "both") void window.overrides.reset("stop", osmId, "pickupDropoff");
+          else void window.overrides.set("stop", osmId, "pickupDropoff", value);
+        },
+      );
+      pickupDropoffDropdown.el.style.width = "100%";
+      container.appendChild(pickupDropoffDropdown.el);
+
       stopPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
         .setLngLat(coords)
         .setDOMContent(container)
@@ -574,7 +601,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
         const feature = e.features?.[0];
         const osmId = feature?.properties?.osmId as number | undefined;
         const stop = osmId === undefined ? undefined : stopsById.get(osmId);
-        if (stop) openStopPopup(stop);
+        if (stop) void openStopPopup(stop);
       });
       map.on("mouseenter", layerId, () => {
         map.getCanvas().style.cursor = "pointer";
@@ -592,7 +619,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
         refreshStandsSource();
         openStationPopup(stop);
       } else {
-        openStopPopup(stop);
+        void openStopPopup(stop);
       }
     };
     stopsPanelState.displayNameFor = (osmId: number) => {
