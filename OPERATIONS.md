@@ -186,6 +186,10 @@ top-up**. Storekeepers can also do a **limited driving role — one morning
 service, out and back**.
 
 **Working hours.** Engineering roles and cleaners work fixed hours, **0800–1700**.
+Engineering staff (fitters, technicians, engineers) at remote areas and
+islands — **including Shetland** — work **Monday to Friday only**, weekends
+off entirely, on top of the fixed hours. (Shetland's 2-days-a-week MOT
+testers, §9, are a separate specialised role and don't contradict this.)
 Local services normally run **0600–1830**. Long distance services can run any
 time after 0800, but must **leave the remote area no later than 1830** and,
 travelling the other way, **arrive no later than 2115** — exceptions allowed
@@ -499,6 +503,13 @@ Liveries are **cosmetic only**.
 
 - A **per-depot-group default**.
 - **One-off vehicle liveries** are possible.
+
+### Starting livery
+New and starting buses default to **plain white with the route number
+perfectly centred** — unless the starting depot group is in an area with a
+council-assigned livery already established (SPT, or any of the island
+liveries in `DESIGN.md` §10's island and remote-area review), in which case
+buses use **that** livery instead of plain white.
 
 ### Branded routes
 A livery has up to **two branding regions**, a primary and a secondary, marked by
@@ -1207,6 +1218,34 @@ logistics chain in §9a instead.
 **MOTs** cost **£150**, done at the assigned Volvo. At a **remote depot**, the
 DVSA visits instead, at about **10% extra**, rather than the vehicle travelling
 to a test centre.
+
+**Island and remote-area MOT testing.** Island buses are tested at their **own
+home depot** rather than sent away, but the +10% above covers the DVSA
+tester's own travel there.
+
+- Islands get MOT slots **once a day, once a month** — several buses may need
+  to be off the road on that same single day.
+- Islands in the same region get their slots **2 days apart** from each
+  other — the same tester travels a circuit visiting several islands in
+  sequence.
+- The same once-a-month, 2-days-apart pattern applies to remote **mainland**
+  areas too (Fort William, Caithness, Oban, Ullapool, Campbeltown,
+  Galashiels) — not island-specific.
+- **Exception: Shetland** has its own dedicated testers, not part of the
+  travelling circuit, so gets **2 days a week** instead of once a month.
+- Ordinary mainland depots (near a Volvo location) can be tested any weekday.
+  Island and remote-area testing **also only ever happens Monday to
+  Friday** — no weekend testing anywhere in the game.
+- MOTs are spread **evenly across the year**, the same spreading principle
+  used for the 28-day service cycle (§9, workshop manager staggering),
+  applied to the MOT's own annual cycle instead.
+
+**Missing a slot.** Miss the monthly slot and it's a full month's wait for the
+next one — no shorter grace period, no way to request an extra visit. A
+lapsed MOT from this scheduling constraint carries **no fine**: the bus
+simply can't run until tested. This is deliberately different from the
+general warning/fine pattern used everywhere else — a genuinely unavoidable
+geographic constraint, not something to punish.
 
 **Buying new vehicles** is the only thing split by manufacturer, between two
 dealer networks:
