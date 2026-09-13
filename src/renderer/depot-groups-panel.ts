@@ -1,4 +1,29 @@
 import { createDropdown, type Dropdown } from "./dropdown";
+import { busStationsState } from "./stops-layer";
+
+const NO_STATION_LABEL = "(none)";
+
+// "name (#osmId)" rather than the bare name — two bus stations can share a
+// name (or have no OSM name at all, falling back to "Bus station"), and the
+// dropdown needs a unique label per option to tell them apart and to look
+// one back up by its chosen label.
+function stationLabel(station: { osmId: number; name: string }): string {
+  return `${station.name} (#${station.osmId})`;
+}
+
+function mainBusStationDropdown(
+  selectedOsmId: number | null,
+  onChange: (osmId: number | null) => void,
+): Dropdown {
+  const options = [NO_STATION_LABEL, ...busStationsState.map(stationLabel)];
+  const selected = busStationsState.find((s) => s.osmId === selectedOsmId);
+  const dropdown = createDropdown(options, selected ? stationLabel(selected) : NO_STATION_LABEL, (value) => {
+    if (value === NO_STATION_LABEL) return onChange(null);
+    const station = busStationsState.find((s) => stationLabel(s) === value);
+    onChange(station?.osmId ?? null);
+  });
+  return dropdown;
+}
 
 // Depot groups screen (OPERATIONS.md §1) — the first real save-data object
 // with its own UI, rather than something shadowing imported OSM data. A
@@ -35,7 +60,7 @@ export function mountDepotGroupsPanel(): void {
   panel.style.top = "40px";
   panel.style.right = "8px";
   panel.style.zIndex = "2";
-  panel.style.width = "320px";
+  panel.style.width = "360px";
   panel.hidden = true;
   document.body.appendChild(panel);
 
@@ -92,12 +117,17 @@ export function mountDepotGroupsPanel(): void {
       list.appendChild(empty);
     }
     for (const group of groups) {
+      const wrapper = document.createElement("div");
+      wrapper.style.display = "flex";
+      wrapper.style.flexDirection = "column";
+      wrapper.style.gap = "6px";
+      wrapper.style.padding = "6px 0";
+      wrapper.style.borderBottom = "1px solid var(--border)";
+
       const row = document.createElement("div");
       row.style.display = "flex";
       row.style.gap = "6px";
       row.style.alignItems = "center";
-      row.style.padding = "6px 0";
-      row.style.borderBottom = "1px solid var(--border)";
 
       const nameField = document.createElement("input");
       nameField.type = "text";
@@ -126,7 +156,29 @@ export function mountDepotGroupsPanel(): void {
       row.appendChild(nameField);
       row.appendChild(region.el);
       row.appendChild(deleteButton);
-      list.appendChild(row);
+
+      // The direction rule's reference point (DESIGN.md §6) — manual only,
+      // no auto-derivation exists (OPEN-ITEMS.md). A route can't be saved
+      // with a direction until this is set.
+      const stationRow = document.createElement("div");
+      stationRow.style.display = "flex";
+      stationRow.style.gap = "6px";
+      stationRow.style.alignItems = "center";
+      const stationLabelEl = document.createElement("span");
+      stationLabelEl.className = "label-muted";
+      stationLabelEl.textContent = "Main bus station";
+      stationLabelEl.style.flexShrink = "0";
+      const station = mainBusStationDropdown(group.mainBusStationOsmId, (osmId) => {
+        void window.depotGroups.setMainBusStation(group.id, osmId);
+      });
+      station.el.style.flex = "1";
+      station.el.style.minWidth = "0";
+      stationRow.appendChild(stationLabelEl);
+      stationRow.appendChild(station.el);
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(stationRow);
+      list.appendChild(wrapper);
     }
     const rows = list.querySelectorAll<HTMLDivElement>(":scope > div");
     const last = rows[rows.length - 1];

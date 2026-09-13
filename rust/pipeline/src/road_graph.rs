@@ -273,6 +273,13 @@ impl HighwayClass {
     pub fn index(self) -> usize {
         self as usize
     }
+
+    /// Default speed (mph) for a way of this class with no `maxspeed` tag —
+    /// see `game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH` for the figures and
+    /// why the table itself lives in the shared crate rather than here.
+    pub fn default_speed_mph(&self) -> u16 {
+        game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[self.index()]
+    }
 }
 
 /// Everything pass 2 needs to keep about a qualifying highway way, ready for
@@ -419,8 +426,11 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
     reader
         .for_each(|element| match element {
             Element::Way(way) => {
+                let mut highway_tag = None;
                 let mut class = None;
                 let mut oneway = OnewayDirection::TwoWay;
+                let mut oneway_tag_seen = false;
+                let mut junction_tag = None;
                 let mut access_restricted = false;
                 let mut psv_yes = false;
                 let mut bus_yes = false;
@@ -432,14 +442,19 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
 
                 for (k, v) in way.tags() {
                     match k {
-                        "highway" => class = HighwayClass::from_tag(v),
+                        "highway" => {
+                            highway_tag = Some(v);
+                            class = HighwayClass::from_tag(v);
+                        }
                         "oneway" => {
+                            oneway_tag_seen = true;
                             oneway = match v {
                                 "yes" | "true" | "1" => OnewayDirection::Forward,
                                 "-1" | "reverse" => OnewayDirection::Reverse,
                                 _ => OnewayDirection::TwoWay,
                             }
                         }
+                        "junction" => junction_tag = Some(v),
                         "access" if matches!(v, "no" | "private") => access_restricted = true,
                         "psv" if v == "yes" => psv_yes = true,
                         "bus" if v == "yes" => bus_yes = true,
@@ -450,6 +465,35 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                         "name" => name = Some(v.to_string()),
                         _ => {}
                     }
+                }
+
+                // `junction=roundabout` (also `circular`) implies oneway in
+                // the way's own node direction by long-standing OSM
+                // convention, same as every other router treats it — but
+                // only where the mapper hasn't tagged `oneway` explicitly
+                // (rare, but an explicit tag, `no` included, always wins).
+                // Missing this sent buses the wrong way around every
+                // roundabout with no separate `oneway` tag, which is most
+                // of them: the way is legally one-way by the junction tag
+                // alone, and nothing else in the data says so.
+                if !oneway_tag_seen && matches!(junction_tag, Some("roundabout") | Some("circular")) {
+                    oneway = OnewayDirection::Forward;
+                }
+
+                // A real, common UK pattern: a pedestrianised street that
+                // still explicitly permits buses (`highway=pedestrian` +
+                // `bus=yes`/`psv=yes` — a bus gate), Waverley Bridge's
+                // central section in Edinburgh being the discovered case.
+                // `HighwayClass::from_tag` deliberately has no `pedestrian`
+                // variant (rightly so for the general case — most
+                // pedestrian ways aren't bus-legal), so without this the
+                // psv/bus override tags never get a chance to apply at all:
+                // the way was dropped as non-drivable before either tag was
+                // even consulted, silently breaking routing (and, since
+                // Planetiler classifies it as non-road too, rendering)
+                // straight through a street real buses actually use.
+                if class.is_none() && highway_tag == Some("pedestrian") && (psv_yes || bus_yes) {
+                    class = Some(HighwayClass::Service);
                 }
 
                 let refs: Vec<i64> = way.refs().collect();
@@ -652,6 +696,39 @@ mod tests {
                 class.width_metres(),
                 width,
                 "{} width changed unexpectedly",
+                class.label()
+            );
+        }
+    }
+
+    // Pins the assumed default-speed table (2026-09-10) so a future edit
+    // can't drift it silently — change the numbers here deliberately if
+    // they're revised. See `game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH`'s
+    // doc comment for the reasoning (UK bus/coach statutory limits).
+    #[test]
+    fn default_speed_table_matches_agreed_figures() {
+        let expected: [(HighwayClass, u16); 15] = [
+            (HighwayClass::Motorway, 70),
+            (HighwayClass::MotorwayLink, 50),
+            (HighwayClass::Trunk, 60),
+            (HighwayClass::TrunkLink, 40),
+            (HighwayClass::Primary, 50),
+            (HighwayClass::PrimaryLink, 40),
+            (HighwayClass::Secondary, 40),
+            (HighwayClass::SecondaryLink, 30),
+            (HighwayClass::Tertiary, 30),
+            (HighwayClass::TertiaryLink, 30),
+            (HighwayClass::Unclassified, 30),
+            (HighwayClass::Residential, 20),
+            (HighwayClass::LivingStreet, 10),
+            (HighwayClass::Service, 10),
+            (HighwayClass::Track, 15),
+        ];
+        for (class, mph) in expected {
+            assert_eq!(
+                class.default_speed_mph(),
+                mph,
+                "{} default speed changed unexpectedly",
                 class.label()
             );
         }

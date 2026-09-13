@@ -1,12 +1,14 @@
-import init, { add } from "./wasm/game_wasm.js";
+import init, { add, Router } from "./wasm/game_wasm.js";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
 import basemapStyle from "./basemap-style.json";
 import { drawStops } from "./stops-layer";
 import { registerMapIcons } from "./map-icons";
+import { registerSupportVehicleIcons } from "./support-vehicle-icons";
 import { mountDepotGroupsPanel } from "./depot-groups-panel";
-import { mountRouteDrawTool } from "./route-draw";
+import { mountRoutePanel } from "./route-panel";
+import { loadRouter } from "./router";
 
 // MapLibre auto-detects its worker script from import.meta.url, which only
 // resolves for http(s) origins — under file:// (Electron's loadFile default)
@@ -40,6 +42,9 @@ mountDepotGroupsPanel();
 const status = document.getElementById("status")!;
 init().then(async () => {
   status.textContent = `Rust/WASM round trip: add(2, 3) = ${add(2, 3)}`;
+  await registerSupportVehicleIcons(map);
   await drawStops(map);
-  await mountRouteDrawTool(map);
+  const router = await loadRouter();
+  (window as unknown as { __router: Router }).__router = router;
+  await mountRoutePanel(map, router);
 });

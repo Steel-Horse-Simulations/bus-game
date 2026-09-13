@@ -5,6 +5,40 @@
 //! silently drift apart — a bincode schema change here is a compile error in
 //! both places, not a runtime surprise in one of them.
 
+/// Default speed (mph) for a road with no `maxspeed` tag, indexed by the
+/// same ordering the pipeline's `HighwayClass::index()` encodes into
+/// `Edge.class` (`Motorway, MotorwayLink, Trunk, TrunkLink, Primary,
+/// PrimaryLink, Secondary, SecondaryLink, Tertiary, TertiaryLink,
+/// Unclassified, Residential, LivingStreet, Service, Track`). Lives here
+/// rather than in the pipeline crate so the pipeline (which never reads it)
+/// and `game-wasm`'s router (which does, for the fastest-route cost —
+/// DESIGN.md §6) can never drift onto different tables, the same reasoning
+/// as `RoadGraph`/`Edge` themselves.
+///
+/// Based on UK statutory speed limits for buses and coaches not exceeding
+/// 12m (30 built-up, 50 single carriageway, 60 dual carriageway, 70
+/// motorway — lower than the car NSL on single carriageways), mapped onto
+/// the closest highway class. An assumption, not a sourced-per-class figure
+/// the way the width table is — worth revisiting if journeys built on it
+/// look wrong.
+pub const HIGHWAY_CLASS_DEFAULT_SPEED_MPH: [u16; 15] = [
+    70, // Motorway
+    50, // MotorwayLink
+    60, // Trunk
+    40, // TrunkLink
+    50, // Primary
+    40, // PrimaryLink
+    40, // Secondary
+    30, // SecondaryLink
+    30, // Tertiary
+    30, // TertiaryLink
+    30, // Unclassified
+    20, // Residential
+    10, // LivingStreet
+    10, // Service
+    15, // Track
+];
+
 /// Which direction(s) of a way traffic may legally use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum OnewayDirection {
@@ -127,4 +161,18 @@ pub fn decode_stops(bytes: &[u8]) -> StopData {
     bincode::decode_from_slice(bytes, bincode::config::standard())
         .expect("decode stop data")
         .0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_speed_table_covers_every_highway_class_with_a_plausible_value() {
+        assert_eq!(HIGHWAY_CLASS_DEFAULT_SPEED_MPH.len(), 15, "one entry per HighwayClass variant");
+        for &mph in &HIGHWAY_CLASS_DEFAULT_SPEED_MPH {
+            assert!(mph > 0 && mph <= 70, "speed out of a sane UK road range: {mph}");
+        }
+        assert_eq!(HIGHWAY_CLASS_DEFAULT_SPEED_MPH[0], 70, "motorway is the fastest class");
+    }
 }

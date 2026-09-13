@@ -166,6 +166,13 @@ while **both stay in service** — passengers never see a gap. Once the Stranrae
 bus's work is finished, it swaps again at a bus station with the Ayr bus so each
 ends up back at its correct home depot.
 
+### Vending machines
+Can be added to depots and bus stations, for **employees only**. Three types:
+hot drink, cold drink, snack. Priced to give the player only **5% profit** per
+item. Boosts **driver happiness** (§7), scaling with how many of the three
+types are present. **Restocked by the storekeeper** as part of their job —
+one more thing competing for that role's time (§9).
+
 ---
 
 ## 2a. Remote depot staffing
@@ -220,9 +227,10 @@ The Volvo 7900 is the clearest case: one entry, offered as 10.6m diesel, 12m
 diesel, hybrid or electric, landing in the 20,000s or 70,000s accordingly.
 
 Examples of options: larger fuel tank on diesel coaches (more range, better for
-InterCity), USB and power sockets, Wi-Fi, better seating, air conditioning,
-passenger information with next-stop audio and screens, premium driver seat,
-pantograph charging on electric vehicles.
+InterCity), USB and power sockets, Wi-Fi, **comfier seats** (the passenger
+seating upgrade, retrofittable — required on Airlink 100, Express 500 and AIR,
+§10), air conditioning, passenger information with next-stop audio and
+screens, premium driver seat, pantograph charging on electric vehicles.
 
 **Some options are retrofittable later as upgrades**; some are purchase-only.
 
@@ -256,7 +264,11 @@ collected by anyone at the receiving depot holding the right licence.
 
 ### Buying
 Vehicles can be bought **new, second-hand, or leased**. Several can be bought at
-once through a **basket allowing mixed specifications in one order**.
+once through a **basket allowing mixed specifications in one order** —
+**destination depot and livery are both set per vehicle** within that basket,
+not once for the whole order, the same way specification already varies
+vehicle by vehicle. The bulk discount below still groups the whole basket by
+manufacturer regardless of each vehicle's own destination or livery.
 
 **Work type flags.** A vehicle is flagged for one kind of work and cannot cross
 over. **Open-top double-deckers work sightseeing only**; **coaches and Sprinter
@@ -274,12 +286,16 @@ configuration.
 | 3 | 6% |
 | 4 | 9% |
 | 5 | 12% |
-| 6 or more | 15% |
+| 6 | 15% |
+| 7 | 16% |
+| 8 | 17% |
+| ... | +1% per vehicle |
+| 21 or more | 25% (cap) |
 
-That is 2% per vehicle for the first three, then 3% per additional vehicle, capped
-at 15%. Note the cap is reached at six, so a single order of thirty earns the same
-rate as an order of six — if larger orders should be rewarded further, either
-raise the cap or slow the curve after the cap point.
+That is 2% per vehicle for the first three, 3% per additional vehicle to six, then
+**+1% per vehicle beyond six, capped at 25%** — reached at 21 vehicles. A large
+order is rewarded further than a six-vehicle one, without the discount running
+away entirely.
 
 Because the discount groups by manufacturer, a basket of five Volvos and five
 Alexander Dennis earns two smaller discounts rather than one large one. That
@@ -338,7 +354,9 @@ game. Makes: Volvo, Alexander Dennis, Wrightbus, Mercedes/EVM, Yutong.
   Defaults to steps; a low floor variant costs extra at purchase and is
   retrofittable later at greater expense
 - **50,000s** — Volvo 9700, Volvo 9700DD (from 50,000); Yutong T12E, Yutong T15E
-  (from 55,000)
+  (from 55,000). Coaches come in **twin-axle and tri-axle** versions, a
+  configurator choice like power type or length: twin-axle 9700 seats **53**,
+  tri-axle **65**. The 9700DD only exists as tri-axle.
 - **60,000s** — ADL Enviro400 open-top, diesel and electric (sightseeing only); ADL Enviro400 open-top, diesel and
   electric (sightseeing only)
 - **70,000s** — Yutong E12; Yutong E10; ADL Enviro200EV; Volvo 7900 EV;
@@ -362,7 +380,8 @@ Adoption is driven by lower running costs against higher purchase price, council
 grants, and low emission zones.
 
 **LEZs require Euro VI**, as the real Scottish ones do (Glasgow, Edinburgh,
-Dundee, Aberdeen). Non-compliant buses are **not banned but fined**, with a
+Dundee, Aberdeen), and **this stays permanent — the requirement never tightens
+further over time**. Non-compliant buses are **not banned but fined**, with a
 larger fine for each emissions level below Euro VI. Electric buses seen in an LEZ
 raise the company rating.
 
@@ -558,8 +577,52 @@ Every role has a score. Drivers use five levels; everyone else uses four:
 **trainee, novice, competent, professional**. Score affects how well the role is
 performed.
 
-**Wages are settable per role**, on a single settings page showing all rates
-together.
+### Wages
+With around 25 distinct roles, setting each one's wage individually would be
+tedious to manage — so wages work off **one base wage plus a fixed ratio per
+role**, not an independently settable figure for each.
+
+**The base is the professional driver's wage, at 1.00.** Every other role is a
+ratio of it. There is **no individual override** — the ratio is the only control
+— but **bulk pay-adjustment tools** exist both **company-wide** and **per depot
+group**, so a wholesale rise or a struggling group's pay cut is one action rather
+than editing every line.
+
+| Role | Ratio |
+|---|---|
+| Cleaner | 0.65 |
+| Shunter | 0.65 |
+| Fitter | 0.70 |
+| Travel centre staff | 0.70 |
+| Stance assistant | 0.70 |
+| Storekeeper | 0.75 |
+| Trainee driver | 0.75 |
+| Novice driver | 0.88 |
+| Competent driver | 0.93 |
+| **Professional driver** | **1.00 — the base** |
+| Technician | 0.95 |
+| Relief controller | 1.05 |
+| Marketing assistant | 1.05 |
+| Driving instructor | 1.10 |
+| Controller | 1.15 |
+| Revenue inspector | 1.25 |
+| Engineer | 1.35 |
+| Workshop manager | 1.50 |
+| Store manager | 1.55 |
+| Marketing manager | 1.55 |
+| Depot manager | 1.60 |
+| Operations manager | 1.65 |
+| Stores director | 2.00 |
+| Marketing director | 2.00 |
+| Operations director | 2.20 |
+
+**Fleet elite** is a flat **£20/month** top-up on top of the professional
+driver's wage, kept as an absolute bonus rather than folded into the ratio, since
+it's a small number of drivers rather than a whole role.
+
+**Casual roles are outside the ratio system entirely** — tour guides, school
+drivers and private hire drivers are paid per tour or per hour worked, since a
+ratio implies a standing wage they don't have.
 
 Every employee has a tracked **driving licence and type**: normal (cars and
 vans), PSV (buses and coaches), or HGV (recovery unit). Engineers can be sent
@@ -602,6 +665,7 @@ an org chart it can't fill.
 | Engineers and technicians | On building maintenance facilities |
 | Stance assistants, other bus station staff | Where the station has staff facilities |
 | Controllers | At 5 routes, when the council's free cover ends |
+| Revenue inspectors | At 10 routes in a depot group |
 | Workshop manager | At 3 engineers in a depot, technicians counting as half |
 | Depot manager | At 15 staff in a depot |
 | Store, operations and marketing managers | At 2 depots in that region |
@@ -621,6 +685,8 @@ from sickness, poor work and repeated mistakes. One count rather than three
 means a broadly unreliable employee is caught where separate thresholds would
 miss them.
 
+**Dismissal follows 3 warnings, the same number for every role.**
+
 The player is **warned before any dismissal**. Warnings **fade over time** if
 behaviour improves.
 
@@ -632,6 +698,7 @@ Four roles are filled by promotion:
 | Driving instructor | Drivers | Yes |
 | Relief controller | Drivers | Yes — drives weekday afternoons |
 | Controller | Relief controllers | No |
+| Revenue inspector | Any role | No |
 | Operations manager (region) | Controllers, depot managers | No |
 | Operations director (company) | Operations managers | No |
 | Fitter | Any role, or hired externally | — entry role |
@@ -648,6 +715,7 @@ Four roles are filled by promotion:
 | Depot manager | Controllers, workshop managers, store managers | Yes |
 | Tour guide | Travel centre staff, external | Casual |
 | Store manager | Storekeepers only | No — one for the whole company |
+| Managing director (region, plus one for long distance) | Any role with "manager" in its job title | No |
 
 Cleaners can move into storekeeper, engineer, driver or shunter roles. Shunters
 can go on to fitter or driver. Travel centre staff can be promoted into driving
@@ -669,6 +737,20 @@ fee** is paid to them.
 All four promoted roles can be **contracted in** until filled, costing more than
 promoting.
 
+### Managing director
+A tier above the existing per-function regional managers (store, operations,
+marketing) — **one per region, plus one for long distance** — sitting
+alongside them rather than replacing any of them.
+
+Eligible for promotion: **any role with "manager" in its job title**, a
+simple naming rule rather than a curated list of eligible posts. Their skill
+gives a **multiplier on the performance of every staff member in that
+region**, across every function, not just their own.
+
+**Long distance has its own dedicated management team**, staffed by hiring
+from regional management teams rather than the operations director alone
+running it single-handed.
+
 ### Staffing caps
 Every role except **cleaners, drivers and engineers** has a maximum headcount, so
 the player cannot over-hire into it. Caps are set per depot, per group or per
@@ -682,6 +764,7 @@ one per company and need nothing further.
 | Technicians | 2 per engineer |
 | Fitters | 1 per technician |
 | Controllers | 3 per depot (they work Monday–Friday only; weekends are relief controllers) |
+| Revenue inspectors | 1 per 20 services run per day in the depot group |
 | Relief controllers | 3 per depot |
 | Bus station roles (stance assistant, travel centre staff, non-24/7 controllers) | 4 per station |
 | Workshop manager, depot manager, driving instructors, store/operations/marketing managers, all directors | No separate cap — already fixed by their own rule |
@@ -718,13 +801,13 @@ the worked reasoning.
 | Novice | 12% below | On completing training |
 | Competent | 7% below | |
 | Professional | Base rate | Reached in about 3 months |
-| Fleet elite | Base rate + £50 per month | Only 10–15% of drivers reach it |
+| Fleet elite | Base rate + £20 per month | Only 10–15% of drivers reach it |
 
 Progression to professional varies with hours worked — 40 hours a week is the
 baseline — plus a slight per-driver variable so they progress at different
 speeds. Fleet elite takes a further 2–3 months after professional.
 
-Fleet elite pays **£50 at the end of each full month** after gaining the status,
+Fleet elite pays **£20 at the end of each full month** after gaining the status,
 shown in finances as *fleet elite payments*. The badge on the driver settings
 page advances green, silver, gold, then elite (gold with wings), one level at the
 end of each full month.
@@ -774,7 +857,7 @@ allocates the actual duty on the day**.
 duties by type** and an **auto-fill button** that places any duty not yet on a
 rota, using the same lowest-cost objective as duty auto-complete.
 
-**Changes** need a fixed notice period before they take effect.
+**Changes** need **5 days'** notice before they take effect — the same lead time as a route path or timetable change.
 
 Drivers are hired onto a specific rota and **move between rotas only by
 request** — a small chance when a new line is added, and a smaller chance for
@@ -875,8 +958,9 @@ Edinburgh.
   need a minimum amount of work to stay with the company.
 
 ### Overtime and loans
-- **Overtime** at any local depot, paid at a **fixed percentage above the normal
-  wage**, set by the game rather than by the player. Extra travel is charged per
+- **Overtime** at any local depot, paid at a **flat 20% above the normal
+  wage**, the same rate for every role, set by the game rather than by the
+  player. Extra travel is charged per
   mile on the shortest route from the home depot. Minimum one shift.
 
   Overtime is the short-term pressure valve — it covers a new route before staff
@@ -911,7 +995,28 @@ the runout period, who drives for the rest of the shift.
 
 ---
 
-## 8a. Operations managers and directors
+## 8a. Revenue inspectors
+
+One rung above controller. Promoted from any role — an entry point into this
+part of the ladder the same way fitter and storekeeper are for engineering and
+stores — and assigned to a **depot group**, roaming within it automatically
+rather than being tied to one depot or route.
+
+A fixed small percentage of passengers always evade the fare. An inspector
+**catches evaders based on their own skill** — a better inspector catches more
+of that fixed evading population, not fewer people evading in the first place.
+Caught evaders are fined a **multiple of the fare they owed**, the same shape
+as a real penalty fare. Evasion has **no reputation effect** — it is revenue
+recovery, not a service-quality measure.
+
+The number of inspectors a depot group can carry is capped at **1 per 20
+services run per day** in that group — tuned so inspectors don't cost more than
+they recover, but evasion isn't left mostly uncaught either. The role unlocks
+at **10 routes** in a depot group.
+
+---
+
+## 8b. Operations managers and directors
 
 Above controllers sit two more tiers, mirroring stores.
 
@@ -986,8 +1091,12 @@ cascade happens silently.
 Builds the depot **work list** that engineers pull from. Higher competence gives
 better job ordering and **spots faults before they become breakdowns**.
 
-When several vehicles are bought at once, the workshop manager **spreads their
-MOTs and services across the year** so they do not fall due together.
+**Servicing schedule.** A vehicle needs a service every **28 days**, and can
+run up to **35 days** before one — beyond 35 days it can't be driven in
+service at all. When new vehicles join the fleet, the workshop manager
+**staggers their service dates** (some early, some late) so the 28-day cycle
+stays evenly spread rather than bunching, applying the same principle to
+MOTs.
 
 ### Stores — storekeepers
 One storekeeper up to 25 buses in a depot, two above that. **Without stores staff
@@ -996,6 +1105,11 @@ the engineers cannot work.**
 Stores order parts automatically based on the fleet. Higher competence means
 earlier reordering, less excess stock, and faster arrival of parts ordered in for
 a breakdown.
+
+**Finance breakdown.** Parts spending shows in the finance menu **grouped into
+a few broad categories** (e.g. brakes, engine/drivetrain, electrical,
+bodywork, tyres) rather than one lump "parts" line, so the player can see
+where the money is actually going.
 
 Each depot holds **parts stock**, shown on the finance screen — too much is wasted
 money, too little leaves buses waiting.
@@ -1114,6 +1228,11 @@ the best route each time** rather than a route being pre-planned.
 needed. Only buses and coaches use the collection model above.
 
 ### Breakdowns
+Likelihood depends on **vehicle age and engineering team quality**, with
+**engineering quality weighted more heavily** — a well-run engineering team
+keeps an older fleet reliable, while a poor one makes even young buses break
+down more than they should.
+
 **Engineering vans** — as many as the player wants, diesel or electric — attend
 roadside breakdowns and either fix the vehicle there or recover it, depending on
 the fault. With no van at the depot, a contractor recovers it at a cost.
@@ -1248,8 +1367,20 @@ driver's and is added to the customer price.
 
 Fuel and electricity are a **fixed price** per litre and per kWh — no market
 movement. Prices vary by **region**: diesel is dearer in North Scotland,
-electricity cheapest there. The **stores director** negotiates regional discounts
-that grow with fleet size.
+electricity cheapest there.
+
+**Running cost.** Electric and hydrogen vehicles cost **less than diesel** in
+both maintenance and recharging/refuelling — a genuine ongoing saving, not
+just an upfront price difference.
+
+**Regional fuel discounts.** The **stores director** negotiates a discount
+**per fuel type** — diesel, electricity, and hydrogen are three separate
+discounts, not one blanket figure. Each scales independently with how many
+vehicles of that specific fuel type the company runs: more diesel vehicles
+grows the diesel discount, more electric vehicles grows the electric one,
+more hydrogen vehicles grows the hydrogen one. A company standardised
+heavily on one power type gets real leverage on that fuel specifically,
+rather than fleet size alone doing the work.
 
 Fuelling at the player's own depot is **cheaper**; fuelling on the road costs
 more, which quietly disadvantages outstations since a bus parked at one cannot be
@@ -1266,3 +1397,72 @@ varies with their demand and scales with how many chargers sit free. Only depots
 with **spare daytime capacity** can offer it, and **hired chargers are genuinely
 unavailable** to the player's own buses, so it's a decision rather than free
 money.
+
+**Hydrogen refuelling.** A depot needs hydrogen facilities built before a
+hydrogen bus can be fuelled there — the same one-off build-cost pattern as
+electric chargers. Any depot with facilities can build it. Before a depot has
+its own, a hydrogen bus can refuel at **Volvo** (the universal servicing
+business, §9) at a premium.
+
+**On-site hydrogen production** is an alternative to buying hydrogen in: a
+one-off facility build cost, but cheaper hydrogen afterward than buying it in
+from outside.
+
+**Solar panels and batteries** — separate purchases, not one combined cost.
+Batteries store solar power generated during the day, and also charge
+overnight on a **time-of-use cheap-electricity rate** — separate from, and
+stacking with, the stores director's regional volume discount above. Stored
+energy (solar plus cheap overnight charging) powers the depot's own buses
+during the day, and the same infrastructure can be sold via **charger hire**
+to make extra profit charging external companies' vehicles too. **Solar
+generation varies by both season and region** — not a flat year-round
+figure.
+
+**Pantograph battery buffers.** A pantograph charging point (DESIGN.md §5)
+gets a **local battery buffer installed alongside it**, not just at depots —
+needed so a stop can support a fast charge without requiring a full grid
+upgrade. Both the pantograph charger itself and its battery **can only be
+built at a stop, bus station or interchange the player owns** — the same
+ownership rule applies identically across all three site types (DESIGN.md
+§4, §5, §5a).
+
+Battery capacity is **continuous, not fixed tiers** — a smoothly scaling
+amount the player dials in, not small/medium/large packages. Realistic
+sizing bands, for the input range rather than as fixed options:
+
+| Site | Realistic capacity |
+|---|---|
+| A single pantograph point | ~150–300 kWh |
+| A medium terminal (bus station/interchange) | ~0.5–1 MWh |
+| A depot | ~1–4 MWh |
+
+(Real reference: First Bus Aberdeen runs roughly 2MW/4MWh of battery storage
+on site.)
+
+**Cost** is deliberately game-balanced — real battery storage costs would be
+far too high for the game's pacing, the same reasoning as the existing 20%
+discount on property capital (DESIGN.md's economy targets):
+- Base connection cost: **£7,500** (wiring, inverter, groundworks — the same
+  regardless of size).
+- First 300kWh: **£60/kWh**.
+- Next 700kWh (300–1,000kWh): **£37.50/kWh**.
+- Beyond 1,000kWh: **£22.50/kWh**.
+
+Worked examples at these rates: a 200kWh pantograph-point battery costs
+about **£19,500**; a 750kWh terminal battery about **£42,375**; a 2,500kWh
+depot battery about **£85,500**.
+
+**Financing.** Deposit plus instalments only — no pure lease option, unlike
+vehicles (which have both): a battery isn't something you'd want to hand
+back at the end of a lease. The deposit percentage, term length and interest
+premium are meant to match vehicle finance's own figures (§3 above) —
+**flagged as an open question rather than invented**: §3 doesn't currently
+specify a deposit, a term length, or an interest rate for vehicle leasing,
+only that lease-to-own totals about 10% more than buying outright overall.
+There's nothing concrete there yet to reuse (OPEN-ITEMS.md Q12).
+
+**Facility electricity.** Depots and bus stations the player owns also
+consume electricity themselves — lighting, facilities, offices — not just
+vehicle charging. This scales with the size of the site and is set **slightly
+below real-world figures**, matching the pattern used elsewhere in the
+economy (e.g. property capital at 20% below real-world).

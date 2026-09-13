@@ -1,6 +1,6 @@
 // Bridges main <-> renderer.
 import { contextBridge, ipcRenderer } from "electron";
-import type { DepotGroup } from "./db.mts";
+import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, RouteTimetable } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
 // way to read or write it, since node:sqlite lives in the main process.
@@ -26,5 +26,80 @@ contextBridge.exposeInMainWorld("depotGroups", {
   rename: (id: number, name: string) => ipcRenderer.invoke("depotGroups:rename", id, name) as Promise<void>,
   setRegion: (id: number, region: string) =>
     ipcRenderer.invoke("depotGroups:setRegion", id, region) as Promise<void>,
+  setMainBusStation: (id: number, osmId: number | null) =>
+    ipcRenderer.invoke("depotGroups:setMainBusStation", id, osmId) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depotGroups:delete", id) as Promise<void>,
+});
+
+// Routes (DESIGN.md §6) — the renderer's only way to persist a drawn route.
+contextBridge.exposeInMainWorld("routes", {
+  create: (
+    depotGroupId: number,
+    number: string,
+    points: RoutePoint[],
+    orientation: "inbound" | "outbound",
+    terminusIndex: number | null,
+    startIndex: number | null,
+  ) =>
+    ipcRenderer.invoke(
+      "routes:create",
+      depotGroupId,
+      number,
+      points,
+      orientation,
+      terminusIndex,
+      startIndex,
+    ) as Promise<Route>,
+  list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
+  update: (
+    id: number,
+    depotGroupId: number,
+    number: string,
+    points: RoutePoint[],
+    orientation: "inbound" | "outbound",
+    terminusIndex: number | null,
+    startIndex: number | null,
+  ) =>
+    ipcRenderer.invoke(
+      "routes:update",
+      id,
+      depotGroupId,
+      number,
+      points,
+      orientation,
+      terminusIndex,
+      startIndex,
+    ) as Promise<Route>,
+  delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
+});
+
+// Route timetables (DESIGN.md §7) — the renderer's only way to persist a
+// route's frequency generator, timing points and their computed running-
+// time offsets (built from the WASM router, which only exists here).
+contextBridge.exposeInMainWorld("routeTimetables", {
+  upsert: (
+    routeId: number,
+    dayType: DayType,
+    startMinutes: number,
+    endMinutes: number,
+    intervalMinutes: number,
+    timingPoints: TimingPoint[],
+    arrivalOffsetsSeconds: number[],
+    departureOffsetsSeconds: number[],
+  ) =>
+    ipcRenderer.invoke(
+      "routeTimetables:upsert",
+      routeId,
+      dayType,
+      startMinutes,
+      endMinutes,
+      intervalMinutes,
+      timingPoints,
+      arrivalOffsetsSeconds,
+      departureOffsetsSeconds,
+    ) as Promise<RouteTimetable>,
+  listForRoute: (routeId: number) =>
+    ipcRenderer.invoke("routeTimetables:listForRoute", routeId) as Promise<RouteTimetable[]>,
+  listAll: () => ipcRenderer.invoke("routeTimetables:listAll") as Promise<RouteTimetable[]>,
+  delete: (id: number) => ipcRenderer.invoke("routeTimetables:delete", id) as Promise<void>,
 });

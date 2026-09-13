@@ -29,13 +29,41 @@ function isUsedByService(_osmId: number): boolean {
   return false;
 }
 
+// Lets other modules (the route-draw panel's per-stop "Edit" button) open
+// a stop or station's own popup without duplicating the popup-building
+// logic — set once `drawStops` has built it, left null until then.
+export const stopsPanelState: {
+  openPopupFor: ((osmId: number) => void) | null;
+  displayNameFor: ((osmId: number) => string) | null;
+} = {
+  openPopupFor: null,
+  displayNameFor: null,
+};
+
+// Every bus station, for anything that needs to offer a station picker
+// (currently: the depot groups panel's main-bus-station field, DESIGN.md
+// §6). Populated once `drawStops` has decoded stops.bin; empty until then.
+export interface BusStationSummary {
+  osmId: number;
+  name: string;
+  lon: number;
+  lat: number;
+}
+export const busStationsState: BusStationSummary[] = [];
+
 // Blue for a stop at least one service uses, grey otherwise.
 const stopColorExpression = ["case", ["get", "usedByService"], "#1677ff", "#8c8c8c"];
-// Navy outline for a stop that's part of a bus station's stand grouping,
-// white otherwise — the same marker distinguishes membership wherever it's
-// drawn, whether that's the main map (an "always show" station) or the
-// temporary reveal-on-click layer.
-const stopStrokeExpression = ["case", ["get", "partOfStation"], "#003a8c", "#ffffff"];
+// Bus stations get their own colour, distinct from the navies fixed real
+// contracts reserve their stops in (398 #002664, Airlink 100 #002b4e —
+// DESIGN.md §10) — airports and railway stations will get their own colours
+// too on the same ring style once that linking exists (DESIGN.md §4:
+// railway #ff4200, airport #059669), all under this one visual pattern.
+const BUS_STATION_COLOR = "#7c3aed";
+// Coloured outline for a stop that's part of a bus station's stand
+// grouping, white otherwise — the same marker distinguishes membership
+// wherever it's drawn, whether that's the main map (an "always show"
+// station) or the temporary reveal-on-click layer.
+const stopStrokeExpression = ["case", ["get", "partOfStation"], BUS_STATION_COLOR, "#ffffff"];
 const stopStrokeWidthExpression = ["case", ["get", "partOfStation"], 1.5, 1];
 
 function approxDistanceM(a: [number, number], b: [number, number]): number {
@@ -84,6 +112,36 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
   const alwaysShowEntries = await window.overrides.list<boolean>("bus_station", "always_show_stands");
   const alwaysShow = new Map(alwaysShowEntries.map(({ osmId, value }) => [osmId, value]));
 
+  // Rename and hide (this section, plus the stops panel below) — the same
+  // override layer as everything else here: original OSM data untouched,
+  // overrides stored separately and always resettable. A stop or bus
+  // station uses "stop"/"bus_station" as its entity_type depending on
+  // `kind`, matching the split already established by `always_show_stands`.
+  const entityTypeFor = (s: DecodedStop): "stop" | "bus_station" =>
+    s.kind === "bus_station" ? "bus_station" : "stop";
+
+  const nameOverrides = new Map<number, string>();
+  for (const entityType of ["stop", "bus_station"] as const) {
+    for (const { osmId, value } of await window.overrides.list<string>(entityType, "name")) {
+      nameOverrides.set(osmId, value);
+    }
+  }
+  const hidden = new Set<number>();
+  for (const entityType of ["stop", "bus_station"] as const) {
+    for (const { osmId, value } of await window.overrides.list<boolean>(entityType, "hidden")) {
+      if (value) hidden.add(osmId);
+    }
+  }
+
+  const displayName = (s: DecodedStop): string =>
+    nameOverrides.get(s.osmId) ?? s.name ?? (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
+
+  busStationsState.length = 0;
+  for (const s of stations) {
+    busStationsState.push({ osmId: s.osmId, name: displayName(s), lon: s.lon, lat: s.lat });
+  }
+  busStationsState.sort((a, b) => a.name.localeCompare(b.name));
+
   let standsOfStation = new Map<number, Set<number>>();
   const rebuildStandsOfStation = () => {
     standsOfStation = new Map();
@@ -98,7 +156,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     type: "Feature",
     properties: {
       kind: s.kind,
-      name: s.name,
+      name: displayName(s),
       osmId: s.osmId,
       usedByService: isUsedByService(s.osmId),
       partOfStation: stationOfStop.has(s.osmId),
@@ -111,9 +169,12 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
   const visibleStops = () =>
     stops.filter((s) => {
       if (s.kind === "bus_station") return false;
+      if (hidden.has(s.osmId)) return false;
       const stationId = stationOfStop.get(s.osmId);
       return stationId === undefined || alwaysShow.get(stationId) === true;
     });
+
+  const visibleStations = () => stations.filter((s) => !hidden.has(s.osmId));
 
   let openStationOsmId: number | null = null;
   let stationPopup: maplibregl.Popup | null = null;
@@ -126,7 +187,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     });
     map.addSource("stop-stations", {
       type: "geojson",
-      data: { type: "FeatureCollection", features: stations.map(toFeature) },
+      data: { type: "FeatureCollection", features: visibleStations().map(toFeature) },
     });
     // Populated on demand when a station without "always show" set is
     // clicked — that station's own stand stops only.
@@ -153,7 +214,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       minzoom: 10,
       paint: {
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 17, 9],
-        "circle-color": "#003a8c",
+        "circle-color": BUS_STATION_COLOR,
         "circle-stroke-color": "#ffffff",
         "circle-stroke-width": 1.5,
       },
@@ -166,7 +227,23 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       paint: {
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 3, 17, 6],
         "circle-color": stopColorExpression as maplibregl.DataDrivenPropertyValueSpecification<string>,
-        "circle-stroke-color": "#003a8c",
+        "circle-stroke-color": BUS_STATION_COLOR,
+        "circle-stroke-width": 1.5,
+      },
+    });
+
+    // Shown only while the "Hidden stops" panel is open (populated by
+    // refreshHiddenPanel below) — hidden stops otherwise stay genuinely
+    // invisible, this is just a "here's where they are" preview.
+    map.addSource("hidden-stops-preview", { type: "geojson", data: emptyGeojson });
+    map.addLayer({
+      id: "hidden-stops-preview",
+      type: "circle",
+      source: "hidden-stops-preview",
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 17, 8],
+        "circle-color": "#f87171",
+        "circle-stroke-color": "#ffffff",
         "circle-stroke-width": 1.5,
       },
     });
@@ -175,6 +252,10 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       (map.getSource("stops") as maplibregl.GeoJSONSource).setData({
         type: "FeatureCollection",
         features: visibleStops().map(toFeature),
+      });
+      (map.getSource("stop-stations") as maplibregl.GeoJSONSource).setData({
+        type: "FeatureCollection",
+        features: visibleStations().map(toFeature),
       });
     };
 
@@ -192,6 +273,102 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       source.setData({ type: "FeatureCollection", features });
     };
 
+    // Rename (pencil icon, click to edit, Enter or the pencil again to save
+    // and exit) and hide/unhide — both live on the stop's own popup now,
+    // not in a list, per feedback. `onHideToggled` lets whichever popup
+    // built this row also refresh the hidden-stops panel below if it's open.
+    const PENCIL_SVG =
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>';
+
+    const buildTitleRow = (stop: DecodedStop, onHideToggled: () => void): HTMLElement => {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      row.style.marginBottom = "8px";
+
+      const titleText = document.createElement("span");
+      titleText.style.fontWeight = "600";
+      titleText.style.fontSize = "13px";
+      titleText.style.flex = "1";
+      titleText.textContent = displayName(stop);
+
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.className = "field";
+      titleInput.style.flex = "1";
+      titleInput.style.display = "none";
+
+      const exitEditMode = () => {
+        titleInput.style.display = "none";
+        titleText.style.display = "";
+      };
+      const commitRename = () => {
+        const value = titleInput.value.trim();
+        const entityType = entityTypeFor(stop);
+        if (value === "" || value === stop.name) {
+          nameOverrides.delete(stop.osmId);
+          void window.overrides.reset(entityType, stop.osmId, "name");
+        } else {
+          nameOverrides.set(stop.osmId, value);
+          void window.overrides.set(entityType, stop.osmId, "name", value);
+        }
+        titleText.textContent = displayName(stop);
+        exitEditMode();
+        refreshStopsSource();
+      };
+      const enterEditMode = () => {
+        titleInput.value = displayName(stop);
+        titleText.style.display = "none";
+        titleInput.style.display = "";
+        titleInput.focus();
+        titleInput.select();
+      };
+
+      const pencilButton = document.createElement("button");
+      pencilButton.type = "button";
+      pencilButton.className = "btn btn-icon";
+      pencilButton.title = "Rename";
+      pencilButton.innerHTML = PENCIL_SVG;
+      pencilButton.addEventListener("click", () => {
+        if (titleInput.style.display === "none") enterEditMode();
+        else commitRename();
+      });
+      titleInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commitRename();
+        else if (e.key === "Escape") exitEditMode();
+      });
+
+      const hideButton = document.createElement("button");
+      hideButton.type = "button";
+      hideButton.className = "btn btn-icon";
+      const updateHideLabel = () => {
+        const isHidden = hidden.has(stop.osmId);
+        hideButton.textContent = isHidden ? "Unhide" : "Hide";
+        hideButton.title = isHidden ? "Show this stop on the map again" : "Hide this stop from the map";
+      };
+      updateHideLabel();
+      hideButton.addEventListener("click", () => {
+        const entityType = entityTypeFor(stop);
+        if (hidden.has(stop.osmId)) {
+          hidden.delete(stop.osmId);
+          void window.overrides.set(entityType, stop.osmId, "hidden", false);
+        } else {
+          hidden.add(stop.osmId);
+          void window.overrides.set(entityType, stop.osmId, "hidden", true);
+        }
+        updateHideLabel();
+        refreshStopsSource();
+        onHideToggled();
+      });
+
+      row.appendChild(titleText);
+      row.appendChild(titleInput);
+      row.appendChild(pencilButton);
+      row.appendChild(hideButton);
+      return row;
+    };
+
     const closeStationPopup = () => {
       stationPopup?.remove();
       stationPopup = null;
@@ -199,20 +376,14 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       refreshStandsSource();
     };
 
-    const openStationPopup = (feature: maplibregl.MapGeoJSONFeature) => {
+    const openStationPopup = (stop: DecodedStop) => {
       stopPopup?.remove();
-      const osmId = feature.properties?.osmId as number;
-      const name = (feature.properties?.name as string | null) ?? "Bus station";
-      const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
+      const osmId = stop.osmId;
+      const coords: [number, number] = [stop.lon, stop.lat];
 
       const container = document.createElement("div");
       container.style.minWidth = "220px";
-      const title = document.createElement("div");
-      title.textContent = name;
-      title.style.fontWeight = "600";
-      title.style.fontSize = "13px";
-      title.style.marginBottom = "8px";
-      container.appendChild(title);
+      container.appendChild(buildTitleRow(stop, refreshHiddenPanel));
 
       const label = document.createElement("label");
       label.style.display = "flex";
@@ -330,9 +501,11 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
         closeStationPopup();
         return;
       }
+      const stop = stopsById.get(osmId);
+      if (!stop) return;
       openStationOsmId = osmId;
       refreshStandsSource();
-      openStationPopup(feature);
+      openStationPopup(stop);
     });
     map.on("mouseenter", "stops-stations", () => {
       map.getCanvas().style.cursor = "pointer";
@@ -345,33 +518,32 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     // Available on any visible stop, whether it's an ordinary street stop or
     // a currently-revealed station stand — reassigning or clearing either
     // way is the same action.
-    const openStopPopup = (feature: maplibregl.MapGeoJSONFeature) => {
+    const openStopPopup = (stop: DecodedStop) => {
       stationPopup?.remove();
-      const osmId = feature.properties?.osmId as number;
-      const stop = stopsById.get(osmId);
-      if (!stop) return;
+      const osmId = stop.osmId;
       const coords: [number, number] = [stop.lon, stop.lat];
 
+      // Within 1000m only — a station on the other side of the city was
+      // never a real candidate, just clutter (and, before this, some were
+      // 20km+ away). The currently-assigned station is kept regardless of
+      // distance so the picker never silently misrepresents a real
+      // assignment as "(not part of a station)".
+      const STATION_PICKER_RADIUS_M = 1000;
+      const currentId = stationOfStop.get(osmId) ?? null;
       const nearestStations = stations
         .map((st) => ({ st, dist: approxDistanceM(coords, [st.lon, st.lat]) }))
-        .sort((a, b) => a.dist - b.dist)
-        .slice(0, 12);
+        .filter((s) => s.dist <= STATION_PICKER_RADIUS_M || s.st.osmId === currentId)
+        .sort((a, b) => a.dist - b.dist);
 
       const container = document.createElement("div");
       container.style.minWidth = "220px";
-      const title = document.createElement("div");
-      title.textContent = stop.name ?? (stop.kind === "platform" ? "Platform" : "Bus stop");
-      title.style.fontWeight = "600";
-      title.style.fontSize = "13px";
-      title.style.marginBottom = "8px";
-      container.appendChild(title);
+      container.appendChild(buildTitleRow(stop, refreshHiddenPanel));
 
       const NONE_LABEL = "(not part of a station)";
       const labelToStationId = new Map<string, number | null>([[NONE_LABEL, null]]);
       for (const { st, dist } of nearestStations) {
-        labelToStationId.set(`${st.name ?? "Unnamed station"} (${Math.round(dist)} m)`, st.osmId);
+        labelToStationId.set(`${displayName(st)} (${Math.round(dist)} m)`, st.osmId);
       }
-      const currentId = stationOfStop.get(osmId) ?? null;
       const currentLabel =
         [...labelToStationId.entries()].find(([, id]) => id === currentId)?.[0] ?? NONE_LABEL;
 
@@ -400,7 +572,9 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       map.on("click", layerId, (e) => {
         if (routeDrawState.isDrawing) return;
         const feature = e.features?.[0];
-        if (feature) openStopPopup(feature);
+        const osmId = feature?.properties?.osmId as number | undefined;
+        const stop = osmId === undefined ? undefined : stopsById.get(osmId);
+        if (stop) openStopPopup(stop);
       });
       map.on("mouseenter", layerId, () => {
         map.getCanvas().style.cursor = "pointer";
@@ -409,6 +583,142 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
         map.getCanvas().style.cursor = "";
       });
     }
+
+    stopsPanelState.openPopupFor = (osmId: number) => {
+      const stop = stopsById.get(osmId);
+      if (!stop) return;
+      if (stop.kind === "bus_station") {
+        openStationOsmId = osmId;
+        refreshStandsSource();
+        openStationPopup(stop);
+      } else {
+        openStopPopup(stop);
+      }
+    };
+    stopsPanelState.displayNameFor = (osmId: number) => {
+      const stop = stopsById.get(osmId);
+      return stop ? displayName(stop) : `Stop ${osmId}`;
+    };
+
+    // Hidden-stops panel: rename and hide now live on each stop's own
+    // popup (buildTitleRow above) — this bottom panel is only for finding
+    // and unhiding whatever's currently hidden, per feedback that the list
+    // shouldn't double as a general editor.
+    const hiddenToggle = document.createElement("button");
+    hiddenToggle.className = "btn";
+    hiddenToggle.textContent = "Hidden stops";
+    // Bottom-right, not bottom-left: the route panel (DESIGN.md §11) now
+    // occupies the full left-hand height, which would otherwise sit under
+    // this corner.
+    hiddenToggle.style.position = "absolute";
+    hiddenToggle.style.bottom = "8px";
+    hiddenToggle.style.right = "8px";
+    hiddenToggle.style.zIndex = "2";
+    document.body.appendChild(hiddenToggle);
+
+    const hiddenPanel = document.createElement("div");
+    hiddenPanel.className = "panel";
+    hiddenPanel.style.position = "absolute";
+    hiddenPanel.style.bottom = "44px";
+    hiddenPanel.style.right = "8px";
+    hiddenPanel.style.zIndex = "2";
+    hiddenPanel.style.width = "300px";
+    hiddenPanel.style.maxHeight = "70vh";
+    hiddenPanel.style.flexDirection = "column";
+    // Visibility is driven by `style.display`, not the `hidden` attribute:
+    // an inline `display` (needed here for the flex column layout) beats
+    // the `[hidden]` UA rule's `display: none` on specificity, so setting
+    // `.hidden = true` alone silently did nothing visually — the exact bug
+    // behind "the stops menu doesn't close".
+    let hiddenPanelOpen = false;
+    hiddenPanel.style.display = "none";
+    document.body.appendChild(hiddenPanel);
+
+    const hiddenPanelHeader = document.createElement("div");
+    hiddenPanelHeader.className = "panel-header";
+    hiddenPanelHeader.textContent = "Hidden stops";
+    hiddenPanel.appendChild(hiddenPanelHeader);
+
+    const hiddenPanelList = document.createElement("div");
+    hiddenPanelList.className = "panel-section";
+    hiddenPanelList.style.overflowY = "auto";
+    hiddenPanelList.style.padding = "0";
+    hiddenPanel.appendChild(hiddenPanelList);
+
+    const refreshHiddenPreview = (hiddenStops: DecodedStop[]) => {
+      (map.getSource("hidden-stops-preview") as maplibregl.GeoJSONSource).setData({
+        type: "FeatureCollection",
+        features: hiddenStops.map((s) => ({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        })),
+      });
+    };
+
+    function refreshHiddenPanel(): void {
+      if (!hiddenPanelOpen) return;
+      hiddenPanelList.innerHTML = "";
+
+      const hiddenStops = [...hidden]
+        .map((osmId) => stopsById.get(osmId))
+        .filter((s): s is DecodedStop => s !== undefined)
+        .sort((a, b) => displayName(a).localeCompare(displayName(b)));
+
+      refreshHiddenPreview(hiddenStops);
+
+      if (hiddenStops.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.padding = "8px 12px";
+        empty.style.color = "var(--text-muted)";
+        empty.textContent = "No stops are hidden.";
+        hiddenPanelList.appendChild(empty);
+        return;
+      }
+
+      for (const s of hiddenStops) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "6px";
+        row.style.alignItems = "center";
+        row.style.padding = "6px 12px";
+        row.style.borderBottom = "1px solid var(--border)";
+        row.style.cursor = "pointer";
+        row.title = "Jump to this stop";
+        row.addEventListener("click", () => {
+          map.flyTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 16) });
+        });
+
+        const nameText = document.createElement("div");
+        nameText.style.flex = "1";
+        nameText.textContent = displayName(s);
+        row.appendChild(nameText);
+
+        const unhideButton = document.createElement("button");
+        unhideButton.className = "btn btn-icon";
+        unhideButton.textContent = "Unhide";
+        unhideButton.addEventListener("click", (e) => {
+          e.stopPropagation();
+          hidden.delete(s.osmId);
+          void window.overrides.set(entityTypeFor(s), s.osmId, "hidden", false);
+          refreshStopsSource();
+          refreshHiddenPanel();
+        });
+        row.appendChild(unhideButton);
+
+        hiddenPanelList.appendChild(row);
+      }
+      const last = hiddenPanelList.lastElementChild as HTMLElement | null;
+      if (last) last.style.borderBottom = "none";
+    }
+
+    hiddenToggle.addEventListener("click", () => {
+      hiddenPanelOpen = !hiddenPanelOpen;
+      hiddenPanel.style.display = hiddenPanelOpen ? "flex" : "none";
+      hiddenToggle.classList.toggle("is-active", hiddenPanelOpen);
+      if (hiddenPanelOpen) refreshHiddenPanel();
+      else refreshHiddenPreview([]);
+    });
   };
 
   if (map.isStyleLoaded()) addLayers();

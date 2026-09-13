@@ -31,6 +31,16 @@ not worth an external dependency that has no official Windows build.
 
 The whole map is open from the start. No expansion mechanic, no starting town.
 
+**Playable area consistency.** The playable extent should end at the same
+southernmost limit consistently across the whole map — currently based on
+distance from the Scottish border, which produces an inconsistent edge (e.g.
+Newcastle isn't currently playable). Fix the boundary to a single consistent
+rule. Non-playable map should not be shown at all, and the map should zoom to
+the playable area only on launch, not the whole extract. A **hard minimum
+zoom level** stops this being undone by scrolling back out afterwards — the
+launch-time zoom sets where the player starts, the minimum zoom is what keeps
+them from leaving the playable area again by their own action.
+
 ### Taken from OSM
 - **Roads** — `highway=*`, with `oneway`, `access`, `psv`, `bus`, turn
   restriction relations and `maxspeed`.
@@ -169,7 +179,8 @@ Note the simulation must **step properly at 60x** rather than teleporting vehicl
 ten game minutes pass per real second, and a naive update will skip buses past
 stops. It works at 1x and breaks quietly at speed.
 
-**The recurring cycle.** **Wages are paid every Thursday.** **Operational changes
+**The recurring cycle.** **Wages are paid every Thursday** (weekly). **Maintenance
+is paid monthly**, on the 28-day cycle. **Operational changes
 take effect on the Monday of every even-numbered week**, so the network settles
 fortnightly rather than shifting daily. Rent, contract reviews and other monthly
 items run on the 28-day month.
@@ -225,6 +236,44 @@ which allows the player to add upgrades.
 **Stop upgrades:** shelter, real-time departure screen, seating, lighting, and
 route advertising (which raises awareness — §10).
 
+### Station, airport and park-and-ride stop linking
+Railway stations, airports and park-and-ride sites get stops linked to
+them, the same way stops link to a bus station (§5). Unlike bus station
+stands — hideable via the map's stop toggle — these linked stops are
+**always visible** on the map, and all three generate **higher passenger
+demand** for journeys starting or ending there than ordinary land use (§2
+"Demand").
+
+Stadiums and ferry terminals — grouped with park and ride as one pipeline
+data category (`CLAUDE.md`) — don't get this treatment; stadiums already
+have their own eventual event-contract mechanics (§10) and ferries are
+Phase 9.
+
+**Colour.** Follows the same ring-around-the-stop visual pattern as bus
+station membership, but each stands out in its own colour: bus stations
+**#7c3aed** (moved off the original navy, which sat too close to fixed real
+contracts' route colours — §10), railway stations **#ff4200**, airports
+**#059669**, park and ride **#db2777**.
+
+### Stop reservation and branding
+A general mechanic, not unique to any one route or contract.
+
+- The player must already **own** the stop (above), then pays a separate
+  **one-off flat fee** — the same regardless of where the stop is — to apply
+  route branding to it.
+- Branding takes **2 weeks** to apply. Once applied, the stop **immediately
+  becomes reserved** for that route or company only, and is shown in its
+  colour.
+- Any other route already using that stop is moved off it by the operations
+  manager after **7 days' notice**.
+- **Long distance variant.** Long distance services can reserve a stop too,
+  but it is branded with **one single fixed long-distance company colour**
+  (set once, applies everywhere) rather than one specific route's colour.
+  Other long distance routes may still use a stop branded this way — only
+  non-long-distance routes are excluded. Same 2-week/7-day timing.
+- A contract can come with a reservation **pre-owned** rather than through
+  this paid process — see Route 398 and Airlink 100 in §10.
+
 ---
 
 ## 5. Bus stations
@@ -251,12 +300,25 @@ stand does both.
 
 **Which stand a bus takes.** A bus arriving only cares about its stand if it is
 **leaving again**. Arriving on a service that terminates at stand 3 but departing
-from stand 5, it gets as close to stand 5 as it can. If it is not leaving in
-service it drops off at whichever stand suits.
+from stand 5, it **goes straight to stand 5** — not "as close as it can get" —
+because the duty already tells it that's where it needs to be. There is no
+relocation step: when a bus finishes one service and starts a different one,
+it never arrives somewhere else and then moves, it drops off directly at
+whichever stop or stand its **next** service departs from. This applies
+identically at bus stations and at grouped stops with no stand layout of
+their own (Union Street, Aberdeen, is the example — §4). If it is not leaving
+in service it drops off at whichever stand suits.
 
 **Setting the departure stand.** As well as on the route, the stand can be set
 from the **bus station settings**, so congestion can be moved off a busy stand
 without editing every route that uses it.
+
+**Reserving a stand.** A single stand can be reserved for one route or
+company, the same general mechanic as reserving a plain stop (§4) — own
+the station, pay the flat fee, 2 weeks to apply, 7 days' notice to move
+other routes off it. A fixed real contract's reserved stand comes
+pre-owned instead, skipping that process (Express 500's Buchanan Bus
+Station Stance 46 — §10).
 
 Stands are limited. As more routes use a station, departures must be spread out
 or buses queue for a stand. The stand a service uses is set both on the route
@@ -341,7 +403,31 @@ the player can add more.
 
 ### Building a route
 The player clicks stops in order and the roads auto-route between them.
+Auto-routing takes the **fastest route, not the shortest** — accounting for
+speed limits, not just distance, the same way a real driver would choose.
+
 Waypoints force a specific path where the router picks something silly.
+Current waypoint behaviour is unreliable — worth trying: place a waypoint on
+a road and make the route follow the closest graph nodes on either side of
+it, rather than whatever it currently does.
+
+### Start and terminus stops
+A route's **first stop is always a start and its last is always a terminus**,
+by default — nothing to set. A route can carry **at most 2 start stops and 2
+terminus stops in total**, one of each per direction, not an open-ended list.
+
+Walking the stop list in order: the **first stop flagged terminus ends the
+outbound leg**, and the **next stop after it flagged start begins the return
+leg**. This is what encodes a **terminus loop** — outbound drops off at one
+stop, return picks up from a different nearby one — as a single ordered list
+rather than a special case. The hop between the two is dead running, counted
+the same as any other dead mileage, but happens **every round trip** rather
+than once per shift.
+
+An earlier idea of a route carrying several start/terminus stops to handle it
+sometimes starting from a different point (a ferry terminal once a day, say)
+is dropped in favour of the 2/2 cap above — that case is a proper lettered
+variation instead (below), using the branch/rejoin workflow.
 
 ### Direction
 Every route has an **inbound** and **outbound** direction.
@@ -358,7 +444,32 @@ Unlimited, labelled as the route number plus a letter — route 1 direct, 1A via
 a village. Variations may also have different end points while sharing most of
 the route. A main route need not exist: 7A and 7B can exist with no 7.
 
-Timetabling in §7.
+**Editing workflow.** The player chooses the **last shared stop**, draws the
+divergent section with the normal route-building tool, then chooses the
+**first shared stop** where it rejoins — if it rejoins at all; some variations
+just end differently.
+
+**Extending rather than diverging.** Where a variation only **extends** a
+route further, rather than diverging onto a different path, it keeps the
+**same route number** — no new letter. The destination display changes along
+the journey instead: "X99 to Thurso for Ferry Terminal" while approaching
+Thurso, then "X99 to Ferry Terminal" once past where the ordinary route would
+have ended. This is the **extension mechanism already in §7** ("Defining a
+service"), not a separate one.
+
+**Vehicle and livery inheritance.** A variation defaults to its parent
+route's vehicle type and livery requirements. A different type can be set,
+but only via manual override, and it **reverts to matching the parent**
+unless explicitly overridden.
+
+**Timing points.** Identical to the parent before the split, since it's
+physically the same operation. After the split, the first timing point can be
+freely adjusted; later ones keep the same **gap between stops** as already
+established — unless the variation doesn't run interleaved with its parent
+(an evening slow service replacing a daytime fast-plus-local pattern, say),
+in which case every timing point after the split is freely adjustable, since
+there's no interleaving relationship left to preserve. Timetabling in full
+in §7.
 
 ### Express services
 An express is **a variation with a list of skipped stops**, plus its own
@@ -548,7 +659,8 @@ timetable alone and tells the player**.
 
 ### Route numbering
 Numbers are assigned automatically with a manual override. Commercial services
-number from **1** upwards; council contracts from **201**.
+number from **1** upwards; council contracts from **201**; **long distance**
+routes from **900** upwards, the same pattern as the other two.
 
 **Commercial numbers are per depot group**; **all contract numbering follows
 council areas**. A route running into more than one takes the next number free, so
@@ -561,6 +673,7 @@ Prefixes say what a working is before you read the number:
 |---|---|
 | *(none)* | Commercial service, from 1 |
 | *(none)* | Council contract, from 201 |
+| *(none)* | Long distance, from 900 |
 | **X** | Express |
 | **S** | School |
 | **T** | Sightseeing tour, then the city letter — TE1, TG1, TS1 |
@@ -705,6 +818,15 @@ Rules that follow:
 
 **Types:** adult, child, and concession/older person.
 
+**Access and egress.** People walk up to **400m (about 5 minutes) to reach a
+stop, or to change stops**, in urban areas — **600m in rural areas**, where
+tolerance for walking to the only bus for miles is naturally higher.
+
+**Wait tolerance.** A passenger who would have travelled gives up and doesn't
+make the trip if the wait is too long: **15 minutes in urban areas, 30 minutes
+in rural areas** — the same two-tier split as the walking distance, for the
+same reason.
+
 Concessionary travel is free to the passenger and **reimbursed at a percentage
 of the adult fare**, as under the real Scottish scheme. Route choice therefore
 has a second economic dimension: a route full of concessionary passengers earns
@@ -769,6 +891,39 @@ DAY £9.60; weekly £26.50 / £25.00 / £38.50.
 Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are in
 `reference/`.
 
+### £2 fare cap (Highland and SPT)
+Modelled on the real Scottish schemes. Two zones:
+
+- **Highland** — the Highland council area plus Moray.
+- **SPT** — the twelve council areas the former Strathclyde region divided
+  into in 1996: Argyll and Bute, East Ayrshire, East Dunbartonshire, East
+  Renfrewshire, Glasgow City, Inverclyde, North Ayrshire, North Lanarkshire,
+  Renfrewshire, South Ayrshire, South Lanarkshire, West Dunbartonshire — full
+  council areas throughout.
+
+**Deliberate departure from reality:** in the game these two zones border
+each other directly, with no gap — real Argyll and Bute already touches
+Highland, so this falls out naturally from using whole council areas rather
+than needing an artificial patch.
+
+Within either zone, a **single ticket is capped at £2** to the passenger.
+The operator still receives the **full real fare** — the government pays the
+gap between £2 and the real fare, not a fixed top-up. Leaving the zone,
+normal fare applies to the rest of the journey, paid by the customer as
+normal. **Crossing from one zone into the other, the single is capped at £4**
+instead of £2.
+
+The cap applies to **single tickets only** — day, weekly, 28-day and return
+tickets are unaffected. The driver sells whichever ticket is actually
+cheapest for the journeys the customer will make, so a capped single isn't
+sold in preference to a cheaper option that already exists.
+
+**Excluded entirely:** sightseeing tours, private hires, Airlink 100, Express
+500.
+
+**Government payments** arrive **monthly, with a one month delay** — a real
+cash-flow lag between running the capped fares and being reimbursed for them.
+
 ---
 
 ## 10. Contracts and economics
@@ -812,6 +967,25 @@ losing money.
 A **contracted** route can also get journeys funded beyond its set hours — but as
 an **extension to the contract** rather than a subsidy, since the route is
 already a contract.
+
+**SPT as the contracting body.** Within the SPT zone (§9), any contract that
+would otherwise come from the council instead comes from **SPT**, the real
+regional transport authority — matching how it actually works, since SPT
+rather than individual councils awards these contracts there.
+
+SPT mostly **subsidises** routes rather than awarding full contracts — a
+genuinely different mechanism, closer in shape to the evening/morning
+subsidy above than to an ordinary council contract: it tops up a route
+that's already running, rather than paying for the whole thing to be run on
+SPT's behalf. SPT can still award a **full contract** for a route with no
+commercial viability at all, alongside this main subsidy mechanism.
+
+**SPT branding.** A contract requires a **full dedicated SPT livery** on the
+vehicle — the same treatment as Airlink 100 or the long distance company
+colour, not just a logo added to the operator's normal livery. This is only
+required where an SPT **subsidy** makes up a large proportion of the route's
+revenue; a light subsidy doesn't require it. A full SPT contract always
+requires it.
 
 ### School contracts
 A separate type of council contract, **high schools only**, running **term time
@@ -890,6 +1064,328 @@ automatically, not by the player.
 
 **Prefix.** A venue's routes take a **short code the player sets per venue**
 rather than always E. Cruise routes always keep the **C** prefix.
+
+### Fixed real contracts
+A genuinely different contract type from council, school, event, cruise or
+lifeline (§10 below): the route, timetable — and for 398, the route number
+too — are **entirely fixed**. The player, or the contract itself, doesn't
+design any of it. Two instances exist so far (398 and Airlink 100, both
+below), each a one-off special case rather than a general reusable type —
+only worth generalising if a third ever comes along.
+
+- Offered alongside council, school, event, lifeline and cruise contracts
+  through a single **contracts menu** — one screen covering all five
+  contract types, not five separate screens.
+- Same **warning-and-review** penalty pattern as other contracts: the
+  contract cannot be lost outright, but is heavily fined for any condition
+  not met.
+- Once accepted, a contract **starts on the first Monday after a minimum of
+  10 days have passed** — the same lead time as activating a new route.
+
+#### Route 398 — ScotRail Glasgow interchange bus
+A real, currently-existing ScotRail service linking Glasgow Central, Queen
+Street and Buchanan Bus Station. **Contract held by ScotRail.** In-game
+it's a **circular loop**: Central Station Forecourt → Queen St Station →
+Glasgow Buchanan → back to Central Station Forecourt — the same stop
+serves as both start and terminus (§6).
+
+**Eligibility and economics.**
+- Offered once the player has at least **2 services running into Glasgow
+  city centre**.
+- Paid **per journey made**: £9/journey (a suggested starting figure).
+- **No regular ticket types apply** — ScotRail handles all ticketing
+  externally. The operator earns **zero fare revenue**, only the
+  per-journey payment.
+- **Dead mileage** is covered up to **5 miles**, for **2 return trips a
+  day** (4 dead legs total, each up to 5 miles). Beyond that distance or
+  that many journeys, the player pays their own dead mileage.
+
+**Vehicle.** Must be ScotRail liveried, electric, single deck, in the
+70,000 fleet range — a strict requirement, not a preference. (Corrected
+from an earlier 30,000 — the player caught their own mistake.)
+
+**Route number and colour.** Fixed at **398**, colour fixed at
+**#002664**, neither changeable. Central Station Forecourt (the combined
+start/terminus) is shown in that colour and **reserved exclusively for
+398** — the stop reservation mechanic (§4), but pre-owned by the contract
+rather than through the normal paid process.
+
+**Timetable** (real data, confirmed against real PDFs). Real stop codes:
+Central Station Forecourt (6090194), Queen St Station (609088), Glasgow
+Buchanan (6090118). Real running times, consistent all day: Central→Queen
+St 6 min, Queen St→Buchanan 4 min, Buchanan→Central 7 min — a 17 minute
+full loop.
+- Mon–Fri: every 12 min 0800–1800, then every 20 min 1800–2000.
+- Saturday: same pattern, starting at 0900 instead of 0800.
+- Sunday: no official timetable exists. Use the same 6/4/7 minute running
+  times as Saturday, every 20 minutes 1200–1800, except from the first
+  Sunday in June to the last Sunday in September, when it starts at 1000
+  instead of 1200.
+
+Timings are real, so the bus should mostly keep to them without much
+padding needed.
+
+**Demand.** Passenger demand on 398 specifically is deliberately **capped**
+so the bus never leaves anyone behind at peak times — special treatment
+for 398 only, not a general rule for other routes.
+
+**Build approach.** The player builds this route in the normal in-game
+editor — auto-routing from the real stop codes above (confirmed to exist
+in OSM), with waypoints addable to correct the path where the router picks
+something wrong. Once built and saved, Claude Code extracts the route and
+timetable to bundle as fixed content in the game files, identical in every
+playthrough rather than player-editable.
+
+**Livery.** Only 2 images needed: the badge and the number box. No
+branding mask — no variations on this route, so no variable branding
+region is needed.
+
+#### Airlink 100 — Edinburgh airport service
+The real Airlink 100 service, Edinburgh Airport to the city centre via
+Maybury, Corstorphine, Murrayfield, Haymarket, West End and Princes
+Street. **Contract held by Edinburgh Airport.**
+
+**Eligibility and economics.**
+- Offered once the player has a **depot within Edinburgh's city
+  boundaries**.
+- Earns from its own dedicated fares (below), topped up to a **guaranteed
+  minimum revenue** if fares fall short in a given period — unlike 398,
+  which stands entirely on the per-journey payment, Airlink mostly stands
+  on its own commercial legs.
+- **No dead mileage is paid at all** — the operator bears 100% of it,
+  unlike 398's partial allowance.
+
+**Vehicle.** Not a strict requirement — any coach is allowed, but only the
+**Volvo 9700DD (low floor)** carries full demand; a different coach means
+some passengers get left behind.
+
+**Ticketing** — its own dedicated ticket type, real fares:
+- Single: Adult £6, Child £3.
+- Return: Adult £8.50, Child £4.25, Family £22.00 (up to 2 adults and 3
+  children).
+- No day ticket exists for this service.
+- **Concessionary passengers pay the full adult fare** — no discount,
+  matching how real UK airport express services sit outside the national
+  concessionary scheme. A deliberate exception to how concessionary
+  reimbursement works everywhere else in the game.
+
+**Timetable** (real data, confirmed against the real Airlink 100 timetable
+PDF). Full physical stop list: Airport, Airport Hotels, Maybury Road, Drum
+Brae South, Edinburgh Zoo, Western Corner, Murrayfield, Wester Coates,
+Haymarket, Shandwick Place, Princes Street (**city-centre-bound only** — a
+real example of the per-direction drop-off/pick-up restriction, §4),
+Hanover Street, Waverley Bridge. Timing points (a subset): Edinburgh
+Airport, Edinburgh Zoo, West End, Waverley Bridge.
+
+Genuinely **24/7**, identical Mon–Fri/Saturday/Sunday — no seasonal or
+weekend variation, unlike 398.
+- **Frequent service, up to every 10 minutes**: Airport→City Centre 0504
+  to 2358; City Centre→Airport, symmetrically, into the early morning
+  through to 2357.
+- **Overnight, fixed named times** cover the gap the frequent service
+  doesn't run. Airport→City Centre (Edinburgh Airport departures): 0008,
+  0018, 0028, 0038, 0048, 0100, 0120, 0140, 0200, 0240, 0300, 0320, 0340,
+  0400, 0420, 0430, 0440, 0448, 0456. City Centre→Airport (Waverley Bridge
+  departures): 0007, 0030, 0050, 0110, 0130, 0150, 0210, 0230, 0250, 0310,
+  0330, 0350, 0400. None of these run on the mornings of 25 December, 26
+  December or 1 January.
+
+**Build approach — different from 398.** No stop codes could be found for
+Airlink's real-world stops, so auto-routing from codes isn't available
+here. The player builds this route **manually** in the editor.
+
+The route, its stops and its timetable can be built **now**, even though
+the per-stop pick-up/drop-off-only flag needed for the Princes Street
+restriction doesn't exist in the editor yet — that flag only applies to
+Princes Street specifically, and can be added to the already-built route
+once the feature exists. It does not block building everything else.
+
+**Route colour and reserved stops.** Colour fixed at **#002b4e**. Airlink's
+start and terminus stops are reserved exclusively for Airlink and shown in
+that colour (§4) — pre-owned by the contract, same as 398.
+
+**Livery.** Two liveries: the standard Airlink livery (badge + number box,
+no branding mask — no variations, so no variable branding region needed),
+and **"Airlink_Giraffe"** — a real historic Lothian/Edinburgh Zoo tie-in
+livery (fitting, since Zoo is a stop on the route). Counts as an Airlink
+livery for the contract's vehicle requirement — either livery satisfies
+it. Reuses the standard livery's number box image rather than needing its
+own, so it only needs 1 new image (its own badge).
+
+#### Express 500 — Glasgow Airport service
+The real Greater Glasgow service 500, Glasgow Airport to Glasgow city
+centre via Buchanan Bus Station and Waterloo St. **Contract held by
+Glasgow Airport.**
+
+**Eligibility and economics.**
+- Offered once the player has at least **3 routes running both into and
+  out of Buchanan Bus Station**, **and** Route 77 (below) has been running
+  for **1 month** — an additional gate layered on top of the original
+  condition, not a replacement for it.
+- Same payment structure as Airlink 100: earns from its own dedicated
+  fares (below), topped up to a **guaranteed minimum revenue** if fares
+  fall short in a given period, and **no dead mileage is paid at all** —
+  the operator bears 100% of it.
+
+**Vehicle.** Must carry the Glasgow Airport livery (below), double deck,
+electric, in the **80,000 fleet range**, and **airport-specification**
+(reduced seating, increased luggage capacity, §10 below) — a strict
+requirement, not a preference (matching 398's approach, not Airlink's softer
+one). Same fines as Route 398 for running the wrong vehicle.
+
+**Overnight sharing with Route 77.** When demand is quieter overnight,
+Express 500 is allowed to run with Route 77's buses (below) instead of
+its own — only possible because both routes draw from the same Glasgow
+Airport livery family, so there's no livery mismatch either way.
+
+**Ticketing** — its own dedicated ticket family, real fares:
+- **Single** (1 Express 500 journey + 1 connecting Glasgow City journey):
+  Adult £11, Child £6.50, Group £31.
+- **Day** (unlimited Express 500 + all Glasgow City services): Adult
+  £16.50, Child £9, Group £43.
+- **Return** (2 Express 500 singles + 2 connecting Glasgow City
+  journeys): Adult £17.50, Child £10.50.
+- **Glasgow Explore** (2 Express 500 singles + a set number of Glasgow Day
+  tickets): Adult 3-day £31, Adult 5-day £35.50, Adult 7-day £38.50, Child
+  7-day £21.
+- Group fares cover up to **5 passengers**.
+
+**Route number, colour and reserved stands.** Numbered **500** (plain,
+no X — "Express" is a brand name, not the game's express-service prefix,
+same as 398 and Airlink both keeping their real numbers). Colour fixed at
+**#1e6e6f**. Reserves two stands, both pre-owned by the contract the same
+way as 398 and Airlink's stops, except these are bus station **stand**
+reservations (§5) rather than plain stop reservations (§4) — the first
+fixed real contract to reserve one, let alone two: **Buchanan Bus Station
+Stance 46** and **Glasgow Airport Stance 1**, both shown in #1e6e6f and
+locked from other use **immediately**.
+
+**Timetable** (real data, confirmed against the real Greater Glasgow
+service 500 timetables — Monday–Friday, Saturday and Sunday each supplied
+separately, each slightly different). Timing points: Glasgow Airport,
+Glasgow Buchanan, and (city-centre-bound direction only) Waterloo St.
+Near enough **24/7** on all three day types: frequent, roughly every 10–15
+minutes, from around 0430 through the evening, stepping down to roughly
+half-hourly in the late evening and hourly through the early hours before
+building back up to the frequent daytime pattern. Running times vary by
+time of day (unlike 398's constant figures), so no single running time
+applies throughout.
+
+**Build approach.** The player draws the full route in the normal in-game
+editor — the real timing points above can be auto-routed from their stop
+codes, but the physical route also has extra stops not in the timetable,
+so the player builds and finalises it by hand rather than relying on
+auto-routing alone. Once drawn and saved, Claude Code locks it in as fixed
+content, the same as 398 and Airlink.
+
+**Livery.** No dedicated Express 500 livery — instead draws from a shared
+**"Glasgow Airport" livery family** of 2 liveries with Route 77 (below),
+either one satisfying Express 500's vehicle requirement, the same
+either-livery-satisfies-it pattern as Airlink's two liveries. Each needs
+2 images (badge + number box, no branding mask — no variations, so no
+variable branding region needed), the same image count as Airlink's
+standard livery.
+
+#### Route 77 — Glasgow Airport commercial service
+The real Greater Glasgow service 77, Glasgow city centre to Glasgow
+Airport via Charing Cross, Partick, QEUH and Braehead Shopping Centre.
+**Not a fixed real contract** — unlike 398, Airlink and Express 500, it
+runs on **ordinary commercial economics**: normal fare revenue, kept by
+the operator, no per-service payment and no dead-mileage rule change.
+What it shares with the fixed real contracts is fixed identity — colour,
+livery and vehicle — because it's sponsored/branded by Glasgow Airport
+rather than freely designed, and its **unlock condition doubles as the
+gate for Express 500** (above): once Route 77 has run for **1 month**,
+Express 500 becomes available.
+
+- Offered once the player has at least **3 routes running both into and
+  out of Buchanan Bus Station** — the same condition Express 500 originally
+  had on its own.
+- **Vehicle.** Electric, single deck, **70,000 fleet range**.
+- **Livery.** Carries the Glasgow Airport livery family (shared with
+  Express 500, above) rather than a livery of its own.
+- **Colour.** Fixed at **#93318e**.
+- **Reserved stands**, pre-owned the same way as Express 500's: **Buchanan
+  Bus Station Stance 45** and **Glasgow Airport Stance 6**.
+
+**Timetable** (real data, confirmed against the real Greater Glasgow
+service 77 timetables — Monday–Friday, Saturday and Sunday supplied
+separately). Timing points: GLASGOW Buchanan, Berkley Street, Partick Bus
+Station, QEUH Arrivals Sq, Braehead Shopping Centre, Renfrew Cross,
+Glasgow Airport (city-bound direction uses a slightly different set —
+Sauchiehall St at Charing Cross in place of Berkley Street, Partick
+Merkland St in place of Partick Bus Station). Near enough **24/7** on all
+three day types, roughly every 15 minutes through the day. Only about
+half of daytime departures run the full route to Renfrew Cross and
+Glasgow Airport — the rest short-work no further than Braehead Shopping
+Centre or QEUH, an ordinary timetable pattern with no economic
+significance now that the whole route is commercial.
+
+#### AIR — Edinburgh Airport reward contract
+A fourth fixed real contract, and a different kind from the other three: a
+**reward** rather than a subsidy or a commercial route. **Contract held by
+Edinburgh Airport.**
+
+**Eligibility.** Offered once the player has run **both** Express 500 **and**
+Airlink 100 successfully for **2 weeks each** — and both must be run by the
+player specifically, the same operator, not just existing somewhere in the
+game world.
+
+**Economics.** No ongoing payment from the airport at all, and genuinely
+**zero fines for anything**, including missing the timetable — a true
+exception to the warning-and-review pattern every other contract follows.
+Instead, the airport pays **15% of the fleet's cost**, for the **first
+vehicle order only** — a one-off capital gift rather than ongoing revenue.
+
+**Vehicle.** Tri-axle Volvo 9700 (65 seats), AIR livery, comfier seats
+installed. AIR is mechanically an ordinary **long distance coach service** —
+long distance rules, rota type, hours all apply as normal, and it only needs
+regular customer announcements, no special passenger information system.
+
+**Fares.** £7.50 single, £15 return. Partially falls within the SPT £2 fare
+cap.
+
+**Demand.** Buses are forced by the game to run at around **75% capacity,
+averaged over 24 hours** — enforced directly on the passenger simulation,
+the same mechanism as 398's demand cap.
+
+**Reserved stops, at no cost to the player:** Stop D at Edinburgh Airport,
+and Stance 48 at Buchanan Bus Station — both shown in AIR livery colours.
+
+**Timetable.** Real timetable, to be supplied and built the same way as the
+other three.
+
+### Airport route type
+A route type the player can create themselves, for any airport, separate
+from the three fixed real contracts above.
+
+- **Manually flagged** by the player — not auto-detected from OSM.
+- The **airport-specification vehicle** (reduced seating, increased luggage
+  capacity) is **mandatory on Express 500**, stacking with its other fixed
+  requirements (double deck, electric, 80,000 range, Glasgow Airport
+  livery — see above) rather than replacing any of them. On a player-built
+  airport route it's optional instead — free vehicle choice otherwise.
+- **Cannot use stop reservation** — that stays exclusive to the fixed real
+  contracts. A deliberate carve-out from the general stop reservation
+  mechanic below, not a reversal of it.
+
+### Contracts moving between depots
+General to every contract type, not specific to 398 or Airlink.
+
+- Any contract can be **reassigned to a different depot**. This happens
+  **overnight, after 7 days' notice**.
+- If the move extends the dead mileage involved, it's judged by the same
+  rule as any other excess dead mileage on a contract (above): too much
+  waste risks losing the contract to the competitor until the next bidding
+  round, re-bid with a changed route. No separate penalty exists just for
+  this being a reassignment rather than a route the player drew badly
+  themselves.
+- Vehicles can be **locked to a contract** (as 398's and Airlink's are).
+  When a locked contract's depot changes, the transition is **gradual**
+  rather than a hard cutover: the bus leaves its **old** depot as normal
+  that morning, a driver from the **new** depot takes over at a scheduled
+  driver swap point during the day, and the bus goes to the **new** depot
+  at the end of that day rather than the old one.
 
 ### Private hire
 Enabled **per depot group**. A distinct revenue stream with no timetable at all —
@@ -972,6 +1468,11 @@ them. The **operations director negotiates the whole package** with the council.
 The council **always agrees**, provided the criteria are met — there is no
 rejection.
 
+**Adding a route later.** Once a remote depot is established, adding a
+**further** route to it goes through this **same negotiation every time** —
+proposing a depot only gates the first agreement, not every route added
+afterward.
+
 Once agreed:
 - A **built** depot gets some council funding; a **rented** one gets a discount.
 - Buses are bought at a **15–20% discount** on top of the bulk discount, since the
@@ -994,6 +1495,14 @@ Once agreed:
   player can bid for it during that time — there is no competitor on islands at
   all.
 
+**Payment model.** A genuine structural difference from an ordinary council
+contract, not just a different target: the council takes **all fare revenue**
+on a lifeline route — the operator earns no farebox on it at all. In exchange,
+the operator is paid a **fixed rate per mile** (not including dead mileage),
+and that rate **scales with isolation**, the same measure used above. Lifeline
+work therefore removes farebox risk, and reward, entirely — pay is guaranteed
+regardless of how busy the route actually is.
+
 **Long distance lifeline funding.** Long distance routes to very remote places —
 Skye, Ullapool — can also attract council funding, on the whole route or just
 part of it. Eligibility comes from a **fixed remoteness score per settlement**,
@@ -1005,6 +1514,31 @@ withdrawn periodically like the evening subsidy.
 **Downgrade rather than loss.** If a remote depot's lifeline route repeatedly
 fails its service count, it can step down to **community transport** instead of
 the contract being lost outright — the area still gets something.
+
+### Island and remote-area review
+A settled review of every island and remote area in scope, covering whether it
+needs a lifeline/subsidy contract or can run commercial (or a mix of both),
+and whether it has its own dedicated livery. Lifeline need and dedicated
+livery are **independent** — Mull needs a lifeline contract but has no special
+livery of its own; several areas reuse an existing livery (SPT, Rapsons)
+rather than getting a new one. Don't assume one implies the other.
+
+| Area | Contract | Livery |
+|---|---|---|
+| Shetland | Mixed lifeline/commercial | Shetland Transport — **universal**: required on any bus running there, regardless of that specific route's own contract type |
+| Orkney | Lifeline | Orkney Council |
+| Arran | Lifeline | Reuses the existing SPT livery (Arran/North Ayrshire sits within the SPT zone) |
+| Lewis and Harris | Lifeline | Hebridean Transport |
+| North Uist | Lifeline | North Uist Transport |
+| Islay | Lifeline | Islay Coaches |
+| Mull | Lifeline | None — the operator's normal livery |
+| Skye | Lifeline | Rapsons (a real historic Highland operator name) |
+| Fort William | Mixed commercial/subsidised | None |
+| Caithness | Mixed commercial/subsidised | None |
+| Oban | Mostly commercial, partial subsidy | None |
+| Ullapool | Lifeline only, including its long distance buses | Rapsons (shared with Skye) |
+| Campbeltown | Lifeline | Town-only services (never leaving Campbeltown) use the SPT livery; longer or connecting services from Campbeltown carry no specific livery |
+| Galashiels | Mixed commercial/lifeline | None |
 
 ### Community transport
 A demand-responsive service for communities too small even for a lifeline
@@ -1030,6 +1564,22 @@ weather system, which the game does not have.
   otherwise the service cancels.
 - A closure **exempts the operator from contract failure penalties** — it's bad
   luck, not poor operation.
+
+### Rail acceptance
+When a railway line has a problem, rail tickets can be accepted on bus
+services as an alternative during the disruption — the same category of
+event as road closures above (random, rare), but on the passenger-revenue
+side rather than the road network.
+
+- Any service passing **within a set distance** of the affected station(s)
+  qualifies, not just one that actually calls there.
+- The **operations manager** decides whether to accept or decline it for
+  each occurrence — not the player directly, and not automatic.
+- The operator is paid the **full single ticket price** for every passenger
+  who boards showing a rail ticket during the disruption — **uncapped**, no
+  limit on numbers.
+- Payment arrives with a **one month delay**, the same lag as the £2 fare
+  cap's government payments (above).
 
 ### The competitor
 A named rival with no network of its own, existing only in one area, purely to
@@ -1124,7 +1674,8 @@ Every figure the player reads — fares, wages, fuel, vehicle prices — stays
 realistic.
 
 **Property capital is the exception.** Depot purchase and construction, and
-buying a bus station, are deliberately set **below real-world levels**. They are
+buying a bus station, are deliberately set **20% below real-world levels**. They
+are
 lumpy one-off costs that mainly govern how fast the game opens up, and nobody has
 a strong instinct for what a bus depot should cost, so discounting them improves
 pacing without anything looking wrong. Vehicle prices deliberately do not get the
@@ -1188,8 +1739,46 @@ Routes are **always visible in a side panel** on the main map, **grouped by
 area**, with the area currently being viewed **at the top** — so panning to
 Glasgow reshuffles the list rather than making the player hunt for it.
 
-Each entry carries its colour swatch, number and name. Routes activated but not
-yet running show greyed with a countdown; deactivated routes show hollow.
+**Position and visibility.** Left-hand side of the screen. Visible whenever
+the player is on the main map. Hidden only for full screens — rotas,
+timetables, finance. Small overlays and popups do **not** hide it.
+
+**Per entry:**
+- Colour swatch (small square), route number, destination/short name.
+- Activation state: normal for a running route; greyed with a day countdown
+  for one activated but not yet started; hollow for a deactivated one.
+- A small **problem indicator** (dot or icon), shown when the route has
+  understaffing, poor punctuality, or a livery shortfall the controller is
+  currently covering for.
+- **Monthly profit as an actual figure** ("£320/mo", "-£45/mo" — not just a
+  colour or trend arrow), coloured green for a profit, normal (not muted)
+  text colour for exactly £0, and red (the theme's danger tone) for a loss.
+
+No live bus count — the panel is for scanning at a glance, not a live
+dashboard.
+
+**Grouping.** Every depot group's routes are shown, grouped, with the depot
+group currently being viewed reordered to the top — panning the map reshuffles
+the list into view. **Long distance routes** worked from a depot group's
+depots appear at the **bottom** of that group's section, after its local
+routes, not mixed in among them.
+
+**While drawing a new route**, the panel is replaced by the route currently
+being built, at the same width and position the route list normally occupies.
+
+**While building that route's timetable**, the same space keeps showing the
+route, but **locked** — stops can't be added or removed from there. The
+timetable grid fills the rest of the screen to the right.
+
+So the left-hand column has **three states** depending on context — route
+list, route under construction, or locked route reference next to its
+timetable — rather than three separate panels.
+
+**Visual style.** Follows the dark UI theme (backgrounds, text tones, borders,
+panel/badge treatment). Each entry shows its swatch, number and name on one
+line, with the problem indicator, profit figure and activation state inline.
+Areas are separated by a small muted label, not a hard divider — the "thin
+border over background change" pattern rather than a heavier section break.
 
 ### Buses
 Buses are drawn as **badge markers at every zoom** — a small angled rectangle in

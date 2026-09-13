@@ -5,6 +5,7 @@ import fs from "node:fs";
 import {
   openSave,
   type SaveDb,
+  type RoutePoint,
   setOverride,
   getOverride,
   hasOverride,
@@ -14,7 +15,18 @@ import {
   listDepotGroups,
   renameDepotGroup,
   setDepotGroupRegion,
+  setDepotGroupMainBusStation,
   deleteDepotGroup,
+  createRoute,
+  listRoutes,
+  updateRoute,
+  deleteRoute,
+  type DayType,
+  type TimingPoint,
+  upsertRouteTimetable,
+  listRouteTimetablesForRoute,
+  listAllRouteTimetables,
+  deleteRouteTimetable,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -129,7 +141,79 @@ function registerDepotGroupHandlers(): void {
   ipcMain.handle("depotGroups:setRegion", (_e, id: number, region: string) =>
     setDepotGroupRegion(save, id, region),
   );
+  ipcMain.handle("depotGroups:setMainBusStation", (_e, id: number, osmId: number | null) =>
+    setDepotGroupMainBusStation(save, id, osmId),
+  );
   ipcMain.handle("depotGroups:delete", (_e, id: number) => deleteDepotGroup(save, id));
+}
+
+// Routes (DESIGN.md §6) — see electron/db.mts for what's built so far and
+// what's deliberately left out (variations, timetables, activation state).
+function registerRouteHandlers(): void {
+  ipcMain.handle(
+    "routes:create",
+    (
+      _e,
+      depotGroupId: number,
+      number: string,
+      points: RoutePoint[],
+      orientation: "inbound" | "outbound",
+      terminusIndex: number | null,
+      startIndex: number | null,
+    ) => createRoute(save, depotGroupId, number, points, orientation, terminusIndex, startIndex),
+  );
+  ipcMain.handle("routes:list", () => listRoutes(save));
+  ipcMain.handle(
+    "routes:update",
+    (
+      _e,
+      id: number,
+      depotGroupId: number,
+      number: string,
+      points: RoutePoint[],
+      orientation: "inbound" | "outbound",
+      terminusIndex: number | null,
+      startIndex: number | null,
+    ) => updateRoute(save, id, depotGroupId, number, points, orientation, terminusIndex, startIndex),
+  );
+  ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
+}
+
+// Route timetables (DESIGN.md §7) — see electron/db.mts for what's built so
+// far (day types, a frequency generator, timing points, one component per
+// route per day type) and what's deliberately left out (variations,
+// padding, connections, extensions, the event calendar).
+function registerRouteTimetableHandlers(): void {
+  ipcMain.handle(
+    "routeTimetables:upsert",
+    (
+      _e,
+      routeId: number,
+      dayType: DayType,
+      startMinutes: number,
+      endMinutes: number,
+      intervalMinutes: number,
+      timingPoints: TimingPoint[],
+      arrivalOffsetsSeconds: number[],
+      departureOffsetsSeconds: number[],
+    ) =>
+      upsertRouteTimetable(
+        save,
+        routeId,
+        dayType,
+        startMinutes,
+        endMinutes,
+        intervalMinutes,
+        timingPoints,
+        arrivalOffsetsSeconds,
+        departureOffsetsSeconds,
+      ),
+  );
+  ipcMain.handle("routeTimetables:listForRoute", (_e, routeId: number) =>
+    listRouteTimetablesForRoute(save, routeId),
+  );
+  ipcMain.handle("routeTimetables:listAll", () => listAllRouteTimetables(save));
+  ipcMain.handle("routeTimetables:delete", (_e, id: number) => deleteRouteTimetable(save, id));
 }
 
 app.whenReady().then(() => {
@@ -139,6 +223,8 @@ app.whenReady().then(() => {
 
   registerOverrideHandlers();
   registerDepotGroupHandlers();
+  registerRouteHandlers();
+  registerRouteTimetableHandlers();
   startMapDataServer();
   createWindow();
 });

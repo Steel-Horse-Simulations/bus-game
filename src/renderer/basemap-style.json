@@ -116,6 +116,34 @@
     },
 
     {
+      "id": "roads-pedestrian-street-bridge-casing",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["all", ["==", ["get", "class"], "path"], ["==", ["get", "subclass"], "pedestrian"], ["==", ["get", "brunnel"], "bridge"]],
+      "minzoom": 16,
+      "paint": {
+        "line-color": "#000000",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 16, 4.7, 17, 8.6, 18, 10.1, 19, 12.6, 20, 13.6]
+      }
+    },
+    {
+      "id": "roads-pedestrian-street",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["all", ["==", ["get", "class"], "path"], ["==", ["get", "subclass"], "pedestrian"]],
+      "paint": {
+        "line-color": "#ffffff",
+        "line-opacity": ["case", ["==", ["get", "brunnel"], "tunnel"], 0.55, 1],
+        "line-width": [
+          "interpolate", ["linear"], ["zoom"],
+          14, 2, 16, 3.5, 17, 7, 18, 8.5, 19, 11, 20, 12
+        ]
+      }
+    },
+
+    {
       "id": "roads-minor-bridge-casing",
       "type": "line",
       "source": "openmaptiles",
