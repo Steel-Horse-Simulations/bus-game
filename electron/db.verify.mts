@@ -87,9 +87,13 @@ const route = createRoute(
   "outbound",
   null,
   null,
+  "#3b82f6",
+  null,
 );
 assert(route.id > 0, "route created with a real id");
 assert(listRoutes(db).some((r) => r.id === route.id && r.number === "1"), "created route is listed");
+assert(route.colour === "#3b82f6", "route created with the requested colour");
+assert(route.name === null, "route created with no name defaults to null");
 
 // --- route timetables ---
 assert(listRouteTimetablesForRoute(db, route.id).length === 0, "a new route starts with no timetables");
@@ -150,8 +154,12 @@ const updated = updateRoute(
   "outbound",
   null,
   null,
+  "#ef4444",
+  "Gordon Street Express",
 );
 assert(updated.number === "1A" && updated.points.length === 3, "updateRoute changes the route's own fields");
+assert(updated.colour === "#ef4444", "updateRoute changes the route's colour too");
+assert(updated.name === "Gordon Street Express", "updateRoute changes the route's name too");
 assert(listRoutes(db).find((r) => r.id === route.id)?.number === "1A", "the update is reflected in listRoutes");
 assert(
   listRouteTimetablesForRoute(db, route.id).length === 0,
@@ -188,6 +196,8 @@ const route2 = createRoute(
   ],
   "inbound",
   null,
+  null,
+  "#3b82f6",
   null,
 );
 upsertRouteTimetable(db, route2.id, "sunday", 700, 1000, 45, [], [0, 250], [0, 250]);

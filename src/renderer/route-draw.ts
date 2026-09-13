@@ -312,6 +312,9 @@ export async function mountRouteDrawTool(
     startIndex = null;
     editingRouteId = null;
     numberInput.value = "";
+    nameInput.value = "";
+    colourInput.value = DEFAULT_ROUTE_COLOUR;
+    map.setPaintProperty("route-draft-line", "line-color", DEFAULT_ROUTE_COLOUR);
     saveStatusEl.hidden = true;
     updateHeader();
     refresh();
@@ -372,6 +375,14 @@ export async function mountRouteDrawTool(
   finishButton.className = "btn";
   finishButton.textContent = "Finish";
   finishButton.addEventListener("click", () => {
+    // Without this, the draft's own map layers (route-draft-line/-edges/
+    // -points) keep showing whatever was last drawn — they're separate from
+    // the saved-route-preview system entirely, so leaving them populated
+    // left a permanent, un-hideable copy of the just-drawn/edited route on
+    // the map (spotted when a just-created route wouldn't disappear on
+    // "Hide" — that button only ever touched the saved-route-preview
+    // sources, never these).
+    clear();
     setDrawing(false);
     onFinish();
   });
@@ -390,10 +401,68 @@ export async function mountRouteDrawTool(
   saveSection.style.borderTop = "1px solid var(--border)";
   saveSection.style.paddingTop = "8px";
 
+  const numberRow = document.createElement("div");
+  numberRow.style.display = "flex";
+  numberRow.style.gap = "6px";
+
   const numberInput = document.createElement("input");
   numberInput.type = "text";
   numberInput.className = "field";
   numberInput.placeholder = "Route number (e.g. 7, 7A, X7)";
+  numberInput.style.flex = "1";
+
+  // The route's own colour (DESIGN.md §11), ahead of the livery system —
+  // drives both the draft line while drawing and the saved route's line/
+  // swatch everywhere else (route-panel.ts). Defaults to the same blue the
+  // draft line always used before this existed.
+  const DEFAULT_ROUTE_COLOUR = "#3b82f6";
+  const colourInput = document.createElement("input");
+  colourInput.type = "color";
+  colourInput.value = DEFAULT_ROUTE_COLOUR;
+  colourInput.title = "Route colour";
+  colourInput.style.width = "40px";
+  colourInput.style.padding = "0";
+  colourInput.addEventListener("input", () => {
+    map.setPaintProperty("route-draft-line", "line-color", colourInput.value);
+  });
+
+  numberRow.appendChild(numberInput);
+  numberRow.appendChild(colourInput);
+
+  // The EyeDropper API (not yet in TypeScript's bundled DOM lib) samples a
+  // pixel from anywhere on screen, not just this window — including a
+  // second monitor — unlike the plain colour input's own swatch grid, which
+  // is confined to the app window.
+  if ("EyeDropper" in window) {
+    const eyedropperButton = document.createElement("button");
+    eyedropperButton.type = "button";
+    eyedropperButton.className = "btn btn-icon";
+    eyedropperButton.textContent = "🎨";
+    eyedropperButton.title = "Pick a colour from anywhere on screen";
+    eyedropperButton.addEventListener("click", async () => {
+      const eyeDropper: { open(): Promise<{ sRGBHex: string }> } = new (
+        window as unknown as { EyeDropper: new () => { open(): Promise<{ sRGBHex: string }> } }
+      ).EyeDropper();
+      try {
+        const result = await eyeDropper.open();
+        colourInput.value = result.sRGBHex;
+        map.setPaintProperty("route-draft-line", "line-color", colourInput.value);
+      } catch {
+        // Cancelled (Escape or click-away) — nothing to do.
+      }
+    });
+    numberRow.appendChild(eyedropperButton);
+  }
+
+  // An optional player-set name (DESIGN.md §11), shown instead of the list's
+  // derived-from-last-stop destination fallback (route-panel.ts) until the
+  // real destination display (built from variations/extensions, §6/§7)
+  // exists. Left blank, a route is still identified by number and derived
+  // destination exactly as before this existed.
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "field";
+  nameInput.placeholder = "Route name (optional, e.g. Airport Express)";
 
   const depotGroupContainer = document.createElement("div");
 
@@ -449,6 +518,7 @@ export async function mountRouteDrawTool(
       saveStatusEl.textContent = "Enter a route number first.";
       return;
     }
+    const name = nameInput.value.trim() || null;
     if (draftPoints.length < 2) {
       saveStatusEl.textContent = "Draw at least two points first.";
       return;
@@ -488,11 +558,30 @@ export async function mountRouteDrawTool(
       // Updates in place (and clears the route's own timetables — db.mts's
       // updateRoute — since they're indexed against the point list this
       // edit may have just changed).
-      await window.routes.update(editingRouteId, group.id, number, savedPoints, orientation, terminusIndex, startIndex);
+      await window.routes.update(
+        editingRouteId,
+        group.id,
+        number,
+        savedPoints,
+        orientation,
+        terminusIndex,
+        startIndex,
+        colourInput.value,
+        name,
+      );
       saveStatusEl.style.color = "var(--text-secondary)";
       saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation}).`;
     } else {
-      const created = await window.routes.create(group.id, number, savedPoints, orientation, terminusIndex, startIndex);
+      const created = await window.routes.create(
+        group.id,
+        number,
+        savedPoints,
+        orientation,
+        terminusIndex,
+        startIndex,
+        colourInput.value,
+        name,
+      );
       // A second Save click without leaving drawing mode now updates this
       // same route instead of creating a duplicate with the same number.
       editingRouteId = created.id;
@@ -502,7 +591,8 @@ export async function mountRouteDrawTool(
     }
   });
 
-  saveSection.appendChild(numberInput);
+  saveSection.appendChild(numberRow);
+  saveSection.appendChild(nameInput);
   saveSection.appendChild(depotGroupContainer);
   saveSection.appendChild(saveButton);
   saveSection.appendChild(saveStatusEl);
@@ -797,6 +887,9 @@ export async function mountRouteDrawTool(
       insertAfterIndex = null;
       warning = null;
       numberInput.value = route.number;
+      nameInput.value = route.name ?? "";
+      colourInput.value = route.colour;
+      map.setPaintProperty("route-draft-line", "line-color", route.colour);
       selectedDepotGroupId = route.depotGroupId;
       rebuildRoute();
       refresh();

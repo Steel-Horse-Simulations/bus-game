@@ -30,6 +30,8 @@ interface Route {
   orientation: "inbound" | "outbound";
   terminusIndex: number | null;
   startIndex: number | null;
+  colour: string;
+  name: string | null;
 }
 
 interface RoutesApi {
@@ -40,6 +42,8 @@ interface RoutesApi {
     orientation: "inbound" | "outbound",
     terminusIndex: number | null,
     startIndex: number | null,
+    colour: string,
+    name: string | null,
   ): Promise<Route>;
   list(): Promise<Route[]>;
   update(
@@ -50,6 +54,8 @@ interface RoutesApi {
     orientation: "inbound" | "outbound",
     terminusIndex: number | null,
     startIndex: number | null,
+    colour: string,
+    name: string | null,
   ): Promise<Route>;
   delete(id: number): Promise<void>;
 }

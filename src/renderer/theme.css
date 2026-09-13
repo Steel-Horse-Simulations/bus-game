@@ -215,12 +215,15 @@ body .maplibregl-popup-anchor-right .maplibregl-popup-tip {
   color: var(--text-accent);
 }
 
-/* Route/livery colour swatches — rounded squares, not circles. */
+/* Route/livery colour swatches — rounded squares, not circles. A white
+   border keeps a dark route colour visible against the panel's own
+   dark-mode background, which otherwise swallows it. */
 .swatch {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   border-radius: 3px;
+  border: 2px solid #ffffff;
   flex: none;
 }
 

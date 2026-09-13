@@ -20,30 +20,130 @@ import { Router } from "./wasm/game_wasm.js";
 import { mountRouteDrawTool, type RouteDrawController } from "./route-draw";
 import { createRouteTimetableEditor } from "./route-timetable-panel";
 import { stopsPanelState, busStationsState } from "./stops-layer";
+import { pickContrastColorForHex } from "./icon-contrast";
+import { onewayArrowImageId } from "./map-icons";
 
 const emptyFeatureCollection: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
-function lineSource(coordinates: [number, number][]): GeoJSON.FeatureCollection {
-  if (coordinates.length < 2) return emptyFeatureCollection;
-  return {
+// One traversed edge's own stretch of a previewed route, kept separate from
+// the merged line so the chevron layer can tell, per edge, whether it's used
+// in both directions (a there-and-back stretch shouldn't get chevrons —
+// route-draw.ts's own EdgeChunk does the same for the route being drawn).
+interface EdgeChunk {
+  edgeId: number;
+  coords: [number, number][];
+}
+
+// Any number of routes can be shown on the map at once (each toggled
+// independently via its own row's Show/Hide button) — keyed by route id so
+// toggling one off doesn't require re-routing the others still shown.
+// Colour is captured at Show time; editing a route's colour while it's
+// shown only takes effect on the next toggle.
+interface ShownRoutePreview {
+  coords: [number, number][];
+  edgeChunks: EdgeChunk[];
+  edgeUseCount: Map<number, number>;
+  colour: string;
+  // A cheap fingerprint of the points used to compute this cache — compared
+  // against the freshly-fetched route on every list refresh so an edit made
+  // while a route is shown (Edit -> change points/colour -> Save -> Finish)
+  // updates the map preview on its own, without needing a manual Hide+Show.
+  pointsKey: string;
+}
+const shownRoutes = new Map<number, ShownRoutePreview>();
+
+function computeShownRoutePreview(router: Router, route: Route): ShownRoutePreview {
+  const { coords, edgeChunks, edgeUseCount } = routeLineAndEdges(router, route.points);
+  return { coords, edgeChunks, edgeUseCount, colour: route.colour, pointsKey: JSON.stringify(route.points) };
+}
+
+// Re-syncs every currently-shown route's cached preview against the
+// freshly-fetched route list — called from refreshList(), which already
+// runs after any save/edit/delete. Recomputes only entries whose points or
+// colour actually changed (cheap to detect, since routing is the expensive
+// part), and drops any shown route no longer in the list at all.
+function syncShownRoutes(router: Router, map: maplibregl.Map, routes: Route[]): void {
+  const byId = new Map(routes.map((r) => [r.id, r]));
+  let changed = false;
+  for (const [id, cached] of [...shownRoutes]) {
+    const route = byId.get(id);
+    if (!route) {
+      shownRoutes.delete(id);
+      changed = true;
+      continue;
+    }
+    const pointsKey = JSON.stringify(route.points);
+    if (cached.pointsKey === pointsKey && cached.colour === route.colour) continue;
+    shownRoutes.set(id, computeShownRoutePreview(router, route));
+    changed = true;
+  }
+  if (changed) rebuildShownRoutesSources(map);
+}
+
+function rebuildShownRoutesSources(map: maplibregl.Map): void {
+  const lineFeatures: GeoJSON.Feature[] = [];
+  const chevronFeatures: GeoJSON.Feature[] = [];
+  for (const preview of shownRoutes.values()) {
+    if (preview.coords.length >= 2) {
+      lineFeatures.push({
+        type: "Feature",
+        properties: { colour: preview.colour },
+        geometry: { type: "LineString", coordinates: preview.coords },
+      });
+    }
+    const icon = onewayArrowImageId(pickContrastColorForHex(preview.colour));
+    for (const chunk of preview.edgeChunks) {
+      if (chunk.coords.length < 2) continue;
+      chevronFeatures.push({
+        type: "Feature",
+        properties: { bothDirections: (preview.edgeUseCount.get(chunk.edgeId) ?? 0) >= 2, icon },
+        geometry: { type: "LineString", coordinates: chunk.coords },
+      });
+    }
+  }
+  (map.getSource("saved-route-preview") as maplibregl.GeoJSONSource | undefined)?.setData({
     type: "FeatureCollection",
-    features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates } }],
-  };
+    features: lineFeatures,
+  });
+  (map.getSource("saved-route-preview-edges") as maplibregl.GeoJSONSource | undefined)?.setData({
+    type: "FeatureCollection",
+    features: chevronFeatures,
+  });
 }
 
 // Only the point list is persisted (see the routes table's own comment in
 // electron/db.mts), not the road-following polyline drawn at the time — so
 // showing a saved route again means re-routing every leg, the same way it
-// looked while being drawn.
-function routeLine(router: Router, points: readonly { lon: number; lat: number }[]): [number, number][] {
+// looked while being drawn. Also returns each leg's own edge chunks (and how
+// many times each edge is used across the whole route), the same data
+// route-draw.ts tracks while drawing, so the "Show" preview can carry
+// one-way chevrons too.
+function routeLineAndEdges(
+  router: Router,
+  points: readonly { lon: number; lat: number }[],
+): { coords: [number, number][]; edgeChunks: EdgeChunk[]; edgeUseCount: Map<number, number> } {
   const coords: [number, number][] = [];
+  const edgeChunks: EdgeChunk[] = [];
+  const edgeUseCount = new Map<number, number>();
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
     const leg = router.find_route(a.lon, a.lat, b.lon, b.lat);
-    for (let j = 0; j < leg.length; j += 2) coords.push([leg[j], leg[j + 1]]);
+    const legCoords: [number, number][] = [];
+    for (let j = 0; j < leg.length; j += 2) legCoords.push([leg[j], leg[j + 1]]);
+
+    const edgeIds = Array.from(router.last_route_edges());
+    const pointCounts = Array.from(router.last_route_edge_point_counts());
+    let idx = 0;
+    for (let e = 0; e < edgeIds.length; e++) {
+      const count = pointCounts[e];
+      edgeChunks.push({ edgeId: edgeIds[e], coords: legCoords.slice(idx, idx + count + 1) });
+      edgeUseCount.set(edgeIds[e], (edgeUseCount.get(edgeIds[e]) ?? 0) + 1);
+      idx += count;
+    }
+    coords.push(...legCoords);
   }
-  return coords;
+  return { coords, edgeChunks, edgeUseCount };
 }
 
 function distance(a: [number, number], b: [number, number]): number {
@@ -68,6 +168,10 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
   // loaded once, and isStyleLoaded() can read false here anyway due to
   // unrelated tile activity, silently losing a "load" event that already
   // fired and won't fire again.
+  // Any number of routes can be shown at once (see shownRoutes above) — both
+  // layers carry every currently-shown route's own features together, each
+  // reading its colour/icon back off its own feature properties rather than
+  // one flat layer-wide paint value, so each route keeps its own colour.
   map.addSource("saved-route-preview", { type: "geojson", data: emptyFeatureCollection });
   map.addLayer({
     id: "saved-route-preview",
@@ -75,8 +179,28 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     source: "saved-route-preview",
     layout: { "line-cap": "round", "line-join": "round" },
     paint: {
-      "line-color": "#22c55e",
+      "line-color": ["get", "colour"],
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 9, 18, 15],
+    },
+  });
+  // One-way chevrons for shown routes — white or black is picked per-route
+  // against that route's own colour (icon-contrast.ts) at Show time and
+  // baked into each feature's own "icon" property (map-icons.ts
+  // pre-registers both variants).
+  map.addSource("saved-route-preview-edges", { type: "geojson", data: emptyFeatureCollection });
+  map.addLayer({
+    id: "saved-route-preview-chevrons",
+    type: "symbol",
+    source: "saved-route-preview-edges",
+    filter: ["!=", ["get", "bothDirections"], true],
+    layout: {
+      "symbol-placement": "line",
+      "symbol-spacing": 40,
+      "icon-image": ["get", "icon"],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 18, 1.1],
+      "icon-rotation-alignment": "map",
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
     },
   });
 
@@ -175,6 +299,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     if (mode.kind !== "list" || !listBody) return;
     const body = listBody;
     const [routes, depotGroups] = await Promise.all([window.routes.list(), window.depotGroups.list()]);
+    syncShownRoutes(router, map, routes);
     body.innerHTML = "";
 
     if (routes.length === 0) {
@@ -238,20 +363,22 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     row.style.gap = "8px";
     row.style.padding = "6px 12px";
 
-    // Colour swatch: DESIGN.md §11 derives this from the route's own
-    // colour (in turn from livery data, OPERATIONS.md §4/§5), which
-    // doesn't exist yet — every entry gets the same neutral placeholder
-    // rather than a fabricated colour that would look like a real one.
+    // Colour swatch: the route's own player-set colour (DESIGN.md §11),
+    // ahead of the full livery system (OPERATIONS.md §4/§5, Phase 3+).
     const swatch = document.createElement("span");
     swatch.className = "swatch";
-    swatch.style.background = "var(--border-strong)";
+    swatch.style.background = route.colour;
     row.appendChild(swatch);
 
     const info = document.createElement("div");
     info.style.flex = "1";
     info.style.minWidth = "0";
+    // A player-set name (DESIGN.md §11) takes over from the derived-from-
+    // last-stop destination once set — a manual stand-in for the real
+    // destination display (built from variations/extensions, §6/§7), which
+    // needs those systems and doesn't exist yet.
     const lastStop = [...route.points].reverse().find((p) => p.kind === "stop");
-    const destination = lastStop ? stopLabel(lastStop) : "";
+    const destination = route.name ?? (lastStop ? stopLabel(lastStop) : "");
     const title = document.createElement("div");
     title.style.overflow = "hidden";
     title.style.textOverflow = "ellipsis";
@@ -284,23 +411,36 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       actions.style.gap = "4px";
       actions.style.padding = "0 12px 8px";
 
+      // A per-route toggle (multiple routes can be shown on the map at
+      // once — shownRoutes above) rather than a single shared preview slot,
+      // so showing route B no longer hides route A, and deleting a route
+      // only ever removes its own line/chevrons.
+      const isShown = shownRoutes.has(route.id);
       const showButton = document.createElement("button");
       showButton.className = "btn btn-icon";
-      showButton.textContent = "Show";
-      showButton.title = "Show this route on the map";
+      showButton.textContent = isShown ? "Hide" : "Show";
+      showButton.title = isShown ? "Hide this route from the map" : "Show this route on the map";
       showButton.addEventListener("click", (e) => {
         e.stopPropagation();
-        const coords = routeLine(router, route.points);
-        (map.getSource("saved-route-preview") as maplibregl.GeoJSONSource | undefined)?.setData(
-          lineSource(coords),
-        );
-        if (coords.length > 0) {
-          const bounds = coords.reduce(
-            (b, c) => b.extend(c),
-            new maplibregl.LngLatBounds(coords[0], coords[0]),
-          );
-          map.fitBounds(bounds, { padding: 80, maxZoom: 16 });
+        if (shownRoutes.has(route.id)) {
+          shownRoutes.delete(route.id);
+          rebuildShownRoutesSources(map);
+        } else {
+          const preview = computeShownRoutePreview(router, route);
+          shownRoutes.set(route.id, preview);
+          rebuildShownRoutesSources(map);
+          if (preview.coords.length > 0) {
+            const bounds = preview.coords.reduce(
+              (b, c) => b.extend(c),
+              new maplibregl.LngLatBounds(preview.coords[0], preview.coords[0]),
+            );
+            map.fitBounds(bounds, { padding: 80, maxZoom: 16 });
+          }
         }
+        // Updates the button's own label (Show <-> Hide) immediately —
+        // hiding doesn't move the camera, so the moveend-triggered refresh
+        // elsewhere in this module wouldn't otherwise run at all.
+        void refreshList();
       });
 
       const editButton = document.createElement("button");
@@ -327,9 +467,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       deleteButton.addEventListener("click", async (e) => {
         e.stopPropagation();
         await window.routes.delete(route.id);
-        (map.getSource("saved-route-preview") as maplibregl.GeoJSONSource | undefined)?.setData(
-          emptyFeatureCollection,
-        );
+        shownRoutes.delete(route.id);
+        rebuildShownRoutesSources(map);
         expandedRouteId = null;
         await refreshList();
       });

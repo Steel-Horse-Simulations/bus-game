@@ -160,7 +160,9 @@ function registerRouteHandlers(): void {
       orientation: "inbound" | "outbound",
       terminusIndex: number | null,
       startIndex: number | null,
-    ) => createRoute(save, depotGroupId, number, points, orientation, terminusIndex, startIndex),
+      colour: string,
+      name: string | null,
+    ) => createRoute(save, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
   ipcMain.handle(
@@ -174,7 +176,9 @@ function registerRouteHandlers(): void {
       orientation: "inbound" | "outbound",
       terminusIndex: number | null,
       startIndex: number | null,
-    ) => updateRoute(save, id, depotGroupId, number, points, orientation, terminusIndex, startIndex),
+      colour: string,
+      name: string | null,
+    ) => updateRoute(save, id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name),
   );
   ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
 }

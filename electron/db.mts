@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 9;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- terminus with no real loop). Null means neither is set: points[0]/
 -- points[last] are the only start/terminus, same as before these columns
 -- existed.
+-- "colour" (DESIGN.md §11) is a plain hex string the player sets directly,
+-- shown for the route's line on the map and its list swatch — separate from,
+-- and ahead of, the livery system (OPERATIONS.md §4/§5) which is Phase 3+.
+-- "name" is a plain player-set label (nullable — a route need not have one),
+-- shown instead of the derived-from-last-stop destination the list falls
+-- back to. It's a manual stand-in for the real destination display DESIGN.md
+-- §6/§7 describes (built from variations/extensions), which needs those
+-- systems and doesn't exist yet.
 CREATE TABLE IF NOT EXISTS routes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -46,7 +54,9 @@ CREATE TABLE IF NOT EXISTS routes (
   points TEXT NOT NULL,
   orientation TEXT NOT NULL CHECK (orientation IN ('inbound', 'outbound')),
   terminus_index INTEGER,
-  start_index INTEGER
+  start_index INTEGER,
+  colour TEXT NOT NULL DEFAULT '#3b82f6',
+  name TEXT
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -126,6 +136,19 @@ export function openSave(path: string): SaveDb {
     // OPEN-ITEMS.md) — the route_timetables table is created by the SCHEMA
     // statement above (CREATE TABLE IF NOT EXISTS already ran against this
     // save), this branch only needs to advance the version.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 7) {
+    // v7 -> v8: routes gained a player-set colour (DESIGN.md §11), ahead of
+    // the livery system. Existing rows get the same blue the map already
+    // used as its hardcoded route-line colour, so nothing visibly changes
+    // for a route that hasn't had a colour chosen yet.
+    db.exec("ALTER TABLE routes ADD COLUMN colour TEXT NOT NULL DEFAULT '#3b82f6'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 8) {
+    // v8 -> v9: routes gained an optional player-set name, standing in for
+    // the real destination display (DESIGN.md §6/§7) until variations exist.
+    // Existing rows get null, same as the list already treats "no name set".
+    db.exec("ALTER TABLE routes ADD COLUMN name TEXT");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -221,6 +244,8 @@ export interface Route {
   orientation: "inbound" | "outbound";
   terminusIndex: number | null;
   startIndex: number | null;
+  colour: string;
+  name: string | null;
 }
 
 interface RouteRow {
@@ -231,6 +256,8 @@ interface RouteRow {
   orientation: string;
   terminus_index: number | null;
   start_index: number | null;
+  colour: string;
+  name: string | null;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -242,6 +269,8 @@ function routeFromRow(row: RouteRow): Route {
     orientation: row.orientation as "inbound" | "outbound",
     terminusIndex: row.terminus_index === null ? null : Number(row.terminus_index),
     startIndex: row.start_index === null ? null : Number(row.start_index),
+    colour: row.colour,
+    name: row.name,
   };
 }
 
@@ -253,12 +282,14 @@ export function createRoute(
   orientation: "inbound" | "outbound",
   terminusIndex: number | null,
   startIndex: number | null,
+  colour: string,
+  name: string | null,
 ): Route {
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex);
+    .run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, colour, name);
   return {
     id: Number(result.lastInsertRowid),
     depotGroupId,
@@ -267,6 +298,8 @@ export function createRoute(
     orientation,
     terminusIndex,
     startIndex,
+    colour,
+    name,
   };
 }
 
@@ -288,19 +321,21 @@ export function updateRoute(
   orientation: "inbound" | "outbound",
   terminusIndex: number | null,
   startIndex: number | null,
+  colour: string,
+  name: string | null,
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?
      WHERE id = ?`,
-  ).run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, id);
+  ).run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, colour, name, id);
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
-  return { id, depotGroupId, number, points, orientation, terminusIndex, startIndex };
+  return { id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name };
 }
 
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);

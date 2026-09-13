@@ -21,20 +21,41 @@ function roundRectPath(
   ctx.closePath();
 }
 
-function registerOnewayArrow(map: maplibregl.Map): void {
-  const size = 16;
+const ONEWAY_ARROW_SIZE = 16;
+
+function drawArrow(color: string): ImageData {
+  const size = ONEWAY_ARROW_SIZE;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#333333";
+  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(2, 3);
   ctx.lineTo(size - 2, size / 2);
   ctx.lineTo(2, size - 3);
   ctx.closePath();
   ctx.fill();
-  map.addImage("oneway-arrow", ctx.getImageData(0, 0, size, size));
+  return ctx.getImageData(0, 0, size, size);
+}
+
+function registerOnewayArrow(map: maplibregl.Map): void {
+  map.addImage("oneway-arrow", drawArrow("#333333"));
+}
+
+// A route's own chevrons (route-panel.ts's saved-route-preview, showing
+// direction of running against that route's own colour) need to read against
+// whatever colour the route is, unlike the fixed dark grey road one-ways
+// above — so both a black and white variant are pre-registered, picked
+// between via icon-contrast.ts's contrast check, the same pattern
+// support-vehicle-icons.ts already uses for its own icons.
+export function onewayArrowImageId(color: "black" | "white"): string {
+  return `oneway-arrow-${color}`;
+}
+
+function registerOnewayArrowContrastVariants(map: maplibregl.Map): void {
+  map.addImage(onewayArrowImageId("black"), drawArrow("#000000"));
+  map.addImage(onewayArrowImageId("white"), drawArrow("#ffffff"));
 }
 
 function registerShieldBadge(map: maplibregl.Map): void {
@@ -55,5 +76,6 @@ function registerShieldBadge(map: maplibregl.Map): void {
 
 export function registerMapIcons(map: maplibregl.Map): void {
   registerOnewayArrow(map);
+  registerOnewayArrowContrastVariants(map);
   registerShieldBadge(map);
 }

@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld("routes", {
     orientation: "inbound" | "outbound",
     terminusIndex: number | null,
     startIndex: number | null,
+    colour: string,
+    name: string | null,
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -49,6 +51,8 @@ contextBridge.exposeInMainWorld("routes", {
       orientation,
       terminusIndex,
       startIndex,
+      colour,
+      name,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   update: (
@@ -59,6 +63,8 @@ contextBridge.exposeInMainWorld("routes", {
     orientation: "inbound" | "outbound",
     terminusIndex: number | null,
     startIndex: number | null,
+    colour: string,
+    name: string | null,
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -69,6 +75,8 @@ contextBridge.exposeInMainWorld("routes", {
       orientation,
       terminusIndex,
       startIndex,
+      colour,
+      name,
     ) as Promise<Route>,
   delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
 });

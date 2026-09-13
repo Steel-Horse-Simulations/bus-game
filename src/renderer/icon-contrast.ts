@@ -34,3 +34,12 @@ export function pickContrastColor(r: number, g: number, b: number): ContrastColo
   const againstWhite = contrastRatio(behind, WHITE_LUMINANCE);
   return againstWhite >= againstBlack ? "white" : "black";
 }
+
+// Same pick, from a "#rrggbb" hex string — routes store their colour that
+// way (electron/db.mts), rather than as separate channels.
+export function pickContrastColorForHex(hex: string): ContrastColor {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return pickContrastColor(r, g, b);
+}
