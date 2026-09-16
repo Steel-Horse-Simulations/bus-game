@@ -97,7 +97,12 @@ mod tests {
         ("Dumfries", -3.6172, 55.0705, true),
         ("Carlisle", -2.9382, 54.8951, true),
         ("Berwick-upon-Tweed", -1.9994, 55.7710, true),
-        ("Newcastle upon Tyne", -1.6178, 54.9783, false),
+        // The border-strip extension used to dip only to ~55.6 near
+        // Newcastle's longitude while reaching ~54.7 near Carlisle's — an
+        // asymmetric southern edge that excluded Newcastle while including
+        // Carlisle, reported by a real player. Flattened to a uniform 54.70
+        // across the whole strip (2026-09-13), which now includes Newcastle.
+        ("Newcastle upon Tyne", -1.6178, 54.9783, true),
         ("Manchester", -2.2426, 53.4808, false),
         ("Isle of Man (Douglas)", -4.4816, 54.1509, false),
     ];

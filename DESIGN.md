@@ -244,16 +244,18 @@ stands — hideable via the map's stop toggle — these linked stops are
 demand** for journeys starting or ending there than ordinary land use (§2
 "Demand").
 
-Stadiums and ferry terminals — grouped with park and ride as one pipeline
+Stadiums — grouped with ferry terminals and park and ride as one pipeline
 data category (`CLAUDE.md`) — don't get this treatment; stadiums already
-have their own eventual event-contract mechanics (§10) and ferries are
-Phase 9.
+have their own eventual event-contract mechanics (§10). Ferry terminals
+don't get the stop-linking behaviour itself yet either (full linking is
+Phase 9, the same as ferry route/timetable modelling), but reserve a ring
+colour now, alongside the other three below, ready for when that lands.
 
 **Colour.** Follows the same ring-around-the-stop visual pattern as bus
 station membership, but each stands out in its own colour: bus stations
 **#7c3aed** (moved off the original navy, which sat too close to fixed real
 contracts' route colours — §10), railway stations **#ff4200**, airports
-**#059669**, park and ride **#db2777**.
+**#059669**, park and ride **#db2777**, ferry terminals **#0284c7**.
 
 ### Stop reservation and branding
 A general mechanic, not unique to any one route or contract.

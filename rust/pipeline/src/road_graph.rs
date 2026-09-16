@@ -9,6 +9,11 @@ use std::collections::HashMap;
 /// it halves the memory footprint versus f64 lon/lat.
 pub struct NodeCoords {
     by_id: HashMap<i64, (i32, i32)>,
+    /// Junction control read from the node's own OSM tags — only nodes with
+    /// an explicit tag are present; `junction_control` returns `None` (the
+    /// enum variant) for every other node, which is the overwhelming
+    /// majority (a plain untagged UK priority junction).
+    junction_control: HashMap<i64, game_data::JunctionControl>,
 }
 
 impl NodeCoords {
@@ -24,12 +29,52 @@ impl NodeCoords {
         self.by_id.get(&id).copied()
     }
 
+    pub fn junction_control(&self, id: i64) -> game_data::JunctionControl {
+        self.junction_control
+            .get(&id)
+            .copied()
+            .unwrap_or(game_data::JunctionControl::None)
+    }
+
     #[cfg(test)]
     pub fn from_pairs(pairs: impl IntoIterator<Item = (i64, (i32, i32))>) -> Self {
         Self {
             by_id: pairs.into_iter().collect(),
+            junction_control: HashMap::new(),
         }
     }
+
+    #[cfg(test)]
+    pub fn from_pairs_with_junction_control(
+        pairs: impl IntoIterator<Item = (i64, (i32, i32))>,
+        controls: impl IntoIterator<Item = (i64, game_data::JunctionControl)>,
+    ) -> Self {
+        Self {
+            by_id: pairs.into_iter().collect(),
+            junction_control: controls.into_iter().collect(),
+        }
+    }
+}
+
+/// Classifies a junction node's own tags into how it's controlled. Only
+/// `highway=*` is checked — a node can carry other unrelated tags (a
+/// crossing, a name) without affecting this.
+fn classify_junction_control<'a>(
+    tags: impl Iterator<Item = (&'a str, &'a str)>,
+) -> game_data::JunctionControl {
+    use game_data::JunctionControl;
+    for (k, v) in tags {
+        if k == "highway" {
+            return match v {
+                "traffic_signals" => JunctionControl::TrafficSignals,
+                "stop" => JunctionControl::Stop,
+                "give_way" => JunctionControl::GiveWay,
+                "mini_roundabout" => JunctionControl::MiniRoundabout,
+                _ => JunctionControl::None,
+            };
+        }
+    }
+    JunctionControl::None
 }
 
 fn to_e7(deg: f64) -> i32 {
@@ -42,6 +87,8 @@ pub struct NodePassResult {
     pub bus_station_nodes: Vec<crate::stops::BusStation>,
     pub poi_nodes: Vec<crate::landuse::Poi>,
     pub venue_nodes: Vec<crate::venues::Venue>,
+    pub railway_station_nodes: Vec<crate::railway::RailwayStation>,
+    pub tram_stop_nodes: Vec<crate::railway::TramStop>,
 }
 
 /// Pass 1: stream the whole file once, keeping the coordinates of every node
@@ -55,10 +102,13 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
         .unwrap_or_else(|e| panic!("failed to open {pbf_path}: {e}"));
 
     let mut by_id = HashMap::with_capacity(45_000_000);
+    let mut junction_control = HashMap::new();
     let mut stops = Vec::new();
     let mut bus_station_nodes = Vec::new();
     let mut poi_nodes = Vec::new();
     let mut venue_nodes = Vec::new();
+    let mut railway_station_nodes = Vec::new();
+    let mut tram_stop_nodes = Vec::new();
 
     reader
         .for_each(|element| match element {
@@ -69,10 +119,13 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
                 n.tags(),
                 rings,
                 &mut by_id,
+                &mut junction_control,
                 &mut stops,
                 &mut bus_station_nodes,
                 &mut poi_nodes,
                 &mut venue_nodes,
+                &mut railway_station_nodes,
+                &mut tram_stop_nodes,
             ),
             Element::DenseNode(n) => visit_node(
                 n.id(),
@@ -81,21 +134,26 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
                 n.tags(),
                 rings,
                 &mut by_id,
+                &mut junction_control,
                 &mut stops,
                 &mut bus_station_nodes,
                 &mut poi_nodes,
                 &mut venue_nodes,
+                &mut railway_station_nodes,
+                &mut tram_stop_nodes,
             ),
             _ => {}
         })
         .unwrap_or_else(|e| panic!("pass 1 (node collection) failed on {pbf_path}: {e}"));
 
     NodePassResult {
-        coords: NodeCoords { by_id },
+        coords: NodeCoords { by_id, junction_control },
         stops,
         bus_station_nodes,
         poi_nodes,
         venue_nodes,
+        railway_station_nodes,
+        tram_stop_nodes,
     }
 }
 
@@ -107,16 +165,24 @@ fn visit_node<'a>(
     tags: impl Iterator<Item = (&'a str, &'a str)> + Clone,
     rings: &[Ring],
     by_id: &mut HashMap<i64, (i32, i32)>,
+    junction_control: &mut HashMap<i64, game_data::JunctionControl>,
     stops: &mut Vec<crate::stops::Stop>,
     bus_station_nodes: &mut Vec<crate::stops::BusStation>,
     poi_nodes: &mut Vec<crate::landuse::Poi>,
     venue_nodes: &mut Vec<crate::venues::Venue>,
+    railway_station_nodes: &mut Vec<crate::railway::RailwayStation>,
+    tram_stop_nodes: &mut Vec<crate::railway::TramStop>,
 ) {
     if !point_in_boundary(lon, lat, rings) {
         return;
     }
     let (lon_e7, lat_e7) = (to_e7(lon), to_e7(lat));
     by_id.insert(id, (lon_e7, lat_e7));
+
+    let control = classify_junction_control(tags.clone());
+    if control != game_data::JunctionControl::None {
+        junction_control.insert(id, control);
+    }
 
     match crate::stops::classify_node_tags(tags.clone()) {
         crate::stops::NodeClassification::Stop(kind) => {
@@ -137,6 +203,25 @@ fn visit_node<'a>(
             });
         }
         crate::stops::NodeClassification::None => {}
+    }
+
+    if let Some(kind) = crate::railway::classify_railway_station_tags(tags.clone()) {
+        railway_station_nodes.push(crate::railway::RailwayStation {
+            osm_id: id,
+            lon_e7,
+            lat_e7,
+            name: crate::railway::name_tag(tags.clone()),
+            kind,
+        });
+    }
+
+    if tags.clone().any(|(k, v)| crate::railway::is_tram_stop_tag(k, v)) {
+        tram_stop_nodes.push(crate::railway::TramStop {
+            osm_id: id,
+            lon_e7,
+            lat_e7,
+            name: crate::railway::name_tag(tags.clone()),
+        });
     }
 
     if let Some(category) = crate::landuse::classify_poi_tags(tags.clone()) {
@@ -399,6 +484,14 @@ pub struct ScanResult {
     /// Venues (stadium/ferry terminal/park-and-ride) mapped as closed ways —
     /// position is the centroid of their resolved nodes.
     pub venue_ways: Vec<crate::venues::Venue>,
+    /// Railway stations/halts mapped as closed ways (a station building or
+    /// platform-area footprint) rather than a single node — position is the
+    /// centroid of their resolved nodes, genuinely "the middle of the
+    /// station" for the ones OSM has mapped this way, rather than wherever
+    /// a point node happens to sit (sometimes right on an access road).
+    pub railway_station_ways: Vec<crate::railway::RailwayStation>,
+    /// `railway=platform` ways — full physical shape, not just a centroid.
+    pub platform_ways: Vec<crate::railway::Platform>,
 }
 
 /// Pass 2: stream the file once more, sequentially. Covers ways (tags +
@@ -422,6 +515,8 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
     let mut landuse_zones = Vec::new();
     let mut venue_ways = Vec::new();
     let mut poi_ways = Vec::new();
+    let mut railway_station_ways = Vec::new();
+    let mut platform_ways = Vec::new();
 
     reader
         .for_each(|element| match element {
@@ -438,6 +533,8 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                 let mut width_tag_m = None;
                 let mut lanes = None;
                 let mut is_bus_station = false;
+                let mut railway_station_kind = None;
+                let mut is_platform = false;
                 let mut name = None;
 
                 for (k, v) in way.tags() {
@@ -462,6 +559,13 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                         "width" => width_tag_m = parse_width_metres(v),
                         "lanes" => lanes = v.parse::<u8>().ok(),
                         "amenity" if v == "bus_station" => is_bus_station = true,
+                        "railway" if v == "station" => {
+                            railway_station_kind = Some(game_data::RailwayStationKind::Station)
+                        }
+                        "railway" if v == "halt" => {
+                            railway_station_kind = Some(game_data::RailwayStationKind::Halt)
+                        }
+                        _ if crate::railway::is_platform_tag(k, v) => is_platform = true,
                         "name" => name = Some(v.to_string()),
                         _ => {}
                     }
@@ -549,6 +653,30 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                                 lat_e7,
                                 name,
                             });
+                        }
+                        return;
+                    }
+                    if let Some(kind) = railway_station_kind {
+                        if let Some((lon_e7, lat_e7)) = centroid() {
+                            railway_station_ways.push(crate::railway::RailwayStation {
+                                osm_id: way.id(),
+                                lon_e7,
+                                lat_e7,
+                                name,
+                                kind,
+                            });
+                        }
+                        return;
+                    }
+                    if is_platform {
+                        // Full shape, not a centroid — the whole point of
+                        // extracting platforms at all, per the deliberate
+                        // choice over a simple marker. At least 2 resolved
+                        // points to be a real line/area, not a single dot.
+                        let geometry: Vec<(i32, i32)> =
+                            refs.iter().filter_map(|&id| nodes.get(id)).collect();
+                        if geometry.len() >= 2 {
+                            platform_ways.push(crate::railway::Platform { osm_id: way.id(), geometry });
                         }
                         return;
                     }
@@ -663,12 +791,40 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
         landuse_zones,
         poi_ways,
         venue_ways,
+        railway_station_ways,
+        platform_ways,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_traffic_signals_stop_give_way_and_mini_roundabout() {
+        let cases: [(&str, game_data::JunctionControl); 4] = [
+            ("traffic_signals", game_data::JunctionControl::TrafficSignals),
+            ("stop", game_data::JunctionControl::Stop),
+            ("give_way", game_data::JunctionControl::GiveWay),
+            ("mini_roundabout", game_data::JunctionControl::MiniRoundabout),
+        ];
+        for (tag_value, expected) in cases {
+            assert_eq!(classify_junction_control([("highway", tag_value)].into_iter()), expected);
+        }
+    }
+
+    #[test]
+    fn unrelated_or_missing_tags_classify_as_no_junction_control() {
+        assert_eq!(
+            classify_junction_control([("highway", "traffic_lights_unrecognised_value")].into_iter()),
+            game_data::JunctionControl::None
+        );
+        assert_eq!(
+            classify_junction_control([("name", "Some Junction")].into_iter()),
+            game_data::JunctionControl::None
+        );
+        assert_eq!(classify_junction_control(std::iter::empty()), game_data::JunctionControl::None);
+    }
 
     // Pins the agreed width table (2026-09-01) so a future edit can't drift
     // it silently — change the numbers here deliberately if they're revised.

@@ -114,10 +114,12 @@ export interface ComputedOffsets {
   estimated: boolean[];
   // Timing points whose published leg time is faster than the route can
   // actually be driven — scheduled at the fastest achievable time instead
-  // of a negative wait, flagged so the caller can warn (DESIGN.md §7: "a
-  // running time below what is physically achievable gets a stronger
-  // warning").
-  infeasiblePointIndexes: number[];
+  // of a negative wait, flagged (with the actual published vs. fastest
+  // figures, in whole minutes rounded up) so the caller can build a
+  // specific, actionable warning rather than a bare pass/fail (DESIGN.md
+  // §7: "a running time below what is physically achievable gets a
+  // stronger warning").
+  infeasibleTimingPoints: { pointIndex: number; publishedMinutes: number; fastestMinutes: number }[];
 }
 
 // Turns per-leg running times into per-point arrival/departure offsets
@@ -151,7 +153,7 @@ export function computeOffsets(
   const arrivalOffsetsSeconds: number[] = new Array(pointCount).fill(0);
   const departureOffsetsSeconds: number[] = new Array(pointCount).fill(0);
   const estimated: boolean[] = new Array(pointCount).fill(true);
-  const infeasiblePointIndexes: number[] = [];
+  const infeasibleTimingPoints: ComputedOffsets["infeasibleTimingPoints"] = [];
   estimated[0] = false;
 
   let anchorIndex = 0; // last point with a known (non-estimated) departure
@@ -161,7 +163,11 @@ export function computeOffsets(
     const naturalSeconds = legTimesSeconds.slice(anchorIndex, tp.pointIndex).reduce((sum, s) => sum + s, 0);
     let targetSeconds = tp.legMinutes * 60;
     if (targetSeconds < naturalSeconds) {
-      infeasiblePointIndexes.push(tp.pointIndex);
+      infeasibleTimingPoints.push({
+        pointIndex: tp.pointIndex,
+        publishedMinutes: tp.legMinutes,
+        fastestMinutes: Math.ceil(naturalSeconds / 60),
+      });
       targetSeconds = naturalSeconds;
     }
 
@@ -190,7 +196,14 @@ export function computeOffsets(
     departureOffsetsSeconds[i] = arrival;
   }
 
-  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasiblePointIndexes };
+  // The route's own first and last points are always published times on a
+  // real timetable, never just "passing through" (DESIGN.md §4/§7) — point
+  // 0 already always is (it's the journey's own departure); this makes the
+  // terminus one too even with no timing point explicitly flagged there,
+  // using whatever natural running time gets it there.
+  estimated[pointCount - 1] = false;
+
+  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints };
 }
 
 // Combines a generated departure with a point's own offset to get the

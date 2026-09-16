@@ -90,14 +90,17 @@ assert(
     JSON.stringify(departureOffsetsSeconds) === JSON.stringify([0, 100, 300]),
     "departure offsets equal arrival offsets when nothing is a timing point",
   );
-  assert(JSON.stringify(estimated) === JSON.stringify([false, true, true]), "only point 0 is ever non-estimated with no timing points set");
+  assert(
+    JSON.stringify(estimated) === JSON.stringify([false, true, false]),
+    "point 0 and the terminus are always non-estimated even with no timing points set — only points strictly in between ever are",
+  );
 }
 
 // Same shape, but point 1 is a timing point published 3 minutes (180s)
 // from departure — slower than the natural 100s, so real padding is
 // added; point 1 stops being an estimate.
 {
-  const { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasiblePointIndexes } = computeOffsets(
+  const { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints } = computeOffsets(
     3,
     [100, 200],
     [{ pointIndex: 1, legMinutes: 3, dwellSeconds: 0 }],
@@ -105,8 +108,11 @@ assert(
   assert(arrivalOffsetsSeconds[1] === 180, "arrival at the timing point matches its published leg time, not the natural running time");
   assert(departureOffsetsSeconds[1] === 180, "departure equals arrival when there's no dwell");
   assert(arrivalOffsetsSeconds[2] === 380, "the padding carries forward into the next leg's arrival (180 + 200)");
-  assert(JSON.stringify(estimated) === JSON.stringify([false, false, true]), "the timing point itself is no longer an estimate");
-  assert(infeasiblePointIndexes.length === 0, "a published time slower than natural running is perfectly feasible");
+  assert(
+    JSON.stringify(estimated) === JSON.stringify([false, false, false]),
+    "the timing point itself is no longer an estimate, and the terminus (also point 2 here) is always non-estimated regardless",
+  );
+  assert(infeasibleTimingPoints.length === 0, "a published time slower than natural running is perfectly feasible");
 }
 
 // A dwell (layover) makes departure later than arrival at that one point,
@@ -144,25 +150,35 @@ assert(
 // infeasible — scheduled at the fastest achievable time instead of a
 // negative/zero wait, and flagged rather than silently accepted.
 {
-  const { arrivalOffsetsSeconds, infeasiblePointIndexes } = computeOffsets(
+  const { arrivalOffsetsSeconds, infeasibleTimingPoints } = computeOffsets(
     2,
     [200],
     [{ pointIndex: 1, legMinutes: 1, dwellSeconds: 0 }], // 60s published, 200s natural
   );
   assert(arrivalOffsetsSeconds[1] === 200, "an infeasible timing point falls back to the fastest achievable time");
-  assert(infeasiblePointIndexes.length === 1 && infeasiblePointIndexes[0] === 1, "the infeasible timing point is flagged, not silently accepted");
+  assert(
+    infeasibleTimingPoints.length === 1 &&
+      infeasibleTimingPoints[0].pointIndex === 1 &&
+      infeasibleTimingPoints[0].publishedMinutes === 1 &&
+      infeasibleTimingPoints[0].fastestMinutes === 4,
+    "the infeasible timing point is flagged with the published and fastest-achievable minutes, not silently accepted",
+  );
 }
 
-// Anything after the last timing point keeps pure natural running time —
-// no padding to apply without a further published time to hit.
+// Anything after the last explicit timing point keeps pure natural running
+// time — no padding to apply without a further published time to hit —
+// except the terminus itself, which is always non-estimated regardless
+// (DESIGN.md §4/§7: the route's own last stop is always a published time
+// on a real timetable, the same as point 0 already is).
 {
   const { arrivalOffsetsSeconds, estimated } = computeOffsets(
-    3,
-    [100, 200],
+    4,
+    [100, 200, 50],
     [{ pointIndex: 1, legMinutes: 3, dwellSeconds: 0 }],
   );
-  assert(arrivalOffsetsSeconds[2] === arrivalOffsetsSeconds[1] + 200, "the trailing leg after the last timing point is unpadded natural running time");
-  assert(estimated[2] === true, "a trailing stop past the last timing point is still an estimate");
+  assert(arrivalOffsetsSeconds[2] === arrivalOffsetsSeconds[1] + 200, "the trailing leg after the last explicit timing point is unpadded natural running time");
+  assert(estimated[2] === true, "a genuinely intermediate trailing stop (not the terminus) is still an estimate");
+  assert(estimated[3] === false, "but the terminus itself is never an estimate, even with no explicit timing point flagged there");
 }
 
 threw = false;

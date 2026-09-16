@@ -4,7 +4,7 @@
 // separate, later increment.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
-import { decode_stops, decode_stop_areas } from "./wasm/game_wasm.js";
+import { decode_stops, decode_stop_areas, decode_railway_stations, decode_tram_stops } from "./wasm/game_wasm.js";
 import { routeDrawState } from "./route-draw";
 import { createDropdown } from "./dropdown";
 import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropoff";
@@ -56,16 +56,45 @@ export const busStationsState: BusStationSummary[] = [];
 const stopColorExpression = ["case", ["get", "usedByService"], "#1677ff", "#8c8c8c"];
 // Bus stations get their own colour, distinct from the navies fixed real
 // contracts reserve their stops in (398 #002664, Airlink 100 #002b4e —
-// DESIGN.md §10) — airports and railway stations will get their own colours
-// too on the same ring style once that linking exists (DESIGN.md §4:
-// railway #ff4200, airport #059669), all under this one visual pattern.
+// DESIGN.md §10) — DESIGN.md §4's other three categories (railway
+// #ff4200, airport #059669, park and ride #db2777) get the same ring
+// treatment once each has its own linking; Glasgow Subway (#F57C14) and
+// trams (#8A0D04) aren't in that DESIGN.md list but follow the identical
+// pattern, all colours confirmed directly with the user.
 const BUS_STATION_COLOR = "#7c3aed";
+const RAILWAY_LINK_COLOR = "#ff4200";
+const SUBWAY_LINK_COLOR = "#F57C14";
+const TRAM_LINK_COLOR = "#8A0D04";
+// A stop's link to a nearby railway/subway station or tram stop is a
+// manual player choice via the override layer, the same mechanism as bus
+// station membership below — not computed from proximity. Unlike bus
+// station membership, there's no OSM stop_area relation to seed it from
+// first: those relations don't reliably pair a bus stop with a rail/
+// subway/tram interchange the way they do bus station stands, so this
+// starts with nothing linked until the player links it. The picker radius
+// below only narrows the dropdown's candidate list — it isn't a cutoff on
+// what counts as "linked".
+const TRANSIT_LINK_PICKER_RADIUS_M = 500;
 // Coloured outline for a stop that's part of a bus station's stand
-// grouping, white otherwise — the same marker distinguishes membership
-// wherever it's drawn, whether that's the main map (an "always show"
-// station) or the temporary reveal-on-click layer.
-const stopStrokeExpression = ["case", ["get", "partOfStation"], BUS_STATION_COLOR, "#ffffff"];
-const stopStrokeWidthExpression = ["case", ["get", "partOfStation"], 1.5, 1];
+// grouping, or manually linked to a railway/subway station or tram stop,
+// white otherwise — the same marker distinguishes membership wherever
+// it's drawn, whether that's the main map (an "always show" station) or
+// the temporary reveal-on-click layer. Bus station membership wins over a
+// transit link if a stop somehow has both.
+const stopStrokeExpression = [
+  "case",
+  ["get", "partOfStation"],
+  BUS_STATION_COLOR,
+  ["!=", ["get", "linkedTransitColor"], null],
+  ["get", "linkedTransitColor"],
+  "#ffffff",
+];
+const stopStrokeWidthExpression = [
+  "case",
+  ["any", ["get", "partOfStation"], ["!=", ["get", "linkedTransitColor"], null]],
+  1.5,
+  1,
+];
 
 function approxDistanceM(a: [number, number], b: [number, number]): number {
   const R = 6_371_000;
@@ -78,11 +107,76 @@ function approxDistanceM(a: [number, number], b: [number, number]): number {
   return R * Math.sqrt(dLat * dLat + x * x);
 }
 
+interface DecodedRailwayStation {
+  lon: number;
+  lat: number;
+  kind: "station" | "halt" | "subway";
+  name: string | null;
+  osmId: number;
+}
+
+interface DecodedTramStop {
+  lon: number;
+  lat: number;
+  name: string | null;
+  osmId: number;
+}
+
+interface TransitTarget {
+  lon: number;
+  lat: number;
+  name: string | null;
+  color: string;
+  kindLabel: string;
+}
+
+// Every railway/subway station and tram stop, keyed by its own osmId — the
+// full set of candidates a stop can be manually linked to. No distance
+// filtering here; that only happens when populating one stop's dropdown.
+function buildTransitTargets(
+  railwayStations: readonly DecodedRailwayStation[],
+  tramStops: readonly DecodedTramStop[],
+): Map<number, TransitTarget> {
+  const targets = new Map<number, TransitTarget>();
+  for (const s of railwayStations) {
+    targets.set(s.osmId, {
+      lon: s.lon,
+      lat: s.lat,
+      name: s.name,
+      color: s.kind === "subway" ? SUBWAY_LINK_COLOR : RAILWAY_LINK_COLOR,
+      kindLabel: s.kind === "subway" ? "Subway station" : s.kind === "halt" ? "Railway halt" : "Railway station",
+    });
+  }
+  for (const s of tramStops) {
+    targets.set(s.osmId, { lon: s.lon, lat: s.lat, name: s.name, color: TRAM_LINK_COLOR, kindLabel: "Tram stop" });
+  }
+  return targets;
+}
+
 export async function drawStops(map: maplibregl.Map): Promise<void> {
   const res = await fetch("http://127.0.0.1:38271/stops.bin");
   const bytes = new Uint8Array(await res.arrayBuffer());
   const stops = decode_stops(bytes) as DecodedStop[];
   const stopAreas = decode_stop_areas(bytes) as DecodedStopArea[];
+
+  const railwayRes = await fetch("http://127.0.0.1:38271/railway.bin");
+  const railwayBytes = new Uint8Array(await railwayRes.arrayBuffer());
+  const railwayStations = decode_railway_stations(railwayBytes) as DecodedRailwayStation[];
+  const tramStops = decode_tram_stops(railwayBytes) as DecodedTramStop[];
+  const transitTargets = buildTransitTargets(railwayStations, tramStops);
+
+  // stop osmId -> linked railway/subway station or tram stop's osmId,
+  // purely the player's manual choice (see TRANSIT_LINK_PICKER_RADIUS_M's
+  // comment) — seeded only from the override layer, nothing computed.
+  const transitLinkOfStop = new Map<number, number>();
+  for (const { osmId, value } of await window.overrides.list<number | null>("stop", "transit_link")) {
+    if (value === null) transitLinkOfStop.delete(osmId);
+    else transitLinkOfStop.set(osmId, value);
+  }
+  const linkedTransitColorOfStop = (osmId: number): string | null => {
+    const targetId = transitLinkOfStop.get(osmId);
+    return targetId === undefined ? null : (transitTargets.get(targetId)?.color ?? null);
+  };
 
   const stationOsmIds = new Set(
     stops.filter((s) => s.kind === "bus_station").map((s) => s.osmId),
@@ -161,6 +255,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       osmId: s.osmId,
       usedByService: isUsedByService(s.osmId),
       partOfStation: stationOfStop.has(s.osmId),
+      linkedTransitColor: linkedTransitColorOfStop(s.osmId),
     },
     geometry: { type: "Point", coordinates: [s.lon, s.lat] },
   });
@@ -559,6 +654,44 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       });
       dropdown.el.style.width = "100%";
       container.appendChild(dropdown.el);
+
+      // Manual link to a nearby railway/subway station or tram stop — same
+      // manual-only mechanism as the bus station dropdown above (see the
+      // comment on TRANSIT_LINK_PICKER_RADIUS_M): never computed from
+      // proximity, only ever set here.
+      const currentTransitTargetId = transitLinkOfStop.get(osmId) ?? null;
+      const NO_TRANSIT_LINK_LABEL = "(not linked)";
+      const labelToTransitTargetId = new Map<string, number | null>([[NO_TRANSIT_LINK_LABEL, null]]);
+      const nearbyTransitTargets = [...transitTargets.entries()]
+        .map(([id, t]) => ({ id, t, dist: approxDistanceM(coords, [t.lon, t.lat]) }))
+        .filter((c) => c.dist <= TRANSIT_LINK_PICKER_RADIUS_M || c.id === currentTransitTargetId)
+        .sort((a, b) => a.dist - b.dist);
+      for (const { id, t, dist } of nearbyTransitTargets) {
+        labelToTransitTargetId.set(`${t.name ?? t.kindLabel} (${t.kindLabel}, ${Math.round(dist)} m)`, id);
+      }
+      const currentTransitLabel =
+        [...labelToTransitTargetId.entries()].find(([, id]) => id === currentTransitTargetId)?.[0] ??
+        NO_TRANSIT_LINK_LABEL;
+
+      const transitLinkLabel = document.createElement("div");
+      transitLinkLabel.className = "label-muted";
+      transitLinkLabel.style.marginTop = "6px";
+      transitLinkLabel.textContent = "Linked railway / subway / tram stop";
+      container.appendChild(transitLinkLabel);
+
+      const transitDropdown = createDropdown(
+        [...labelToTransitTargetId.keys()],
+        currentTransitLabel,
+        (chosenLabel) => {
+          const value = labelToTransitTargetId.get(chosenLabel) ?? null;
+          if (value === null) transitLinkOfStop.delete(osmId);
+          else transitLinkOfStop.set(osmId, value);
+          void window.overrides.set("stop", osmId, "transit_link", value);
+          refreshStopsSource();
+        },
+      );
+      transitDropdown.el.style.width = "100%";
+      container.appendChild(transitDropdown.el);
 
       // The stop's own global pick-up/set-down default (DESIGN.md §6's
       // per-express-variation lists are a separate, route-scoped thing —

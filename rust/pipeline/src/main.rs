@@ -1,6 +1,8 @@
 mod boundary;
 mod graph_build;
 mod landuse;
+mod railway;
+mod road_avoidance;
 mod road_graph;
 mod stops;
 mod venues;
@@ -247,5 +249,84 @@ fn main() {
     println!(
         "  saved              {venues_path} ({:.1} MB)",
         venues_bytes as f64 / 1_000_000.0
+    );
+
+    // Point-mapped stations plus any mapped as a closed way (station
+    // building/platform-area footprint) — see `railway.rs`'s module doc
+    // comment.
+    let mut railway_stations = node_pass.railway_station_nodes;
+    railway_stations.extend(scan.railway_station_ways);
+    let platforms = scan.platform_ways;
+
+    // Recentre every station on the combined centroid of its own nearby
+    // platforms where any are found — a station's real "middle" is its
+    // platforms, not wherever its own point (or building footprint)
+    // happens to sit. Radius wide enough to span a long station's full
+    // platform spread, tight enough not to pull in a different nearby
+    // station's platforms; worth revisiting if it looks wrong on a
+    // particular station, the same as the other approximated figures in
+    // this pipeline.
+    const PLATFORM_SEARCH_RADIUS_M: f64 = 250.0;
+    let mut recentred_on_platforms = 0usize;
+    for s in &mut railway_stations {
+        if let Some((lon_e7, lat_e7)) =
+            railway::recentre_on_nearby_platforms((s.lon_e7, s.lat_e7), &platforms, PLATFORM_SEARCH_RADIUS_M)
+        {
+            recentred_on_platforms += 1;
+            s.lon_e7 = lon_e7;
+            s.lat_e7 = lat_e7;
+        }
+    }
+
+    // A station's chosen position — from its platforms if any were found
+    // nearby, otherwise its own point/building centroid — sometimes still
+    // sits right on a road (Edinburgh Waverley's original OSM node is on
+    // "South Ramp", its own access road) rather than clear space; nudge
+    // those off the road network too, same clearance for every station.
+    const RAILWAY_STATION_ROAD_CLEARANCE_M: f64 = 15.0;
+    let mut nudged_off_road = 0usize;
+    for s in &mut railway_stations {
+        let original = (s.lon_e7, s.lat_e7);
+        let adjusted =
+            road_avoidance::keep_off_roads(original, &report.graph, RAILWAY_STATION_ROAD_CLEARANCE_M);
+        if adjusted != original {
+            nudged_off_road += 1;
+            s.lon_e7 = adjusted.0;
+            s.lat_e7 = adjusted.1;
+        }
+    }
+
+    // Tram stops are frequently legitimately positioned right beside or in
+    // the middle of a road (trams run in-street) — unlike a railway
+    // station, "sitting on a road" isn't a data problem for these, so no
+    // road-avoidance nudge; plain extracted positions.
+    let tram_stops = node_pass.tram_stop_nodes;
+
+    let platform_count = platforms.len();
+    let tram_stop_count = tram_stops.len();
+    let railway_data = game_data::RailwayData { stations: railway_stations, platforms, tram_stops };
+    let mut railway_counts = [0usize; 3];
+    for s in &railway_data.stations {
+        railway_counts[s.kind as usize] += 1;
+    }
+    println!("\nRailway stations:");
+    println!("  stations              {}", railway_counts[0]);
+    println!("  halts                 {}", railway_counts[1]);
+    println!("  subway stations       {}", railway_counts[2]);
+    println!("  platforms             {platform_count}");
+    println!("  tram stops            {tram_stop_count}");
+    println!(
+        "  recentred on platforms {recentred_on_platforms} (within {PLATFORM_SEARCH_RADIUS_M}m of one)"
+    );
+    println!(
+        "  nudged off a road     {nudged_off_road} (within {RAILWAY_STATION_ROAD_CLEARANCE_M}m of one)"
+    );
+
+    let railway_path = pbf_dir.join("railway.bin").to_string_lossy().to_string();
+    let railway_bytes =
+        railway::save(&railway_data, &railway_path).expect("failed to save railway data");
+    println!(
+        "  saved              {railway_path} ({:.1} MB)",
+        railway_bytes as f64 / 1_000_000.0
     );
 }

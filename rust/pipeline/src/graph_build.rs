@@ -81,6 +81,7 @@ pub fn build_graph(
                 osm_id: id,
                 lon_e7,
                 lat_e7,
+                junction_control: nodes.junction_control(id),
             });
         }
     }
@@ -339,6 +340,37 @@ mod tests {
         assert_eq!(report.graph.nodes[r.via as usize].osm_id, 2);
         assert_eq!(report.graph.edges[r.from_edge as usize].osm_way_id, 100);
         assert_eq!(report.graph.edges[r.to_edge as usize].osm_way_id, 200);
+    }
+
+    #[test]
+    fn junction_control_carries_from_node_tags_into_the_built_graph_node() {
+        // Node 2 must actually become a graph junction to appear in the
+        // output at all — shared by two ways, same as
+        // `shared_node_splits_both_ways_into_two_edges` above.
+        let ids = [1i64, 2, 3, 4, 5];
+        let nodes = NodeCoords::from_pairs_with_junction_control(
+            ids.iter().map(|&id| (id, coord(id))),
+            [(2, game_data::JunctionControl::TrafficSignals)],
+        );
+        let ways = vec![way(100, &[1, 2, 3]), way(200, &[4, 2, 5])];
+        let ref_counts = ref_counts_for(&ways);
+
+        let report = build_graph(&nodes, &ways, &ref_counts, &[]);
+
+        let node2 = report
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.osm_id == 2)
+            .expect("node 2 should be a junction (shared by both segments)");
+        assert_eq!(node2.junction_control, game_data::JunctionControl::TrafficSignals);
+
+        let node1 = report.graph.nodes.iter().find(|n| n.osm_id == 1).unwrap();
+        assert_eq!(
+            node1.junction_control,
+            game_data::JunctionControl::None,
+            "a node with no explicit tag defaults to None"
+        );
     }
 
     #[test]

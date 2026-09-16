@@ -16,6 +16,7 @@ import { Router } from "./wasm/game_wasm.js";
 import { stopsPanelState, busStationsState } from "./stops-layer";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
+import { startTerminusColour } from "./start-terminus-colours";
 
 // Shared with stops-layer.ts: while drawing, a click on a stop or station
 // builds the route instead of opening its usual assignment popup. A plain
@@ -631,7 +632,9 @@ export async function mountRouteDrawTool(
     }
     const selected = insertAfterIndex !== null ? draftPoints[insertAfterIndex] : null;
     terminateButton.textContent = terminusIndex === null ? "Terminate service" : "Start service";
-    terminateButton.disabled = selected === null || selected.kind !== "stop";
+    const isLastPoint = insertAfterIndex === draftPoints.length - 1;
+    terminateButton.disabled =
+      selected === null || selected.kind !== "stop" || (terminusIndex === null && isLastPoint);
   };
 
   const handleTerminateOrStartClick = () => {
@@ -644,6 +647,17 @@ export async function mountRouteDrawTool(
     }
     if (insertAfterIndex === null) return;
     if (terminusIndex === null) {
+      // The route's own last point is already the default terminus with no
+      // flag needed (DESIGN.md §6) — flagging it here would be meaningless
+      // (there's no dead-running/return leg after it to encode) and would
+      // only force a redundant "Start service" click on the same point. A
+      // real terminus loop needs a genuine interior point, with real
+      // material after it representing the return leg.
+      if (insertAfterIndex === draftPoints.length - 1) {
+        warning = "The last stop is already the route's terminus — no need to flag it.";
+        updateStatus();
+        return;
+      }
       const error = validateStartTerminus(draftPoints, insertAfterIndex, insertAfterIndex);
       if (error) {
         warning = error;
@@ -711,6 +725,12 @@ export async function mountRouteDrawTool(
     pointList.innerHTML = "";
     let stopNumber = 0;
 
+    // Read-only defaults (DESIGN.md §6) — points[0]/points[last] are the
+    // start/terminus whenever startIndex/terminusIndex aren't explicitly
+    // set, same fallback route-panel.ts's locked stop list uses.
+    const startIdx = startIndex ?? 0;
+    const terminusIdx = terminusIndex ?? draftPoints.length - 1;
+
     for (let i = 0; i < draftPoints.length; i++) {
       const point = draftPoints[i];
       const row = document.createElement("div");
@@ -732,6 +752,11 @@ export async function mountRouteDrawTool(
       if (point.kind === "stop") {
         stopNumber += 1;
         nameText.textContent = `${stopNumber}. ${stopLabel(point.osmId)}`;
+        const colour = startTerminusColour(
+          i === startIdx || i === 0,
+          i === terminusIdx || i === draftPoints.length - 1,
+        );
+        if (colour) nameText.style.color = colour;
       } else {
         nameText.textContent = "Waypoint";
         nameText.style.color = "var(--text-muted)";

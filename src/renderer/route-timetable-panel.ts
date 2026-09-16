@@ -15,6 +15,18 @@ import {
   computeOffsets,
 } from "./route-timetable.mts";
 import { timetableEditorState } from "./timetable-editor-state";
+import { stopsPanelState } from "./stops-layer";
+
+function stopLabel(point: RoutePoint): string {
+  if (point.kind !== "stop" || point.osmId === undefined) return "Stop";
+  return stopsPanelState.displayNameFor?.(point.osmId) ?? `Stop ${point.osmId}`;
+}
+
+// The status line defaults to orange (info/error/warning) and switches to
+// green only for a fully clean save — a save with an infeasible timing
+// point stays orange, since it's a "saved, but..." situation.
+const STATUS_COLOUR_WARNING = "#f97316";
+const STATUS_COLOUR_SUCCESS = "#22c55e";
 
 const DAY_TYPE_LABELS: Record<DayType, string> = {
   monday_friday: "Monday-Friday",
@@ -28,13 +40,36 @@ function minutesToHHMM(minutes: number): string {
   return `${h}:${m}`;
 }
 
+// Accepts "08:00" as typed, or "0800"/"800" typed without the colon (which
+// normalizeTimeInput below then rewrites in place so the field always
+// settles on the colon form) — a colon shouldn't be mandatory just to
+// enter a time.
 function hhmmToMinutes(value: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
-  if (!match) return null;
-  const h = Number(match[1]);
-  const m = Number(match[2]);
+  const trimmed = value.trim();
+  const withColon = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  const digitsOnly = /^(\d{3,4})$/.exec(trimmed);
+  let h: number;
+  let m: number;
+  if (withColon) {
+    h = Number(withColon[1]);
+    m = Number(withColon[2]);
+  } else if (digitsOnly) {
+    const padded = digitsOnly[1].padStart(4, "0");
+    h = Number(padded.slice(0, 2));
+    m = Number(padded.slice(2));
+  } else {
+    return null;
+  }
   if (h < 0 || h > 23 || m < 0 || m > 59) return null;
   return h * 60 + m;
+}
+
+// Rewrites a time field to the "HH:MM" form as soon as the player leaves
+// it — "0800" becomes "08:00" — silently leaving anything unparseable
+// alone (validateFrequency's own error message covers that at save time).
+function normalizeTimeInput(input: HTMLInputElement): void {
+  const minutes = hhmmToMinutes(input.value);
+  if (minutes !== null) input.value = minutesToHHMM(minutes);
 }
 
 // One leg per consecutive pair of the route's own points — stops and
@@ -98,17 +133,29 @@ export function createRouteTimetableEditor(
   body.style.gap = "10px";
   panel.appendChild(body);
 
+  // Appended into `body` (right after the Save button, below), not
+  // `panel` directly — as a sibling of `body` it would sit below it in the
+  // flex column, and since `body` is flex:1 (grows to fill all remaining
+  // height), that pushed it all the way to the bottom of a mostly-empty
+  // panel: far from the Save button that produces it, and easy to miss
+  // entirely (reported as "nothing shows when I press save").
   const statusLine = document.createElement("div");
   statusLine.className = "label-muted";
   statusLine.style.padding = "8px 12px";
-  panel.appendChild(statusLine);
+  // Orange rather than the class's own muted grey — it was easy to miss
+  // (see the placement fix above), so it should stand out once you do
+  // look at it.
+  statusLine.style.color = STATUS_COLOUR_WARNING;
+  statusLine.style.fontWeight = "600";
 
   const startInput = document.createElement("input");
   startInput.className = "field";
   startInput.placeholder = "Start (HH:MM)";
+  startInput.addEventListener("blur", () => normalizeTimeInput(startInput));
   const endInput = document.createElement("input");
   endInput.className = "field";
   endInput.placeholder = "End (HH:MM)";
+  endInput.addEventListener("blur", () => normalizeTimeInput(endInput));
   const intervalInput = document.createElement("input");
   intervalInput.className = "field";
   intervalInput.type = "number";
@@ -142,12 +189,18 @@ export function createRouteTimetableEditor(
   async function loadDayType(dayType: DayType): Promise<void> {
     const existing = (await window.routeTimetables.listForRoute(route.id)).find((t) => t.dayType === dayType);
     timetableEditorState.dayType = dayType;
-    // A fresh array, not the loaded one directly — the stop list mutates
-    // this in place, and re-loading (e.g. switching day type and back)
-    // shouldn't leave it aliased to a previous load's array.
-    timetableEditorState.timingPoints = existing ? [...existing.timingPoints] : [];
+    // A day type with its own saved timetable loads its own timing points
+    // (real persisted data); a day type with none yet keeps whatever's
+    // currently in memory rather than wiping it — timing points are
+    // usually the same physical pattern across day types (just the
+    // frequency/hours differ), so switching to a blank day type shouldn't
+    // throw away work already done on another one. Either way this is a
+    // fresh array, not the loaded one directly, since the stop list
+    // mutates it in place.
+    if (existing) timetableEditorState.timingPoints = [...existing.timingPoints];
     refreshTimingPointsHint();
     timetableEditorState.onDayTypeChanged?.();
+    statusLine.style.color = STATUS_COLOUR_WARNING;
     if (existing) {
       startInput.value = minutesToHHMM(existing.startMinutes);
       endInput.value = minutesToHHMM(existing.endMinutes);
@@ -171,6 +224,9 @@ export function createRouteTimetableEditor(
   );
 
   saveButton.addEventListener("click", async () => {
+    // Reset from green in case a previous save on this same day type
+    // succeeded cleanly and this attempt doesn't.
+    statusLine.style.color = STATUS_COLOUR_WARNING;
     const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value)!;
     const startMinutes = hhmmToMinutes(startInput.value);
     const endMinutes = hhmmToMinutes(endInput.value);
@@ -193,7 +249,7 @@ export function createRouteTimetableEditor(
 
     statusLine.textContent = "Computing running times…";
     const legTimesSeconds = computeLegTimesSeconds(router, route.points);
-    const { arrivalOffsetsSeconds, departureOffsetsSeconds, infeasiblePointIndexes } = computeOffsets(
+    const { arrivalOffsetsSeconds, departureOffsetsSeconds, infeasibleTimingPoints } = computeOffsets(
       route.points.length,
       legTimesSeconds,
       timingPoints,
@@ -208,13 +264,27 @@ export function createRouteTimetableEditor(
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,
     );
+    // Realistic running-time variation across the day comes from the
+    // router's own junction delays (give-way, traffic lights) plus, later,
+    // passenger boarding/alighting (Phase 4) — not from an artificial
+    // multiplier bolted on here. An interim flat time-of-day multiplier
+    // used to live in this file; it's gone now that the router itself is
+    // getting a real junction-delay model to produce that variation
+    // honestly.
     const totalMinutes = Math.round(arrivalOffsetsSeconds[arrivalOffsetsSeconds.length - 1] / 60);
-    statusLine.textContent =
-      infeasiblePointIndexes.length > 0
-        ? `Saved, but ${infeasiblePointIndexes.length} timing point${infeasiblePointIndexes.length === 1 ? "" : "s"} ` +
-          `published faster than the route can be driven — scheduled at the fastest achievable time instead. ` +
-          `End-to-end running time: ${totalMinutes} min.`
-        : `Saved. End-to-end running time: ${totalMinutes} min.`;
+    if (infeasibleTimingPoints.length > 0) {
+      const details = infeasibleTimingPoints
+        .map(
+          (tp) =>
+            `${stopLabel(route.points[tp.pointIndex])} (published ${tp.publishedMinutes} min, fastest possible is ${tp.fastestMinutes} min — used ${tp.fastestMinutes} min instead)`,
+        )
+        .join("; ");
+      statusLine.style.color = STATUS_COLOUR_WARNING;
+      statusLine.textContent = `Saved, but ${details}. End-to-end running time: ${totalMinutes} min.`;
+    } else {
+      statusLine.style.color = STATUS_COLOUR_SUCCESS;
+      statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
+    }
   });
 
   body.appendChild(dayTypeDropdown.el);
@@ -223,6 +293,7 @@ export function createRouteTimetableEditor(
   body.appendChild(intervalInput);
   body.appendChild(timingPointsHint);
   body.appendChild(saveButton);
+  body.appendChild(statusLine);
 
   void loadDayType(DAY_TYPES[0]);
 

@@ -1796,3 +1796,52 @@ argued about, not a summary of the design.
   doesn't mean "the same cause," and that reading the real save file
   directly (once available) beats estimating coordinates from a
   screenshot every time, not just when estimates first go wrong.
+- **Route 398 running time: the time-of-day traffic multiplier plan was
+  built, tested, then deliberately dropped mid-session in favour of real
+  junction delays — recorded here now because it wasn't written down the
+  first time and the decision was lost across a context reset.** Original
+  plan: derive time-of-day multipliers (×1.00 deep night up to ×1.60 peak)
+  from the real Lothian Route 1 timetable PDF, then extend to proper
+  urban/semi-rural/rural/very-rural tiers using real Aberdeen, Inverness,
+  Fort William and Shetland reference timetables the user supplied. Built
+  as a TS-layer display multiplier on top of the router's raw fastest-route
+  time. Testing against 398 exposed the real problem: even at the quietest
+  time of day the router's own baseline (3.93 min) was wildly short of a
+  real quiet-time car journey (13 min, Google Maps at 21:48) — no traffic
+  multiplier can fix that gap, because it was never about traffic volume.
+  The actual cause: `edge_time_cost_s` charged zero time for any junction,
+  turn, traffic light or roundabout at all — pure distance÷speed-limit.
+  **User's call**: "Let's possibly drop the artificial scaling we were
+  going to do as this and the extra customers should add the delays we
+  need to make it realistic" — dropped the multiplier entirely, in favour
+  of (1) real junction-control delays in the router (give-way, traffic
+  signals, stop signs, mini-roundabouts — see the pipeline/router work
+  below) and (2) real passenger pickup/drop-off dwell time once Phase 4's
+  passenger simulation exists, which should supply realistic variation
+  organically rather than an invented multiplier. The Aberdeen/Inverness/
+  Fort William/Shetland reference PDFs were gathered for the dropped
+  multiplier tiers specifically — not needed for anything else, no need to
+  re-derive or re-request them.
+  **Increment 1 (shipped)**: junction-control extraction in the pipeline
+  (`highway=traffic_signals`/`stop`/`give_way`/`mini_roundabout` on the
+  junction node itself) plus a junction-delay cost in the WASM router's
+  Dijkstra search — traffic signals/stop signs/mini-roundabouts always cost
+  their flat delay, an untagged or explicit give-way junction only costs a
+  delay when the vehicle is *joining a more major road* (continuing on the
+  same class, or turning onto a less major one, is a plain uncontrolled
+  crossing a real bus wouldn't stop for — this is deliberate, not a gap).
+  Delays are flat (**not** time-of-day-scaled) on purpose — 398's computed
+  time went from 3.93 min to 10.15 min (full loop) / ~8 min (the outbound
+  leg to its terminus, point index 3 of 4 stops). **User reviewed this
+  exact build and confirmed it**: "The 398 is showing as 8 minutes, that
+  seems sensible for quiet time of day, I assume passenger delays at stops
+  isn't implemented yet?" — correct on both counts; nothing further to fix
+  here until Phase 4.
+  **Increment 2 (not built, not scheduled)**: scaling the same junction
+  delays by time of day (heavier queues at lights/give-ways in rush hour,
+  quicker at night) — deliberately deferred pending increment 1's
+  real-route verification, which is now done. Given the user's own
+  preference for organic realism from passenger dwell over an artificial
+  multiplier, revisit whether this is still wanted at all once Phase 4
+  passenger boarding/alighting delays exist, rather than assuming it's
+  still queued.

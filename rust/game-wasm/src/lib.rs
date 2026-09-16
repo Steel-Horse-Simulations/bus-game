@@ -51,6 +51,13 @@ pub struct Router {
     /// every edge in the graph is checked against it at construction and
     /// on every `nearest_node` scan.
     psv_override_way_ids: HashSet<i64>,
+    /// Total travel time (seconds) of the most recent `find_route` call,
+    /// including junction delays — computed once by `dijkstra` itself as it
+    /// searches, since a junction delay depends on which edge was used to
+    /// *arrive* at each node, information `last_route_time_seconds` can no
+    /// longer recover just by re-summing `last_edges`' own plain edge costs
+    /// (unlike before junction delays existed).
+    last_route_time_seconds: RefCell<f64>,
     /// Whether each node has at least one *incoming* routable hop — the
     /// mirror image of `adjacency` (which only records *outgoing* hops).
     /// A real bug this fixes: `nearest_node` already preferred an
@@ -93,6 +100,61 @@ fn edge_time_cost_s(edge: &game_data::Edge) -> f64 {
         .unwrap_or(game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[edge.class as usize]);
     let mps = mph as f64 * MPH_TO_MPS;
     edge.length_m as f64 / mps
+}
+
+// Placeholder magnitudes, not sourced figures — worth revisiting once real
+// routes are checked against real timetables, the same as
+// `HIGHWAY_CLASS_DEFAULT_SPEED_MPH`. A later increment scales these by time
+// of day (heavier traffic queues longer at lights and give-ways, lighter at
+// night); this first cut is flat.
+const TRAFFIC_SIGNAL_DELAY_S: f64 = 15.0;
+const STOP_SIGN_DELAY_S: f64 = 8.0;
+const MINI_ROUNDABOUT_DELAY_S: f64 = 5.0;
+const GIVE_WAY_DELAY_S: f64 = 8.0;
+
+/// Extra time (seconds) to cross a junction, on top of the plain edge travel
+/// time `edge_time_cost_s` already charges — DESIGN.md §2's "journey times
+/// come from road class and time of day": the edge cost alone assumes a
+/// vehicle holds the speed limit continuously, which is never true at a real
+/// junction, and that gap is what made 398's router-computed running time
+/// (under 4 minutes) look nothing like its real published time (17 minutes)
+/// even at a quiet time of day.
+///
+/// `incoming_class` is the class of the edge just used to *arrive* at this
+/// junction, `None` only at the very start of a route (a bus pulling away
+/// from its first stop has nothing to give way to yet, so no delay
+/// applies). `outgoing_class` is the edge about to be taken next.
+///
+/// Traffic signals, a stop sign and a mini-roundabout all apply to any
+/// vehicle passing through regardless of which road it's on (nobody skips a
+/// red light because their road happens to be the bigger one). An explicit
+/// `give_way` tag and a plain untagged junction are handled the same way:
+/// only a genuine "joining a more major road" move costs anything — a lower
+/// class index is a more major road (the same ordering
+/// `HIGHWAY_CLASS_DEFAULT_SPEED_MPH` uses) — since continuing on the
+/// same-or-more-major road, or turning onto an equally/less major one, is a
+/// plain uncontrolled crossing a real bus wouldn't stop for.
+fn junction_delay_s(
+    junction_control: game_data::JunctionControl,
+    incoming_class: Option<u8>,
+    outgoing_class: u8,
+) -> f64 {
+    use game_data::JunctionControl;
+    let Some(incoming_class) = incoming_class else {
+        return 0.0;
+    };
+    match junction_control {
+        JunctionControl::TrafficSignals => TRAFFIC_SIGNAL_DELAY_S,
+        JunctionControl::Stop => STOP_SIGN_DELAY_S,
+        JunctionControl::MiniRoundabout => MINI_ROUNDABOUT_DELAY_S,
+        JunctionControl::GiveWay | JunctionControl::None => {
+            if outgoing_class < incoming_class {
+                GIVE_WAY_DELAY_S
+            } else {
+                0.0
+            }
+        }
+    }
 }
 
 /// Equirectangular approximation, adequate for comparing distances to find
@@ -205,6 +267,7 @@ impl Router {
             adjacency,
             last_edges: RefCell::new(Vec::new()),
             last_edge_point_counts: RefCell::new(Vec::new()),
+            last_route_time_seconds: RefCell::new(0.0),
             has_incoming,
             psv_override_way_ids,
         }
@@ -355,16 +418,13 @@ impl Router {
         self.last_edge_point_counts.borrow().clone()
     }
 
-    /// Total travel time (seconds) of the most recent `find_route` call —
-    /// the same per-edge cost Dijkstra minimised, summed over
-    /// `last_route_edges()`, without re-running the search. Used to build a
-    /// route's automatic running time between stops (DESIGN.md §7).
+    /// Total travel time (seconds) of the most recent `find_route` call,
+    /// including junction delays — the exact cost Dijkstra minimised,
+    /// recorded as it searched rather than re-derived afterward (see the
+    /// field doc comment). Used to build a route's automatic running time
+    /// between stops (DESIGN.md §7).
     pub fn last_route_time_seconds(&self) -> f64 {
-        self.last_edges
-            .borrow()
-            .iter()
-            .map(|&edge_idx| edge_time_cost_s(&self.graph.edges[edge_idx as usize]))
-            .sum()
+        *self.last_route_time_seconds.borrow()
     }
 
     /// Fastest path by travel time (DESIGN.md §6) between two points,
@@ -386,14 +446,17 @@ impl Router {
         ) else {
             self.last_edges.borrow_mut().clear();
             self.last_edge_point_counts.borrow_mut().clear();
+            *self.last_route_time_seconds.borrow_mut() = 0.0;
             return Vec::new();
         };
 
-        let Some(steps) = self.dijkstra(start, goal) else {
+        let Some((steps, total_cost_s)) = self.dijkstra(start, goal) else {
             self.last_edges.borrow_mut().clear();
             self.last_edge_point_counts.borrow_mut().clear();
+            *self.last_route_time_seconds.borrow_mut() = 0.0;
             return Vec::new();
         };
+        *self.last_route_time_seconds.borrow_mut() = total_cost_s;
 
         *self.last_edges.borrow_mut() = steps.iter().map(|&(edge_idx, _)| edge_idx).collect();
         *self.last_edge_point_counts.borrow_mut() = steps
@@ -466,9 +529,13 @@ impl Router {
     }
 
     /// Returns the path as a list of `(edge, node arrived at)` steps in
-    /// order, or `None` if unreachable. Minimises total travel time
-    /// (`edge_time_cost_s`), not distance — see that function's doc comment.
-    fn dijkstra(&self, start: u32, goal: u32) -> Option<Vec<(u32, u32)>> {
+    /// order, plus the total travel time (seconds) Dijkstra minimised to
+    /// find it, or `None` if unreachable. Minimises `edge_time_cost_s` plus
+    /// `junction_delay_s` at every node crossed, not distance — see those
+    /// functions' doc comments. The junction delay at `node` depends on
+    /// which edge was used to *arrive* there (`prev[node]`, `None` only for
+    /// `start` itself) versus the edge about to be taken next (`hop.edge`).
+    fn dijkstra(&self, start: u32, goal: u32) -> Option<(Vec<(u32, u32)>, f64)> {
         let n = self.graph.nodes.len();
         let mut best_cost_s = vec![f64::INFINITY; n];
         let mut prev: Vec<Option<(u32, u32)>> = vec![None; n]; // (prev_node, via_edge)
@@ -487,9 +554,13 @@ impl Router {
                 break;
             }
 
+            let incoming_class = prev[node as usize].map(|(_, edge_idx)| self.graph.edges[edge_idx as usize].class);
+            let junction_control = self.graph.nodes[node as usize].junction_control;
+
             for hop in &self.adjacency[node as usize] {
                 let edge = &self.graph.edges[hop.edge as usize];
-                let next_cost = cost_s + edge_time_cost_s(edge);
+                let delay_s = junction_delay_s(junction_control, incoming_class, edge.class);
+                let next_cost = cost_s + edge_time_cost_s(edge) + delay_s;
                 if next_cost < best_cost_s[hop.to_node as usize] {
                     best_cost_s[hop.to_node as usize] = next_cost;
                     prev[hop.to_node as usize] = Some((node, hop.edge));
@@ -510,8 +581,93 @@ impl Router {
             current = p;
         }
         steps.reverse();
-        Some(steps)
+        Some((steps, best_cost_s[goal as usize]))
     }
+}
+
+/// Decodes `railway.bin` into a plain JS array of `{lon, lat, kind, name,
+/// osmId}` objects — `kind` is `"station"`, `"halt"` or `"subway"`.
+/// Consumed by `src/renderer/railway-stations-layer.ts`. Position is
+/// already the best available — recentred on nearby platforms and nudged
+/// clear of roads by the pipeline itself (`main.rs`), not raw OSM node
+/// position.
+#[wasm_bindgen]
+pub fn decode_railway_stations(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_railway(bytes);
+    let out = js_sys::Array::new();
+    for s in &data.stations {
+        let kind = match s.kind {
+            game_data::RailwayStationKind::Station => "station",
+            game_data::RailwayStationKind::Halt => "halt",
+            game_data::RailwayStationKind::Subway => "subway",
+        };
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"lon".into(), &(s.lon_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lat".into(), &(s.lat_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"kind".into(), &kind.into()).unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"name".into(),
+            &s.name.as_deref().map(JsValue::from).unwrap_or(JsValue::NULL),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(s.osm_id as f64).into()).unwrap();
+        out.push(&obj);
+    }
+    out
+}
+
+/// Decodes `railway.bin`'s platforms into a plain JS array of `{osmId,
+/// coordinates}` objects — `coordinates` is a flat `[lon, lat, lon, lat,
+/// ...]` array, the same flattening convention `Router.find_route` already
+/// uses for route geometry. Full physical shape (a line or a closed ring),
+/// not a centroid. No renderer consumes this yet — a close-zoom platform
+/// shape render is a separate, not-yet-built follow-up; this data is used
+/// today only by the pipeline itself, to recentre each station on its own
+/// nearby platforms. Added now so that follow-up needs no pipeline rebuild.
+#[wasm_bindgen]
+pub fn decode_platforms(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_railway(bytes);
+    let out = js_sys::Array::new();
+    for p in &data.platforms {
+        let coords = js_sys::Array::new();
+        for &(lon_e7, lat_e7) in &p.geometry {
+            coords.push(&(lon_e7 as f64 * 1e-7).into());
+            coords.push(&(lat_e7 as f64 * 1e-7).into());
+        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(p.osm_id as f64).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"coordinates".into(), &coords).unwrap();
+        out.push(&obj);
+    }
+    out
+}
+
+/// Decodes `railway.bin`'s tram stops into a plain JS array of `{lon, lat,
+/// name, osmId}` objects — `railway=tram_stop`, a separate primary tag
+/// from `railway=station`/`halt` (trams don't carry a station's platform
+/// infrastructure), so these aren't part of `decode_railway_stations`'
+/// own list. No road-avoidance nudge applied — see `main.rs`'s own
+/// comment: a tram stop legitimately sits beside or in the middle of a
+/// road, unlike a railway station.
+#[wasm_bindgen]
+pub fn decode_tram_stops(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_railway(bytes);
+    let out = js_sys::Array::new();
+    for t in &data.tram_stops {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"lon".into(), &(t.lon_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lat".into(), &(t.lat_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"name".into(),
+            &t.name.as_deref().map(JsValue::from).unwrap_or(JsValue::NULL),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(t.osm_id as f64).into()).unwrap();
+        out.push(&obj);
+    }
+    out
 }
 
 /// Decodes `stops.bin` into a plain JS array of `{lon, lat, kind, name,
@@ -608,6 +764,10 @@ mod tests {
         }
     }
 
+    fn graph_node(osm_id: i64, lon_e7: i32, lat_e7: i32) -> GraphNode {
+        GraphNode { osm_id, lon_e7, lat_e7, junction_control: game_data::JunctionControl::None }
+    }
+
     /// Two parallel edges between the same two nodes: a short one on a slow
     /// class (Service, default 10mph) and a longer one on a fast class
     /// (Motorway, default 70mph). Pure shortest-distance routing (the old
@@ -617,8 +777,8 @@ mod tests {
     #[test]
     fn dijkstra_prefers_the_faster_edge_over_the_shorter_one() {
         let nodes = vec![
-            GraphNode { osm_id: 1, lon_e7: 0, lat_e7: 0 },
-            GraphNode { osm_id: 2, lon_e7: 0, lat_e7: 1_000_000 },
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
         ];
         let edges = vec![
             edge(0, 1, 100, 13 /* Service */, 100.0),
@@ -651,8 +811,8 @@ mod tests {
     #[test]
     fn psv_override_makes_an_access_restricted_edge_routable() {
         let nodes = vec![
-            GraphNode { osm_id: 1, lon_e7: 0, lat_e7: 0 },
-            GraphNode { osm_id: 2, lon_e7: 0, lat_e7: 1_000_000 },
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
         ];
         let mut restricted_edge = edge(0, 1, 999, 11 /* Residential */, 100.0);
         restricted_edge.access_restricted = true;
@@ -684,9 +844,9 @@ mod tests {
     #[test]
     fn goal_prefers_a_reachable_node_over_a_nearer_unreachable_one() {
         let nodes = vec![
-            GraphNode { osm_id: 1, lon_e7: 0, lat_e7: 0 },         // 0: start
-            GraphNode { osm_id: 2, lon_e7: 0, lat_e7: 1_000_000 }, // 1: reachable from start
-            GraphNode { osm_id: 3, lon_e7: 0, lat_e7: 1_100_000 }, // 2: nothing arrives here
+            graph_node(1, 0, 0),         // 0: start
+            graph_node(2, 0, 1_000_000), // 1: reachable from start
+            graph_node(3, 0, 1_100_000), // 2: nothing arrives here
         ];
         let mut start_to_reachable = edge(0, 1, 900, 11, 100.0);
         start_to_reachable.oneway = OnewayDirection::Forward; // 0 -> 1 only
@@ -724,9 +884,9 @@ mod tests {
     #[test]
     fn goal_snap_point_not_used_when_its_edge_was_never_actually_reached() {
         let nodes = vec![
-            GraphNode { osm_id: 1, lon_e7: 0, lat_e7: 0 },         // 0: start
-            GraphNode { osm_id: 2, lon_e7: 0, lat_e7: 1_000_000 }, // 1: reached via edge C
-            GraphNode { osm_id: 3, lon_e7: 0, lat_e7: 1_100_000 }, // 2: true-nearest edge's far end
+            graph_node(1, 0, 0),         // 0: start
+            graph_node(2, 0, 1_000_000), // 1: reached via edge C
+            graph_node(3, 0, 1_100_000), // 2: true-nearest edge's far end
         ];
         let mut edge_c = edge(0, 1, 900, 11, 100.0); // start -> node 1
         edge_c.oneway = OnewayDirection::Forward;
@@ -750,6 +910,128 @@ mod tests {
         assert!(
             (last_lat - 0.1).abs() < 0.0001,
             "final point should be node 1's own real position (lat 0.1), not the unreached snap point near lat 0.109 — got {last_lon},{last_lat}"
+        );
+    }
+
+    // --- junction_delay_s (pure function) ---
+
+    #[test]
+    fn no_delay_at_the_route_s_own_start() {
+        assert_eq!(
+            junction_delay_s(game_data::JunctionControl::TrafficSignals, None, 0),
+            0.0,
+            "the very first node of a route has nothing to give way to yet, regardless of its control type"
+        );
+    }
+
+    #[test]
+    fn traffic_signals_stop_and_mini_roundabout_delay_every_approach_equally() {
+        // Class 4 (Primary) continuing onto class 4 (Primary): the same
+        // priority road throughout, yet these three control types should
+        // still charge their flat delay — a red light or a stop sign
+        // doesn't care which road is "bigger".
+        assert_eq!(junction_delay_s(game_data::JunctionControl::TrafficSignals, Some(4), 4), TRAFFIC_SIGNAL_DELAY_S);
+        assert_eq!(junction_delay_s(game_data::JunctionControl::Stop, Some(4), 4), STOP_SIGN_DELAY_S);
+        assert_eq!(junction_delay_s(game_data::JunctionControl::MiniRoundabout, Some(4), 4), MINI_ROUNDABOUT_DELAY_S);
+    }
+
+    #[test]
+    fn give_way_and_untagged_junctions_only_delay_a_move_onto_a_more_major_road() {
+        // Class 11 (Residential, minor) joining class 4 (Primary, major) —
+        // a real give-way case, whether or not the junction carries an
+        // explicit `give_way` tag.
+        assert_eq!(
+            junction_delay_s(game_data::JunctionControl::GiveWay, Some(11), 4),
+            GIVE_WAY_DELAY_S,
+            "joining a more major road through an explicitly tagged give-way junction should cost the give-way delay"
+        );
+        assert_eq!(
+            junction_delay_s(game_data::JunctionControl::None, Some(11), 4),
+            GIVE_WAY_DELAY_S,
+            "the same move through a plain untagged junction (the common case) should cost the same delay"
+        );
+        // The reverse move — already on the major road (class 4), turning
+        // onto or continuing towards a minor one (class 11) — is not a
+        // give-way case for this vehicle.
+        assert_eq!(
+            junction_delay_s(game_data::JunctionControl::None, Some(4), 11),
+            0.0,
+            "leaving the major road for a minor one costs nothing — the give-way applies to traffic joining the major road, not leaving it"
+        );
+        assert_eq!(
+            junction_delay_s(game_data::JunctionControl::None, Some(4), 4),
+            0.0,
+            "continuing straight on the same-class road at an uncontrolled junction costs nothing"
+        );
+    }
+
+    // --- junction delay wired into Dijkstra end to end ---
+
+    /// A minor road (class 11) T-junctions onto a major road (class 4) at
+    /// an explicitly `give_way`-tagged node. The route must turn onto the
+    /// major road to reach the goal, so its total time should be the two
+    /// edges' plain travel time *plus* the give-way delay — confirming the
+    /// delay actually reaches `last_route_time_seconds()`, not just the
+    /// pure function in isolation.
+    #[test]
+    fn find_route_charges_a_give_way_delay_when_joining_a_major_road() {
+        let mut nodes = vec![
+            graph_node(1, 0, 0),         // 0: start, on the minor road
+            graph_node(2, 0, 1_000_000), // 1: the give-way junction
+            graph_node(3, 0, 1_100_000), // 2: goal, on the major road
+        ];
+        nodes[1].junction_control = game_data::JunctionControl::GiveWay;
+        let minor_leg = edge(0, 1, 900, 11 /* Residential */, 50.0);
+        let major_leg = edge(1, 2, 901, 4 /* Primary */, 50.0);
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![minor_leg, major_leg],
+            restrictions: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.11);
+        assert!(!coords.is_empty(), "expected a route to be found");
+
+        let plain_time_s = 50.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[11] as f64 * MPH_TO_MPS)
+            + 50.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[4] as f64 * MPH_TO_MPS);
+        let time_s = router.last_route_time_seconds();
+        assert!(
+            (time_s - (plain_time_s + GIVE_WAY_DELAY_S)).abs() < 0.01,
+            "expected plain travel time ({plain_time_s}s) plus the give-way delay ({GIVE_WAY_DELAY_S}s), got {time_s}s"
+        );
+    }
+
+    /// The mirror case: the same two edges and the same give-way tag, but
+    /// travelled the other way round (major road first, then turning onto
+    /// the minor road) — no delay should apply, since the vehicle is never
+    /// the one joining the major road.
+    #[test]
+    fn find_route_charges_no_delay_leaving_a_major_road_at_the_same_junction() {
+        let mut nodes = vec![
+            graph_node(1, 0, 0),         // 0: start, on the major road
+            graph_node(2, 0, 1_000_000), // 1: the give-way junction
+            graph_node(3, 0, 1_100_000), // 2: goal, on the minor road
+        ];
+        nodes[1].junction_control = game_data::JunctionControl::GiveWay;
+        let major_leg = edge(0, 1, 900, 4 /* Primary */, 50.0);
+        let minor_leg = edge(1, 2, 901, 11 /* Residential */, 50.0);
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![major_leg, minor_leg],
+            restrictions: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.11);
+        assert!(!coords.is_empty(), "expected a route to be found");
+
+        let plain_time_s = 50.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[4] as f64 * MPH_TO_MPS)
+            + 50.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[11] as f64 * MPH_TO_MPS);
+        let time_s = router.last_route_time_seconds();
+        assert!(
+            (time_s - plain_time_s).abs() < 0.01,
+            "expected plain travel time only ({plain_time_s}s), no give-way delay, got {time_s}s"
         );
     }
 }

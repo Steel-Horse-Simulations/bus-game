@@ -47,11 +47,30 @@ pub enum OnewayDirection {
     Reverse,
 }
 
+/// How a junction is controlled — read from OSM point tags on the junction
+/// node itself (`highway=traffic_signals`/`stop`/`give_way`, or
+/// `highway=mini_roundabout`). `None` covers both an uncontrolled junction
+/// and one with no explicit control tag at all (the common case for a plain
+/// UK T-junction or crossroads with paint-only priority) — the router still
+/// applies a give-way delay there when the road class says a minor road is
+/// joining a more major one, the same as an explicit `GiveWay` tag; the
+/// distinction only matters if a future increment wants to treat a signed
+/// give-way differently from an unsigned priority junction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum JunctionControl {
+    None,
+    TrafficSignals,
+    Stop,
+    GiveWay,
+    MiniRoundabout,
+}
+
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct GraphNode {
     pub osm_id: i64,
     pub lon_e7: i32,
     pub lat_e7: i32,
+    pub junction_control: JunctionControl,
 }
 
 #[derive(bincode::Encode, bincode::Decode)]
@@ -160,6 +179,76 @@ pub fn encode_stops(data: &StopData) -> Vec<u8> {
 pub fn decode_stops(bytes: &[u8]) -> StopData {
     bincode::decode_from_slice(bytes, bincode::config::standard())
         .expect("decode stop data")
+        .0
+}
+
+/// Shared data structures for the "railway stations and platforms"
+/// artefact (`railway.bin`) — rail *lines* already render from the
+/// existing vector tiles, no pipeline change needed for those. Stations:
+/// point-mapped and way-mapped (a station building/platform-area
+/// footprint, position is the centroid — same scoping caveat as
+/// `StopData`'s own doc comment, relation-mapped stations are a known gap,
+/// not silently mismodelled). Platforms: way-mapped `railway=platform`
+/// full shapes (not just a centroid — real physical geometry, per the
+/// deliberate choice over simple markers), used both to recentre a
+/// station on the true middle of its own platforms where any are found
+/// nearby, and available for a future close-zoom platform-shape render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum RailwayStationKind {
+    /// `railway=station`
+    Station,
+    /// `railway=halt`
+    Halt,
+    /// `railway=station` + `station=subway` — a metro/underground station
+    /// (Glasgow Subway in this game's own area), tagged with the same
+    /// primary `railway=station` key as a real National Rail station but
+    /// distinguished by this sub-tag, per OSM's own documented convention.
+    Subway,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct RailwayStation {
+    pub osm_id: i64,
+    pub lon_e7: i32,
+    pub lat_e7: i32,
+    pub name: Option<String>,
+    pub kind: RailwayStationKind,
+}
+
+/// A tram stop — `railway=tram_stop`, a wholly separate primary tag from
+/// `railway=station` (trams don't carry the platform/building infrastructure
+/// a real station does), point-mapped only.
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct TramStop {
+    pub osm_id: i64,
+    pub lon_e7: i32,
+    pub lat_e7: i32,
+    pub name: Option<String>,
+}
+
+/// A platform's full physical shape — every resolved node of the
+/// `railway=platform` way, in order (a line for a simple platform edge, a
+/// closed ring for one mapped as an area). At least 2 points.
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct Platform {
+    pub osm_id: i64,
+    pub geometry: Vec<(i32, i32)>,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct RailwayData {
+    pub stations: Vec<RailwayStation>,
+    pub platforms: Vec<Platform>,
+    pub tram_stops: Vec<TramStop>,
+}
+
+pub fn encode_railway(data: &RailwayData) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode railway data")
+}
+
+pub fn decode_railway(bytes: &[u8]) -> RailwayData {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode railway data")
         .0
 }
 

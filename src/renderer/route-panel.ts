@@ -25,14 +25,7 @@ import { onewayArrowImageId } from "./map-icons";
 import { createDropdown } from "./dropdown";
 import { PICKUP_DROPOFF_LABELS, pickupDropoffBadge, effectivePickupDropoff, type PickupDropoff, type PickupDropoffOrBoth } from "./pickup-dropoff";
 import { timetableEditorState } from "./timetable-editor-state";
-
-// Start/terminus colours (DESIGN.md §6) — read-only, derived entirely from
-// the route's own startIndex/terminusIndex, never a per-stop toggle. A
-// point can be both at once (an early terminus with no real loop, the two
-// indexes equal) — BOTH_COLOUR disambiguates that from either alone.
-const START_COLOUR = "#22c55e";
-const TERMINUS_COLOUR = "#ef4444";
-const BOTH_START_TERMINUS_COLOUR = "#f59e0b";
+import { startTerminusColour } from "./start-terminus-colours";
 
 const emptyFeatureCollection: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -584,9 +577,19 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       for (let i = 0; i < route.points.length; i++) {
         if (myGeneration !== renderGeneration) return;
         const point = route.points[i];
-        const isStart = i === startIdx;
-        const isTerminus = i === terminusIdx;
-        const isTimingPoint = timingPointByIndex.has(i);
+        // The physical first/last point is always the start/terminus too,
+        // whatever a terminus loop's startIndex/terminusIndex point at
+        // elsewhere — point 0 is always the journey's own departure
+        // (route-timetable.mts) and the last point is always where the
+        // route physically ends, on top of whichever interior stop the
+        // loop encoding flags.
+        const isStart = i === startIdx || i === 0;
+        const isTerminus = i === terminusIdx || i === route.points.length - 1;
+        // The route's own first and last points are always timing points
+        // on a real timetable (route-timetable.mts's computeOffsets treats
+        // them the same way — always a published time, never estimated),
+        // whether or not either has an explicit entry.
+        const isTimingPoint = timingPointByIndex.has(i) || i === 0 || i === route.points.length - 1;
 
         if (point.kind !== "stop" || point.osmId === undefined) {
           if (hideNonTimingPoints) continue;
@@ -624,9 +627,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
         label.style.textOverflow = "ellipsis";
         label.style.whiteSpace = "nowrap";
         label.textContent = `${stopNumber}. ${stopLabel(point)}`;
-        if (isStart && isTerminus) label.style.color = BOTH_START_TERMINUS_COLOUR;
-        else if (isStart) label.style.color = START_COLOUR;
-        else if (isTerminus) label.style.color = TERMINUS_COLOUR;
+        const colour = startTerminusColour(isStart, isTerminus);
+        if (colour) label.style.color = colour;
         line.appendChild(label);
 
         const routeOverride = routeOverrideByIndex.get(i) ?? null;
@@ -643,11 +645,15 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
         }
 
         const timingPoint = timingPointByIndex.get(i) ?? null;
-        if (timingPoint) {
+        if (isTimingPoint) {
           const tpBadge = document.createElement("span");
           tpBadge.className = "badge badge-warning";
           tpBadge.textContent = "T";
-          tpBadge.title = `Timing point — ${timingPoint.legMinutes} min from the previous one`;
+          tpBadge.title = timingPoint
+            ? `Timing point — ${timingPoint.legMinutes} min from the previous one`
+            : i === 0
+              ? "Always a timing point — the journey's own departure"
+              : "Always a timing point — the route's terminus, even with no leg time explicitly set";
           line.appendChild(tpBadge);
         }
 
@@ -671,6 +677,43 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
             tpNote.className = "label-muted";
             tpNote.textContent = "Point 0 is always the journey's own published departure — no timing point needed.";
             controls.appendChild(tpNote);
+          } else if (i === route.points.length - 1) {
+            // The terminus is always a timing point (route-timetable.mts)
+            // and always needs a published arrival time, so there's no
+            // on/off checkbox here — just the time itself, defaulting to
+            // the fastest achievable running time until set. No dwell:
+            // once the vehicle is empty here it's simply free, not
+            // scheduled to wait before some later departure this route's
+            // own timetable would need to account for.
+            const terminusNote = document.createElement("div");
+            terminusNote.className = "label-muted";
+            terminusNote.textContent = "The terminus always needs a published arrival time.";
+            controls.appendChild(terminusNote);
+
+            const legMinutesLabel = document.createElement("label");
+            legMinutesLabel.className = "label-muted";
+            legMinutesLabel.textContent = "Minutes from the previous timing point:";
+            controls.appendChild(legMinutesLabel);
+            const legMinutesInput = document.createElement("input");
+            legMinutesInput.className = "field";
+            legMinutesInput.type = "number";
+            legMinutesInput.min = "0";
+            legMinutesInput.step = "1";
+            legMinutesInput.placeholder = "Fastest achievable time if left blank";
+            legMinutesInput.value = String(timingPoint?.legMinutes ?? "");
+            controls.appendChild(legMinutesInput);
+
+            legMinutesInput.addEventListener("change", () => {
+              timetableEditorState.timingPoints = timetableEditorState.timingPoints.filter(
+                (tp) => tp.pointIndex !== i,
+              );
+              if (legMinutesInput.value !== "") {
+                const legMinutes = Math.max(0, Math.round(Number(legMinutesInput.value) || 0));
+                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellSeconds: 0 });
+              }
+              timetableEditorState.onTimingPointsEdited?.();
+              void renderList();
+            });
           } else {
             const tpToggleRow = document.createElement("label");
             tpToggleRow.style.display = "flex";
@@ -683,22 +726,33 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
             tpToggleRow.appendChild(document.createTextNode("Timing point (this route)"));
             controls.appendChild(tpToggleRow);
 
+            const legMinutesLabel = document.createElement("label");
+            legMinutesLabel.className = "label-muted";
+            legMinutesLabel.textContent = "Minutes from the previous timing point:";
+            controls.appendChild(legMinutesLabel);
             const legMinutesInput = document.createElement("input");
             legMinutesInput.className = "field";
             legMinutesInput.type = "number";
             legMinutesInput.min = "0";
             legMinutesInput.step = "1";
-            legMinutesInput.placeholder = "Minutes from the previous timing point";
             legMinutesInput.value = String(timingPoint?.legMinutes ?? "");
             legMinutesInput.disabled = timingPoint === null;
             controls.appendChild(legMinutesInput);
 
+            // A layover (e.g. a bus station stand where the same working
+            // picks up again after a break) — always visible with its own
+            // label so a "0" reads as "no layover", not an unlabelled
+            // number nobody can place (the field's own placeholder
+            // disappears the moment it holds a real value, "0" included).
+            const dwellLabel = document.createElement("label");
+            dwellLabel.className = "label-muted";
+            dwellLabel.textContent = "Dwell/layover before departing again (seconds, 0 if none):";
+            controls.appendChild(dwellLabel);
             const dwellInput = document.createElement("input");
             dwellInput.className = "field";
             dwellInput.type = "number";
             dwellInput.min = "0";
             dwellInput.step = "1";
-            dwellInput.placeholder = "Dwell/layover (seconds, 0 if none)";
             dwellInput.value = String(timingPoint?.dwellSeconds ?? 0);
             dwellInput.disabled = timingPoint === null;
             controls.appendChild(dwellInput);
