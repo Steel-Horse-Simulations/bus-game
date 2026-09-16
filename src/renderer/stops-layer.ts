@@ -8,6 +8,12 @@ import { decode_stops, decode_stop_areas, decode_railway_stations, decode_tram_s
 import { routeDrawState } from "./route-draw";
 import { createDropdown } from "./dropdown";
 import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropoff";
+import {
+  computeStopCallingServices,
+  formatClockMinutes,
+  DAY_TYPE_SHORT_LABELS,
+  type StopCallingService,
+} from "./stop-calling-services.mts";
 
 interface DecodedStop {
   lon: number;
@@ -465,6 +471,131 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       return row;
     };
 
+    // Read-only "which services call here" (T29, OPEN-ITEMS.md) — the list
+    // itself, with no heading, so a single stop's popup and a station's
+    // per-stand grouping (below) can each wrap it with their own heading
+    // rather than duplicating "Calling services" once per stand.
+    const buildServicesList = (services: StopCallingService[]): HTMLElement => {
+      if (services.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.fontSize = "11px";
+        empty.style.color = "var(--text-muted)";
+        empty.textContent = "No services call here yet.";
+        return empty;
+      }
+
+      const list = document.createElement("div");
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "4px";
+
+      let lastRouteId: number | null = null;
+      for (const svc of services) {
+        const row = document.createElement("div");
+        row.style.fontSize = "11px";
+
+        if (svc.routeId !== lastRouteId) {
+          const swatch = document.createElement("span");
+          swatch.style.display = "inline-block";
+          swatch.style.width = "8px";
+          swatch.style.height = "8px";
+          swatch.style.borderRadius = "50%";
+          swatch.style.backgroundColor = svc.routeColour;
+          swatch.style.marginRight = "4px";
+          row.appendChild(swatch);
+          const numberSpan = document.createElement("strong");
+          numberSpan.textContent = svc.routeNumber;
+          row.appendChild(numberSpan);
+          row.appendChild(document.createTextNode(" "));
+          lastRouteId = svc.routeId;
+        } else {
+          row.style.paddingLeft = "12px";
+        }
+        row.appendChild(
+          document.createTextNode(
+            `${DAY_TYPE_SHORT_LABELS[svc.dayType]}: ${svc.departureClockMinutes.map(formatClockMinutes).join(", ")}`,
+          ),
+        );
+        list.appendChild(row);
+      }
+      return list;
+    };
+
+    // A single stop/stand's own calling services, fetched fresh each time
+    // (routes and their timetables can change while the map stays open, and
+    // this popup is opened rarely enough that refetching costs nothing).
+    const buildCallingServicesSection = async (osmId: number): Promise<HTMLElement> => {
+      const section = document.createElement("div");
+      section.style.marginTop = "10px";
+      section.style.paddingTop = "10px";
+      section.style.borderTop = "1px solid var(--border)";
+      const heading = document.createElement("div");
+      heading.className = "label-muted";
+      heading.textContent = "Calling services";
+      section.appendChild(heading);
+
+      const [routes, timetables] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
+      const services = computeStopCallingServices(osmId, routes, timetables);
+      const listWrap = document.createElement("div");
+      listWrap.style.maxHeight = "160px";
+      listWrap.style.overflowY = "auto";
+      listWrap.style.marginTop = "4px";
+      listWrap.appendChild(buildServicesList(services));
+      section.appendChild(listWrap);
+      return section;
+    };
+
+    // A bus station's calling services, grouped by stand (T29: "grouped by
+    // stand at a station") — every stop currently assigned to this station,
+    // each with its own sub-heading, stands with no services omitted rather
+    // than shown empty.
+    const buildStationCallingServicesSection = async (stationOsmId: number): Promise<HTMLElement> => {
+      const section = document.createElement("div");
+      section.style.marginTop = "10px";
+      section.style.paddingTop = "10px";
+      section.style.borderTop = "1px solid var(--border)";
+      const heading = document.createElement("div");
+      heading.className = "label-muted";
+      heading.textContent = "Calling services";
+      section.appendChild(heading);
+
+      const [routes, timetables] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
+      const standsWithServices = stops
+        .filter((s) => stationOfStop.get(s.osmId) === stationOsmId)
+        .map((stand) => ({ stand, services: computeStopCallingServices(stand.osmId, routes, timetables) }))
+        .filter((x) => x.services.length > 0)
+        .sort((a, b) => displayName(a.stand).localeCompare(displayName(b.stand)));
+
+      const listWrap = document.createElement("div");
+      listWrap.style.maxHeight = "220px";
+      listWrap.style.overflowY = "auto";
+      listWrap.style.marginTop = "4px";
+      listWrap.style.display = "flex";
+      listWrap.style.flexDirection = "column";
+      listWrap.style.gap = "8px";
+
+      if (standsWithServices.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.fontSize = "11px";
+        empty.style.color = "var(--text-muted)";
+        empty.textContent = "No services call at any stand here yet.";
+        listWrap.appendChild(empty);
+      } else {
+        for (const { stand, services } of standsWithServices) {
+          const standBlock = document.createElement("div");
+          const standHeading = document.createElement("div");
+          standHeading.style.fontSize = "11px";
+          standHeading.style.fontWeight = "600";
+          standHeading.textContent = displayName(stand);
+          standBlock.appendChild(standHeading);
+          standBlock.appendChild(buildServicesList(services));
+          listWrap.appendChild(standBlock);
+        }
+      }
+      section.appendChild(listWrap);
+      return section;
+    };
+
     const closeStationPopup = () => {
       stationPopup?.remove();
       stationPopup = null;
@@ -472,7 +603,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       refreshStandsSource();
     };
 
-    const openStationPopup = (stop: DecodedStop) => {
+    const openStationPopup = async (stop: DecodedStop) => {
       stopPopup?.remove();
       const osmId = stop.osmId;
       const coords: [number, number] = [stop.lon, stop.lat];
@@ -576,6 +707,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       });
 
       container.appendChild(bulkSection);
+      container.appendChild(await buildStationCallingServicesSection(osmId));
 
       stationPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
         .setLngLat(coords)
@@ -601,7 +733,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       if (!stop) return;
       openStationOsmId = osmId;
       refreshStandsSource();
-      openStationPopup(stop);
+      void openStationPopup(stop);
     });
     map.on("mouseenter", "stops-stations", () => {
       map.getCanvas().style.cursor = "pointer";
@@ -718,6 +850,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       );
       pickupDropoffDropdown.el.style.width = "100%";
       container.appendChild(pickupDropoffDropdown.el);
+      container.appendChild(await buildCallingServicesSection(osmId));
 
       stopPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
         .setLngLat(coords)
@@ -750,7 +883,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       if (stop.kind === "bus_station") {
         openStationOsmId = osmId;
         refreshStandsSource();
-        openStationPopup(stop);
+        void openStationPopup(stop);
       } else {
         void openStopPopup(stop);
       }
