@@ -273,7 +273,12 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       timetableEditorState.onDayTypeChanged = null;
       timetableEditorState.onTimingPointsEdited = null;
       slot.appendChild(buildLockedRoutePanel(next.route));
-      const editor = createRouteTimetableEditor(next.route, router, () => setMode({ kind: "list" }));
+      const editor = createRouteTimetableEditor(
+        next.route,
+        router,
+        () => setMode({ kind: "list" }),
+        (sibling) => setMode({ kind: "timetable", route: sibling }),
+      );
       timetableSlot.appendChild(editor.el);
     }
   }

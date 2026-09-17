@@ -96,10 +96,27 @@ export interface RouteTimetableEditor {
 // is called when the player wants to leave the timetable-editing state
 // entirely (back to the route list) — the day-type dropdown inside still
 // switches between a route's own day types without closing anything.
+// A route's "family" for timetable coordination purposes (user request:
+// "they should all be shown in each variation timetable so it is easier
+// to adjust everything to work together") — the root (this route itself
+// if it has no parent, otherwise its parent) plus every route whose own
+// parentRouteId points at that same root, including this route. Degrades
+// gracefully if the parent was itself deleted (parentRouteId cleared to
+// null, db.mts's deleteRoute) — the "family" just becomes whatever this
+// route's own remaining relationships still say.
+async function loadRouteFamily(route: Route): Promise<Route[]> {
+  const all = await window.routes.list();
+  const rootId = route.parentRouteId ?? route.id;
+  return all
+    .filter((r) => r.id === rootId || r.parentRouteId === rootId)
+    .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+}
+
 export function createRouteTimetableEditor(
   route: Route,
   router: Router,
   onClose: () => void,
+  onSwitchRoute: (route: Route) => void,
 ): RouteTimetableEditor {
   const panel = document.createElement("div");
   panel.className = "panel panel-flush";
@@ -122,6 +139,38 @@ export function createRouteTimetableEditor(
   header.appendChild(title);
   header.appendChild(closeButton);
   panel.appendChild(header);
+
+  // Tabs across the top (DESIGN.md §7: "Components are navigated by tabs
+  // across the top of the grid") — here, one tab per sibling route in this
+  // route's variation family rather than per merged component, since each
+  // variation is its own Route row with its own timetable rows, not a
+  // component of one shared route. Clicking a non-current tab reopens this
+  // same panel for that route instead (route-panel.ts's setMode), so
+  // coordinating a family means clicking between tabs, not leaving to the
+  // route list and back.
+  const familyTabs = document.createElement("div");
+  familyTabs.style.display = "flex";
+  familyTabs.style.gap = "4px";
+  familyTabs.style.padding = "8px 12px 0";
+  familyTabs.style.flexWrap = "wrap";
+  panel.appendChild(familyTabs);
+  void loadRouteFamily(route).then((family) => {
+    if (family.length <= 1) return; // a lone route with no variations needs no tabs
+    familyTabs.innerHTML = "";
+    for (const member of family) {
+      const tab = document.createElement("button");
+      tab.className = "btn btn-icon";
+      tab.textContent = member.number;
+      if (member.id === route.id) {
+        tab.disabled = true;
+        tab.style.fontWeight = "700";
+        tab.style.borderColor = member.colour;
+      } else {
+        tab.addEventListener("click", () => onSwitchRoute(member));
+      }
+      familyTabs.appendChild(tab);
+    }
+  });
 
   const body = document.createElement("div");
   body.className = "panel-section";
@@ -186,6 +235,57 @@ export function createRouteTimetableEditor(
         : `${count} timing point${count === 1 ? "" : "s"} set — click a stop on the left to edit.`;
   }
 
+  // Shows every family member's own timetable for whichever day type is
+  // currently selected, side by side — so padding/interleaving two
+  // variations' frequencies (DESIGN.md §7's worked example) can be judged
+  // by eye without switching tabs back and forth. Point 0's own departures
+  // stand in for "when each family member runs" — a full per-stop
+  // comparison is what the expand-to-grid view (stops-layer.ts) is for.
+  const familySection = document.createElement("div");
+  familySection.style.display = "flex";
+  familySection.style.flexDirection = "column";
+  familySection.style.gap = "4px";
+  familySection.style.borderTop = "1px solid var(--border)";
+  familySection.style.paddingTop = "8px";
+
+  async function renderFamilyDepartures(dayType: DayType): Promise<void> {
+    const family = await loadRouteFamily(route);
+    familySection.innerHTML = "";
+    if (family.length <= 1) return;
+    const heading = document.createElement("div");
+    heading.className = "label-muted";
+    heading.textContent = `This family's ${DAY_TYPE_LABELS[dayType]} departures:`;
+    familySection.appendChild(heading);
+    for (const member of family) {
+      const tt = (await window.routeTimetables.listForRoute(member.id)).find((t) => t.dayType === dayType);
+      const row = document.createElement("div");
+      row.style.fontSize = "11px";
+      const swatch = document.createElement("span");
+      swatch.style.display = "inline-block";
+      swatch.style.width = "8px";
+      swatch.style.height = "8px";
+      swatch.style.borderRadius = "50%";
+      swatch.style.backgroundColor = member.colour;
+      swatch.style.marginRight = "4px";
+      row.appendChild(swatch);
+      const numberSpan = document.createElement("strong");
+      numberSpan.textContent = member.number + " ";
+      row.appendChild(numberSpan);
+      row.appendChild(
+        document.createTextNode(
+          tt
+            ? `${minutesToHHMM(tt.startMinutes)}-${minutesToHHMM(tt.endMinutes)} every ${tt.intervalMinutes} min (first departures: ${[
+                minutesToHHMM(tt.startMinutes),
+                minutesToHHMM(Math.min(tt.startMinutes + tt.intervalMinutes, tt.endMinutes)),
+                minutesToHHMM(Math.min(tt.startMinutes + tt.intervalMinutes * 2, tt.endMinutes)),
+              ].join(", ")}…)`
+            : "no timetable for this day type yet",
+        ),
+      );
+      familySection.appendChild(row);
+    }
+  }
+
   async function loadDayType(dayType: DayType): Promise<void> {
     const existing = (await window.routeTimetables.listForRoute(route.id)).find((t) => t.dayType === dayType);
     timetableEditorState.dayType = dayType;
@@ -212,6 +312,7 @@ export function createRouteTimetableEditor(
       intervalInput.value = "";
       statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]} timetable yet.`;
     }
+    void renderFamilyDepartures(dayType);
   }
 
   const dayTypeDropdown: Dropdown = createDropdown(
@@ -285,6 +386,7 @@ export function createRouteTimetableEditor(
       statusLine.style.color = STATUS_COLOUR_SUCCESS;
       statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
     }
+    void renderFamilyDepartures(dayType);
   });
 
   body.appendChild(dayTypeDropdown.el);
@@ -294,6 +396,7 @@ export function createRouteTimetableEditor(
   body.appendChild(timingPointsHint);
   body.appendChild(saveButton);
   body.appendChild(statusLine);
+  body.appendChild(familySection);
 
   void loadDayType(DAY_TYPES[0]);
 

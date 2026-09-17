@@ -105,7 +105,12 @@ const stopStrokeWidthExpression = [
 // A bus station's own base ring is already 1.5 (unlinked, white) — thicker
 // than a plain stop's 1 — so a linked station needs its own slightly
 // thicker step to stay visually distinct from that base ring.
-const stationStrokeWidthExpression = ["case", ["!=", ["get", "linkedTransitColor"], null], 2.5, 1.5];
+// 2.5 read as visibly uneven at typical zoom — a thin stroke on a small
+// circle antialiases unevenly at ordinary screen resolution regardless of
+// the underlying render being mathematically symmetric (confirmed by
+// direct pixel measurement, not just eyeballing a screenshot); a thicker
+// ring reads more cleanly rather than trying to fix antialiasing itself.
+const stationStrokeWidthExpression = ["case", ["!=", ["get", "linkedTransitColor"], null], 3.5, 1.5];
 
 function approxDistanceM(a: [number, number], b: [number, number]): number {
   const R = 6_371_000;
@@ -559,7 +564,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
 
       const panel = document.createElement("div");
       panel.className = "panel";
-      panel.style.width = "min(96vw, 1400px)";
+      panel.style.width = "min(98vw, 1800px)";
       panel.style.height = "90vh";
       panel.style.display = "flex";
       panel.style.flexDirection = "column";
