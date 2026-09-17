@@ -957,6 +957,30 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       container.style.minWidth = "220px";
       container.appendChild(buildTitleRow(stop, refreshHiddenPanel));
 
+      // DESIGN.md §4 "Per-stop settings": "any two services meeting here
+      // are connected (§7)" — just the flag for now. §7's actual
+      // connection behaviour (one late service makes the other wait, up
+      // to a per-route maximum) needs live bus movement and lateness
+      // tracking, neither of which exist yet (Phase 3+) — this stores the
+      // flag so the mechanism has something real to read once it does,
+      // same override layer as everything else here.
+      const connectionLabel = document.createElement("label");
+      connectionLabel.style.display = "flex";
+      connectionLabel.style.alignItems = "center";
+      connectionLabel.style.gap = "6px";
+      connectionLabel.style.cursor = "pointer";
+      connectionLabel.style.marginBottom = "6px";
+      const connectionCheckbox = document.createElement("input");
+      connectionCheckbox.type = "checkbox";
+      connectionCheckbox.checked = (await window.overrides.get<boolean>("stop", osmId, "connection_stop")) ?? false;
+      connectionCheckbox.addEventListener("change", () => {
+        if (connectionCheckbox.checked) void window.overrides.set("stop", osmId, "connection_stop", true);
+        else void window.overrides.reset("stop", osmId, "connection_stop");
+      });
+      connectionLabel.appendChild(connectionCheckbox);
+      connectionLabel.appendChild(document.createTextNode("Connection stop"));
+      container.appendChild(connectionLabel);
+
       const NONE_LABEL = "(not part of a station)";
       const labelToStationId = new Map<string, number | null>([[NONE_LABEL, null]]);
       for (const { st, dist } of nearestStations) {
