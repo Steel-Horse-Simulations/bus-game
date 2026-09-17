@@ -1,6 +1,6 @@
 // Bridges main <-> renderer.
 import { contextBridge, ipcRenderer } from "electron";
-import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, RouteTimetable } from "./db.mts";
+import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, TimeBand, RouteTimetable } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
 // way to read or write it, since node:sqlite lives in the main process.
@@ -102,9 +102,7 @@ contextBridge.exposeInMainWorld("routeTimetables", {
   upsert: (
     routeId: number,
     dayType: DayType,
-    startMinutes: number,
-    endMinutes: number,
-    intervalMinutes: number,
+    timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
@@ -113,9 +111,7 @@ contextBridge.exposeInMainWorld("routeTimetables", {
       "routeTimetables:upsert",
       routeId,
       dayType,
-      startMinutes,
-      endMinutes,
-      intervalMinutes,
+      timeBands,
       timingPoints,
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,

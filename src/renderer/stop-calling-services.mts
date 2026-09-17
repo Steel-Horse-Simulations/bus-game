@@ -1,3 +1,5 @@
+import { generateDepartureMinutesForBands } from "./route-timetable.mts";
+
 // Read-only "which services call here" computation (T29, OPEN-ITEMS.md) —
 // pure logic, no DOM, so it can be unit tested independently of the popup
 // that renders it. A route can call at the same physical stop more than
@@ -42,11 +44,17 @@ export function computeStopCallingServices(
     if (pointIndexes.length === 0) continue;
 
     for (const tt of timetables) {
-      if (tt.routeId !== route.id || tt.intervalMinutes <= 0) continue;
+      if (tt.routeId !== route.id) continue;
+      let departureMinutes: number[];
+      try {
+        departureMinutes = generateDepartureMinutesForBands(tt.timeBands);
+      } catch {
+        continue; // an invalid/empty band set generates nothing, not an error here
+      }
       const times = new Set<number>();
       for (const pointIndex of pointIndexes) {
         const offsetMinutes = tt.departureOffsetsSeconds[pointIndex] / 60;
-        for (let d = tt.startMinutes; d <= tt.endMinutes; d += tt.intervalMinutes) {
+        for (const d of departureMinutes) {
           times.add(Math.round(d + offsetMinutes));
         }
       }

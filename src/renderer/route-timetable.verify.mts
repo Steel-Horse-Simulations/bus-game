@@ -10,6 +10,10 @@ import {
   validateTimingPoints,
   computeOffsets,
   journeyTimeAtPoint,
+  validateTimeBands,
+  generateDepartureMinutesForBands,
+  DEFAULT_TIME_BANDS,
+  type TimeBand,
 } from "./route-timetable.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -200,5 +204,60 @@ assert(threw, "computeOffsets rejects a route with fewer than two points");
 // --- journeyTimeAtPoint ---
 assert(journeyTimeAtPoint(360, 90) === 361.5, "a departure plus a 90-second offset is 1.5 minutes later");
 assert(journeyTimeAtPoint(1430, 3600) === 1490, "an offset can legitimately push a journey past midnight (1490 > 1440)");
+
+// --- validateTimeBands / generateDepartureMinutesForBands ---
+assert(validateTimeBands([]) !== null, "an empty band list is rejected");
+assert(
+  validateTimeBands([{ startMinutes: 480, endMinutes: 540, intervalMinutes: 0 }]) !== null,
+  "a band with an invalid frequency (zero interval) is rejected the same way validateFrequency would",
+);
+
+// Touching bands (one's end equals the next's start) are fine — this is
+// the natural shape of contiguous bands covering a whole day.
+{
+  const touching: TimeBand[] = [
+    { startMinutes: 0, endMinutes: 480, intervalMinutes: 60 },
+    { startMinutes: 480, endMinutes: 1439, intervalMinutes: 30 },
+  ];
+  assert(validateTimeBands(touching) === null, "touching bands (shared boundary) are not treated as overlapping");
+}
+
+// Genuinely overlapping bands are rejected.
+{
+  const overlapping: TimeBand[] = [
+    { startMinutes: 0, endMinutes: 500, intervalMinutes: 60 },
+    { startMinutes: 480, endMinutes: 1439, intervalMinutes: 30 },
+  ];
+  assert(validateTimeBands(overlapping) !== null, "genuinely overlapping bands are rejected");
+}
+
+// Departures merge across bands, in order, regardless of input order.
+{
+  const bands: TimeBand[] = [
+    { startMinutes: 540, endMinutes: 600, intervalMinutes: 30 }, // 540, 570, 600
+    { startMinutes: 480, endMinutes: 540, intervalMinutes: 20 }, // 480, 500, 520, 540
+  ];
+  const result = generateDepartureMinutesForBands(bands);
+  assert(
+    JSON.stringify(result) === JSON.stringify([480, 500, 520, 540, 570, 600]),
+    `expected merged/sorted/de-duplicated departures (540 appears in both bands), got ${JSON.stringify(result)}`,
+  );
+}
+
+// The UK-default template itself is internally valid and covers the
+// whole day with no gaps or overlaps.
+{
+  const error = validateTimeBands(DEFAULT_TIME_BANDS);
+  assert(error === null, `DEFAULT_TIME_BANDS should itself be valid, got: ${error}`);
+  const sorted = [...DEFAULT_TIME_BANDS].sort((a, b) => a.startMinutes - b.startMinutes);
+  assert(sorted[0].startMinutes === 0, "the default bands should start at midnight");
+  assert(sorted[sorted.length - 1].endMinutes === 1439, "the default bands should cover through to the last minute of the day");
+  for (let i = 1; i < sorted.length; i++) {
+    assert(
+      sorted[i].startMinutes === sorted[i - 1].endMinutes,
+      `the default bands should be contiguous with no gap between band ${i - 1} and ${i}`,
+    );
+  }
+}
 
 console.log("\nAll checks passed.");

@@ -1,3 +1,5 @@
+import { generateDepartureMinutesForBands } from "./route-timetable.mts";
+
 // Builds a route+day-type's full printed-timetable-shaped grid (DESIGN.md
 // §7 "The grid": "stops down and journeys across, the traditional printed
 // shape") from one route and one of its RouteTimetable rows. Pure logic,
@@ -36,18 +38,18 @@ export function buildRouteTimetableGrid(route: Route, timetable: RouteTimetable)
     if (p.kind === "stop" && p.osmId !== undefined) rows.push({ pointIndex, osmId: p.osmId });
   });
 
-  const journeys: (number | null)[][] = [];
-  if (timetable.intervalMinutes > 0) {
-    for (let d = timetable.startMinutes; d <= timetable.endMinutes; d += timetable.intervalMinutes) {
-      journeys.push(
-        rows.map((row) =>
-          skippedIndexes.has(row.pointIndex)
-            ? null
-            : Math.round(d + timetable.departureOffsetsSeconds[row.pointIndex] / 60),
-        ),
-      );
-    }
+  let departureMinutes: number[] = [];
+  try {
+    departureMinutes = generateDepartureMinutesForBands(timetable.timeBands);
+  } catch {
+    // An invalid/empty band set produces no journeys, not an error here —
+    // same as a degenerate zero-interval day type always has.
   }
+  const journeys: (number | null)[][] = departureMinutes.map((d) =>
+    rows.map((row) =>
+      skippedIndexes.has(row.pointIndex) ? null : Math.round(d + timetable.departureOffsetsSeconds[row.pointIndex] / 60),
+    ),
+  );
 
   return { rows, journeys };
 }

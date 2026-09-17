@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -87,25 +87,29 @@ CREATE TABLE IF NOT EXISTS routes (
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
 -- far: one component per route per day type — no variations, padding,
 -- connections, extensions or event calendar yet, all deliberately deferred
--- (see OPEN-ITEMS.md T29). "timing_points" is the player's own input: a
--- JSON array of {pointIndex, waitSeconds} flagging which of the route's
--- stops (indexes into the owning route's own "points" column) hold a bus
--- that arrives early, and for how long. "arrival_offsets_seconds" and
--- "departure_offsets_seconds" are the derived output — one entry per route
--- point, seconds from the journey's departure at point 0 — computed once
--- from the WASM router's real running times (only available in the
--- renderer, not here) and cached so a stop/station timetable query never
--- needs to re-route every leg just to read a time back. Regenerated
--- whenever the frequency, timing points, or the route's own point list
--- changes. One row per (route, day type): a route not yet given a
--- timetable for a day type simply has no row for it.
+-- (see OPEN-ITEMS.md T29). "time_bands" is a JSON array of {startMinutes,
+-- endMinutes, intervalMinutes} (route-timetable.mts's TimeBand) — DESIGN.md
+-- §7 "Structure": "frequency varies across the day," the old single flat
+-- start/end/interval being exactly the one-band case. Deliberately doesn't
+-- also vary running time per band — see route-timetable.mts's own comment
+-- on why that part of the spec is intentionally not built here.
+-- "timing_points" is the player's own input: a JSON array of {pointIndex,
+-- waitSeconds} flagging which of the route's stops (indexes into the
+-- owning route's own "points" column) hold a bus that arrives early, and
+-- for how long. "arrival_offsets_seconds" and "departure_offsets_seconds"
+-- are the derived output — one entry per route point, seconds from the
+-- journey's departure at point 0 — computed once from the WASM router's
+-- real running times (only available in the renderer, not here) and
+-- cached so a stop/station timetable query never needs to re-route every
+-- leg just to read a time back. Regenerated whenever the frequency,
+-- timing points, or the route's own point list changes. One row per
+-- (route, day type): a route not yet given a timetable for a day type
+-- simply has no row for it.
 CREATE TABLE IF NOT EXISTS route_timetables (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   route_id INTEGER NOT NULL REFERENCES routes(id),
   day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
-  start_minutes INTEGER NOT NULL,
-  end_minutes INTEGER NOT NULL,
-  interval_minutes INTEGER NOT NULL,
+  time_bands TEXT NOT NULL,
   timing_points TEXT NOT NULL,
   arrival_offsets_seconds TEXT NOT NULL,
   departure_offsets_seconds TEXT NOT NULL,
@@ -188,6 +192,27 @@ export function openSave(path: string): SaveDb {
     // means implicitly.
     db.exec("ALTER TABLE routes ADD COLUMN parent_route_id INTEGER REFERENCES routes(id)");
     db.exec("ALTER TABLE routes ADD COLUMN variation_letter TEXT");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 11) {
+    // v11 -> v12: route_timetables' flat start_minutes/end_minutes/
+    // interval_minutes became a single time_bands JSON column (DESIGN.md
+    // §7 "time-of-day bands" — route-timetable.mts's TimeBand[]). Existing
+    // rows get their old flat frequency wrapped as a single-band array,
+    // preserving exactly the same generated departures rather than losing
+    // any existing timetable.
+    db.exec("ALTER TABLE route_timetables ADD COLUMN time_bands TEXT NOT NULL DEFAULT '[]'");
+    const rows = db
+      .prepare("SELECT id, start_minutes, end_minutes, interval_minutes FROM route_timetables")
+      .all() as unknown as { id: number; start_minutes: number; end_minutes: number; interval_minutes: number }[];
+    for (const row of rows) {
+      const bands = JSON.stringify([
+        { startMinutes: row.start_minutes, endMinutes: row.end_minutes, intervalMinutes: row.interval_minutes },
+      ]);
+      db.prepare("UPDATE route_timetables SET time_bands = ? WHERE id = ?").run(bands, row.id);
+    }
+    db.exec("ALTER TABLE route_timetables DROP COLUMN start_minutes");
+    db.exec("ALTER TABLE route_timetables DROP COLUMN end_minutes");
+    db.exec("ALTER TABLE route_timetables DROP COLUMN interval_minutes");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -498,13 +523,21 @@ export interface TimingPoint {
   dwellSeconds: number;
 }
 
+// One or more of these per timetable (DESIGN.md §7 "time-of-day bands") —
+// see route-timetable.mts's own TimeBand for the full reasoning; this is
+// the same shape, duplicated here the same way TimingPoint already is,
+// since electron/db.mts doesn't import from the renderer.
+export interface TimeBand {
+  startMinutes: number;
+  endMinutes: number;
+  intervalMinutes: number;
+}
+
 export interface RouteTimetable {
   id: number;
   routeId: number;
   dayType: DayType;
-  startMinutes: number;
-  endMinutes: number;
-  intervalMinutes: number;
+  timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
@@ -514,9 +547,7 @@ interface RouteTimetableRow {
   id: number;
   route_id: number;
   day_type: string;
-  start_minutes: number;
-  end_minutes: number;
-  interval_minutes: number;
+  time_bands: string;
   timing_points: string;
   arrival_offsets_seconds: string;
   departure_offsets_seconds: string;
@@ -527,9 +558,7 @@ function routeTimetableFromRow(row: RouteTimetableRow): RouteTimetable {
     id: row.id,
     routeId: row.route_id,
     dayType: row.day_type as DayType,
-    startMinutes: row.start_minutes,
-    endMinutes: row.end_minutes,
-    intervalMinutes: row.interval_minutes,
+    timeBands: JSON.parse(row.time_bands) as TimeBand[],
     timingPoints: JSON.parse(row.timing_points) as TimingPoint[],
     arrivalOffsetsSeconds: JSON.parse(row.arrival_offsets_seconds) as number[],
     departureOffsetsSeconds: JSON.parse(row.departure_offsets_seconds) as number[],
@@ -544,37 +573,31 @@ export function upsertRouteTimetable(
   db: SaveDb,
   routeId: number,
   dayType: DayType,
-  startMinutes: number,
-  endMinutes: number,
-  intervalMinutes: number,
+  timeBands: TimeBand[],
   timingPoints: TimingPoint[],
   arrivalOffsetsSeconds: number[],
   departureOffsetsSeconds: number[],
 ): RouteTimetable {
   db.prepare(
     `INSERT INTO route_timetables
-       (route_id, day_type, start_minutes, end_minutes, interval_minutes, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (route_id, day_type) DO UPDATE SET
-       start_minutes = excluded.start_minutes,
-       end_minutes = excluded.end_minutes,
-       interval_minutes = excluded.interval_minutes,
+       time_bands = excluded.time_bands,
        timing_points = excluded.timing_points,
        arrival_offsets_seconds = excluded.arrival_offsets_seconds,
        departure_offsets_seconds = excluded.departure_offsets_seconds`,
   ).run(
     routeId,
     dayType,
-    startMinutes,
-    endMinutes,
-    intervalMinutes,
+    JSON.stringify(timeBands),
     JSON.stringify(timingPoints),
     JSON.stringify(arrivalOffsetsSeconds),
     JSON.stringify(departureOffsetsSeconds),
   );
   const row = db
     .prepare(
-      `SELECT id, route_id, day_type, start_minutes, end_minutes, interval_minutes, timing_points, arrival_offsets_seconds, departure_offsets_seconds
+      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
        FROM route_timetables WHERE route_id = ? AND day_type = ?`,
     )
     .get(routeId, dayType) as unknown as RouteTimetableRow;
@@ -584,7 +607,7 @@ export function upsertRouteTimetable(
 export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteTimetable[] {
   const rows = db
     .prepare(
-      `SELECT id, route_id, day_type, start_minutes, end_minutes, interval_minutes, timing_points, arrival_offsets_seconds, departure_offsets_seconds
+      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
        FROM route_timetables WHERE route_id = ? ORDER BY day_type`,
     )
     .all(routeId) as unknown as RouteTimetableRow[];
@@ -597,7 +620,7 @@ export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteT
 export function listAllRouteTimetables(db: SaveDb): RouteTimetable[] {
   const rows = db
     .prepare(
-      `SELECT id, route_id, day_type, start_minutes, end_minutes, interval_minutes, timing_points, arrival_offsets_seconds, departure_offsets_seconds
+      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
        FROM route_timetables`,
     )
     .all() as unknown as RouteTimetableRow[];

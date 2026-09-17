@@ -178,14 +178,15 @@ const tt = upsertRouteTimetable(
   db,
   route.id,
   "monday_friday",
-  360,
-  1140,
-  30,
+  [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 30 }],
   [{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }],
   [0, 500],
   [0, 560],
 );
-assert(tt.dayType === "monday_friday" && tt.startMinutes === 360, "route timetable created with the right fields");
+assert(
+  tt.dayType === "monday_friday" && tt.timeBands[0].startMinutes === 360,
+  "route timetable created with the right fields",
+);
 assert(
   JSON.stringify(tt.timingPoints) === JSON.stringify([{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }]),
   "timing points round-trip through JSON",
@@ -201,13 +202,29 @@ assert(forRoute.length === 1, "the route now has exactly one timetable");
 
 // Upserting the same (route, day type) again replaces it rather than adding
 // a second row — there's only one component per route per day type yet.
-const tt2 = upsertRouteTimetable(db, route.id, "monday_friday", 400, 1200, 20, [], [0, 300], [0, 300]);
+const tt2 = upsertRouteTimetable(
+  db,
+  route.id,
+  "monday_friday",
+  [{ startMinutes: 400, endMinutes: 1200, intervalMinutes: 20 }],
+  [],
+  [0, 300],
+  [0, 300],
+);
 assert(tt2.id === tt.id, "upserting the same route+day type updates the existing row rather than inserting a new one");
 forRoute = listRouteTimetablesForRoute(db, route.id);
-assert(forRoute.length === 1 && forRoute[0].startMinutes === 400, "the update replaced the row's fields");
+assert(forRoute.length === 1 && forRoute[0].timeBands[0].startMinutes === 400, "the update replaced the row's fields");
 
 // A different day type on the same route is a separate row.
-upsertRouteTimetable(db, route.id, "saturday", 500, 1100, 60, [], [0, 400], [0, 400]);
+upsertRouteTimetable(
+  db,
+  route.id,
+  "saturday",
+  [{ startMinutes: 500, endMinutes: 1100, intervalMinutes: 60 }],
+  [],
+  [0, 400],
+  [0, 400],
+);
 forRoute = listRouteTimetablesForRoute(db, route.id);
 assert(forRoute.length === 2, "a different day type adds a second row rather than replacing the first");
 
@@ -270,7 +287,15 @@ assert(
 
 // A fresh timetable built against the now-updated point list, so deleting
 // the route below still has something real to clean up.
-upsertRouteTimetable(db, route.id, "sunday", 600, 900, 60, [], [0, 200, 400], [0, 200, 400]);
+upsertRouteTimetable(
+  db,
+  route.id,
+  "sunday",
+  [{ startMinutes: 600, endMinutes: 900, intervalMinutes: 60 }],
+  [],
+  [0, 200, 400],
+  [0, 200, 400],
+);
 assert(listRouteTimetablesForRoute(db, route.id).length === 1, "a new timetable can be built after the update");
 
 // route.id is still a real parent (variation and relinked both point at
@@ -313,7 +338,15 @@ const route2 = createRoute(
   null,
   null,
 );
-upsertRouteTimetable(db, route2.id, "sunday", 700, 1000, 45, [], [0, 250], [0, 250]);
+upsertRouteTimetable(
+  db,
+  route2.id,
+  "sunday",
+  [{ startMinutes: 700, endMinutes: 1000, intervalMinutes: 45 }],
+  [],
+  [0, 250],
+  [0, 250],
+);
 db.close();
 db = openSave(path);
 assert(

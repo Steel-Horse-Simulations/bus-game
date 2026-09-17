@@ -10,7 +10,9 @@ import { createDropdown, type Dropdown } from "./dropdown";
 import {
   DAY_TYPES,
   type DayType,
-  validateFrequency,
+  type TimeBand,
+  validateTimeBands,
+  DEFAULT_TIME_BANDS,
   validateTimingPoints,
   computeOffsets,
 } from "./route-timetable.mts";
@@ -198,19 +200,112 @@ export function createRouteTimetableEditor(
   statusLine.style.color = STATUS_COLOUR_WARNING;
   statusLine.style.fontWeight = "600";
 
-  const startInput = document.createElement("input");
-  startInput.className = "field";
-  startInput.placeholder = "Start (HH:MM)";
-  startInput.addEventListener("blur", () => normalizeTimeInput(startInput));
-  const endInput = document.createElement("input");
-  endInput.className = "field";
-  endInput.placeholder = "End (HH:MM)";
-  endInput.addEventListener("blur", () => normalizeTimeInput(endInput));
-  const intervalInput = document.createElement("input");
-  intervalInput.className = "field";
-  intervalInput.type = "number";
-  intervalInput.min = "1";
-  intervalInput.placeholder = "Interval (minutes)";
+  // Time-of-day bands (DESIGN.md §7 "Structure": "frequency varies across
+  // the day") — one or more (start, end, interval) rows rather than a
+  // single flat frequency, the old flat model being exactly the one-band
+  // case. A day type with no timetable yet starts from DEFAULT_TIME_BANDS
+  // (the UK-typical AM peak/inter-peak/PM peak/evening/night shape) as a
+  // template the player can freely reshape — "defined globally as
+  // defaults, overridable per route."
+  let currentBands: TimeBand[] = [];
+  const bandsContainer = document.createElement("div");
+  bandsContainer.style.display = "flex";
+  bandsContainer.style.flexDirection = "column";
+  bandsContainer.style.gap = "4px";
+
+  function renderBandRows(): void {
+    bandsContainer.innerHTML = "";
+    currentBands.forEach((band, i) => {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.gap = "4px";
+      row.style.alignItems = "center";
+
+      const startInput = document.createElement("input");
+      startInput.className = "field";
+      startInput.style.width = "64px";
+      startInput.placeholder = "Start";
+      startInput.value = minutesToHHMM(band.startMinutes);
+      startInput.addEventListener("blur", () => normalizeTimeInput(startInput));
+      startInput.addEventListener("input", () => {
+        const v = hhmmToMinutes(startInput.value);
+        if (v !== null) {
+          currentBands[i] = { ...currentBands[i], startMinutes: v };
+          refreshFamilyLive();
+        }
+      });
+
+      const toLabel = document.createElement("span");
+      toLabel.className = "label-muted";
+      toLabel.textContent = "-";
+
+      const endInput = document.createElement("input");
+      endInput.className = "field";
+      endInput.style.width = "64px";
+      endInput.placeholder = "End";
+      endInput.value = minutesToHHMM(band.endMinutes);
+      endInput.addEventListener("blur", () => normalizeTimeInput(endInput));
+      endInput.addEventListener("input", () => {
+        const v = hhmmToMinutes(endInput.value);
+        if (v !== null) {
+          currentBands[i] = { ...currentBands[i], endMinutes: v };
+          refreshFamilyLive();
+        }
+      });
+
+      const everyLabel = document.createElement("span");
+      everyLabel.className = "label-muted";
+      everyLabel.textContent = "every";
+
+      const intervalInput = document.createElement("input");
+      intervalInput.className = "field";
+      intervalInput.type = "number";
+      intervalInput.min = "1";
+      intervalInput.style.width = "52px";
+      intervalInput.value = String(band.intervalMinutes);
+      intervalInput.addEventListener("input", () => {
+        const v = Number(intervalInput.value);
+        if (Number.isFinite(v)) {
+          currentBands[i] = { ...currentBands[i], intervalMinutes: v };
+          refreshFamilyLive();
+        }
+      });
+
+      const minLabel = document.createElement("span");
+      minLabel.className = "label-muted";
+      minLabel.textContent = "min";
+
+      const removeButton = document.createElement("button");
+      removeButton.className = "btn btn-icon btn-danger";
+      removeButton.textContent = "×";
+      removeButton.title = "Remove this band";
+      removeButton.addEventListener("click", () => {
+        currentBands.splice(i, 1);
+        renderBandRows();
+        refreshFamilyLive();
+      });
+
+      row.appendChild(startInput);
+      row.appendChild(toLabel);
+      row.appendChild(endInput);
+      row.appendChild(everyLabel);
+      row.appendChild(intervalInput);
+      row.appendChild(minLabel);
+      row.appendChild(removeButton);
+      bandsContainer.appendChild(row);
+    });
+  }
+
+  const addBandButton = document.createElement("button");
+  addBandButton.className = "btn";
+  addBandButton.textContent = "+ Add time band";
+  addBandButton.addEventListener("click", () => {
+    const last = currentBands[currentBands.length - 1];
+    const start = last ? last.endMinutes : 0;
+    currentBands.push({ startMinutes: start, endMinutes: Math.min(start + 60, 1439), intervalMinutes: 30 });
+    renderBandRows();
+    refreshFamilyLive();
+  });
 
   // Timing points are no longer set here — DESIGN.md §4/§7's redesign
   // moved that to each stop's own little menu in the locked route list on
@@ -302,11 +397,8 @@ export function createRouteTimetableEditor(
       await Promise.all(otherMembers.map((m) => window.routeTimetables.listForRoute(m.id)))
     ).flat();
 
-    const startMinutes = hhmmToMinutes(startInput.value);
-    const endMinutes = hhmmToMinutes(endInput.value);
-    const intervalMinutes = Number(intervalInput.value);
     let liveTimetable: RouteTimetable | null = null;
-    if (startMinutes !== null && endMinutes !== null && Number.isFinite(intervalMinutes) && intervalMinutes > 0) {
+    if (validateTimeBands(currentBands) === null) {
       try {
         const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsets(
           route.points.length,
@@ -317,9 +409,7 @@ export function createRouteTimetableEditor(
           id: -1,
           routeId: route.id,
           dayType,
-          startMinutes,
-          endMinutes,
-          intervalMinutes,
+          timeBands: currentBands.map((b) => ({ ...b })),
           timingPoints: timetableEditorState.timingPoints,
           arrivalOffsetsSeconds,
           departureOffsetsSeconds,
@@ -376,7 +466,7 @@ export function createRouteTimetableEditor(
     familySection.appendChild(list);
   }
 
-  // Live triggers: the frequency fields update the comparison on every
+  // Live trigger: each band row's own inputs call this directly on every
   // keystroke (not just on blur, unlike normalizeTimeInput's reformatting)
   // so the point of this section — seeing the effect of an edit before
   // committing to Save — actually holds. Timing-point edits (the left-hand
@@ -386,9 +476,6 @@ export function createRouteTimetableEditor(
     const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value) ?? DAY_TYPES[0];
     void renderFamilySharedStops(dayType);
   };
-  startInput.addEventListener("input", refreshFamilyLive);
-  endInput.addEventListener("input", refreshFamilyLive);
-  intervalInput.addEventListener("input", refreshFamilyLive);
 
   async function loadDayType(dayType: DayType): Promise<void> {
     const existing = (await window.routeTimetables.listForRoute(route.id)).find((t) => t.dayType === dayType);
@@ -406,16 +493,16 @@ export function createRouteTimetableEditor(
     timetableEditorState.onDayTypeChanged?.();
     statusLine.style.color = STATUS_COLOUR_WARNING;
     if (existing) {
-      startInput.value = minutesToHHMM(existing.startMinutes);
-      endInput.value = minutesToHHMM(existing.endMinutes);
-      intervalInput.value = String(existing.intervalMinutes);
+      currentBands = existing.timeBands.map((b) => ({ ...b }));
       statusLine.textContent = `Existing ${DAY_TYPE_LABELS[dayType]} timetable loaded.`;
     } else {
-      startInput.value = "";
-      endInput.value = "";
-      intervalInput.value = "";
-      statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]} timetable yet.`;
+      // A fresh day type starts from the UK-typical default bands
+      // (DESIGN.md §7: "defined globally as defaults, overridable per
+      // route") rather than empty — reshape or delete any of them freely.
+      currentBands = DEFAULT_TIME_BANDS.map((b) => ({ ...b }));
+      statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]} timetable yet — starting from the default time bands.`;
     }
+    renderBandRows();
     void renderFamilySharedStops(dayType);
   }
 
@@ -433,16 +520,9 @@ export function createRouteTimetableEditor(
     // succeeded cleanly and this attempt doesn't.
     statusLine.style.color = STATUS_COLOUR_WARNING;
     const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value)!;
-    const startMinutes = hhmmToMinutes(startInput.value);
-    const endMinutes = hhmmToMinutes(endInput.value);
-    const intervalMinutes = Number(intervalInput.value);
-    if (startMinutes === null || endMinutes === null) {
-      statusLine.textContent = "Enter start and end times as HH:MM.";
-      return;
-    }
-    const freqError = validateFrequency(startMinutes, endMinutes, intervalMinutes);
-    if (freqError) {
-      statusLine.textContent = freqError;
+    const bandsError = validateTimeBands(currentBands);
+    if (bandsError) {
+      statusLine.textContent = bandsError;
       return;
     }
     const timingPoints = timetableEditorState.timingPoints;
@@ -462,9 +542,7 @@ export function createRouteTimetableEditor(
     await window.routeTimetables.upsert(
       route.id,
       dayType,
-      startMinutes,
-      endMinutes,
-      intervalMinutes,
+      currentBands.map((b) => ({ ...b })),
       timingPoints,
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,
@@ -494,9 +572,8 @@ export function createRouteTimetableEditor(
   });
 
   body.appendChild(dayTypeDropdown.el);
-  body.appendChild(startInput);
-  body.appendChild(endInput);
-  body.appendChild(intervalInput);
+  body.appendChild(bandsContainer);
+  body.appendChild(addBandButton);
   body.appendChild(timingPointsHint);
   body.appendChild(saveButton);
   body.appendChild(statusLine);

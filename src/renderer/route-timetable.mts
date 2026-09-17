@@ -67,6 +67,72 @@ export function generateDepartureMinutes(
   return out;
 }
 
+// Time-of-day bands (DESIGN.md §7 "Structure": "frequency varies across
+// the day") — a day type's frequency is one or more of these rather than
+// a single flat start/end/interval; the old flat model is exactly the
+// one-band case. Deliberately doesn't also vary running time per band —
+// an earlier plan to do that (a flat time-of-day traffic multiplier) was
+// dropped in favour of the router's own real junction delays doing that
+// honestly instead (OPEN-ITEMS.md, project_398_running_time_decision);
+// building it back in here for bands specifically would quietly re-
+// introduce the same rejected mechanism. Every band shares the route's
+// one set of timing points/computed offsets — only which departure
+// minutes get generated varies.
+export interface TimeBand {
+  startMinutes: number;
+  endMinutes: number;
+  intervalMinutes: number;
+}
+
+// Bands may touch (one's end equals the next's start — the natural shape
+// of contiguous bands covering a whole day) but not overlap.
+export function validateTimeBands(bands: readonly TimeBand[]): string | null {
+  if (bands.length === 0) {
+    return "At least one time-of-day band is needed.";
+  }
+  for (const b of bands) {
+    const error = validateFrequency(b.startMinutes, b.endMinutes, b.intervalMinutes);
+    if (error) return error;
+  }
+  const sorted = [...bands].sort((a, b) => a.startMinutes - b.startMinutes);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].startMinutes < sorted[i - 1].endMinutes) {
+      return "Time-of-day bands can't overlap.";
+    }
+  }
+  return null;
+}
+
+// Every departure across every band, merged and de-duplicated (two
+// touching bands sharing an exact boundary minute would otherwise both
+// generate it) and sorted into one ascending list.
+export function generateDepartureMinutesForBands(bands: readonly TimeBand[]): number[] {
+  const error = validateTimeBands(bands);
+  if (error) throw new Error(error);
+  const out = new Set<number>();
+  for (const b of bands) {
+    for (let t = b.startMinutes; t <= b.endMinutes; t += b.intervalMinutes) out.add(t);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+// DESIGN.md §7's own suggestion of the shape ("AM peak, inter-peak, PM
+// peak, evening, night") — sensible UK-typical boundaries as a starting
+// template for a day type with no timetable yet, not a fixed rule. Every
+// route's own bands are fully independent after that first save (DESIGN.md:
+// "defined globally as defaults, overridable per route").
+// Contiguous — each band's end exactly equals the next one's start (see
+// validateTimeBands's own comment on why touching, not gapped, is the
+// shape overlap-checking allows) — so the whole day is covered with no
+// silent gap where no departures would ever generate.
+export const DEFAULT_TIME_BANDS: readonly TimeBand[] = [
+  { startMinutes: 0, endMinutes: 420, intervalMinutes: 60 }, // night, 00:00-07:00
+  { startMinutes: 420, endMinutes: 540, intervalMinutes: 15 }, // AM peak, 07:00-09:00
+  { startMinutes: 540, endMinutes: 960, intervalMinutes: 30 }, // inter-peak, 09:00-16:00
+  { startMinutes: 960, endMinutes: 1080, intervalMinutes: 15 }, // PM peak, 16:00-18:00
+  { startMinutes: 1080, endMinutes: 1439, intervalMinutes: 30 }, // evening, 18:00-23:59
+];
+
 // A timing point must be one of the route's own stops (not a waypoint, and
 // not out of range), each stop flagged at most once, with a non-negative
 // whole-minute leg and dwell (DESIGN.md §4: "A timing point holds a bus

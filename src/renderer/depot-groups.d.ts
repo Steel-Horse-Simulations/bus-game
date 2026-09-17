@@ -85,13 +85,17 @@ interface TimingPoint {
   dwellSeconds: number;
 }
 
+interface TimeBand {
+  startMinutes: number;
+  endMinutes: number;
+  intervalMinutes: number;
+}
+
 interface RouteTimetable {
   id: number;
   routeId: number;
   dayType: DayType;
-  startMinutes: number;
-  endMinutes: number;
-  intervalMinutes: number;
+  timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
@@ -101,9 +105,7 @@ interface RouteTimetablesApi {
   upsert(
     routeId: number,
     dayType: DayType,
-    startMinutes: number,
-    endMinutes: number,
-    intervalMinutes: number,
+    timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
