@@ -18,6 +18,8 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 
 | # | Task | Owner | Status |
 |---|---|---|---|
+| T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6) — let the player place a brand-new stop rather than only using imported OSM stops, snapped to the correct kerbside. User's call: start it, own judgement on the mechanics | Claude Code | Pending |
+| T35 | Time-of-day bands for route timetables (DESIGN.md §7). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T34 | User request: show railway lines and railway stations on the map. Station-as-higher-demand-point is already specified (DESIGN.md §4, "Station, airport and park-and-ride stop linking") but unbuilt since Phase 4 (demand) hasn't started; the actually-actionable new piece is a new pipeline artifact — rail line geometry and station points don't exist in the pipeline at all yet (CLAUDE.md's artifact list has roads/stops/landuse/venues, no rail). Not started — needs scoping (new `.bin` artifact, WASM decoder, map layer) before starting, same shape as the original stops/landuse/venues work | Claude Code | Pending |
 | T33 | Wrote two chat batches into DESIGN.md/OPERATIONS.md: pantograph charging points now get a local battery buffer (continuous capacity, real cost formula, buildable only at owned stops/stations/interchanges — OPERATIONS.md §15); and a complete island/remote-area review (12 areas' lifeline-need and dedicated-livery status, DESIGN.md's new "Island and remote-area review" table) plus the lifeline payment model (council keeps all farebox, operator paid a fixed isolation-scaled rate per mile instead) and confirmation that adding a route to an already-established remote depot re-runs the same negotiation every time. Also fixed a real task-number collision: this session had already used T29/T30 for its own tracked work before a separate edit reused the same numbers for unrelated content — renumbered the older pair to T31/T32 rather than leaving two different T29s and T30s in the table. One number left genuinely open rather than guessed — Q12: the battery financing was asked to match vehicle finance's deposit/term/interest figures, but §3 doesn't actually specify any of those. Doc-only change, no code affected | Chat | Done |
 | T31 | Wrote a chat batch into DESIGN.md and OPERATIONS.md: SPT as the contracting body within its zone (subsidy-first, full contract as fallback, dedicated livery required above a subsidy threshold); per-fuel-type regional discounts scaling independently (diesel/electric/hydrogen no longer one blanket discount); on-site hydrogen production and hydrogen refuelling infrastructure; solar panels and batteries as depot infrastructure with time-of-use overnight charging stacking with the regional discount; facility electricity use for owned depots/stations, priced below real-world | Chat | Done |
@@ -1845,3 +1847,47 @@ argued about, not a summary of the design.
   multiplier, revisit whether this is still wanted at all once Phase 4
   passenger boarding/alighting delays exist, rather than assuming it's
   still queued.
+- **T35 done: time-of-day bands for route timetables (DESIGN.md §7).**
+  Each route timetable's single flat start/end/interval frequency became a
+  list of independent time-of-day bands, each with its own start/end/
+  interval — one timetable row can now run every 15 min in the peaks and
+  every 60 min overnight, rather than needing several manually-merged
+  timetable rows to fake it. Deliberately **not** building per-band
+  running-time adjustment, even though DESIGN.md's literal band text also
+  mentions adjustable running times — that's the same multiplier mechanism
+  the user already rejected (see the running-time entry directly above);
+  only the frequency-varies-by-band half was in scope. Schema:
+  `route_timetables`' three flat `*_minutes` columns became a single
+  `time_bands` TEXT column (JSON array of `{startMinutes,endMinutes,
+  intervalMinutes}`), `SCHEMA_VERSION` 11→12, with a data-preserving
+  migration wrapping each existing row's flat frequency into a single-band
+  array before dropping the old columns — verified directly against the
+  real save file, all 6 pre-existing `route_timetables` rows migrated with
+  no data loss (checked via direct sqlite inspection before and after,
+  having first taken a backup copy). New pure-logic additions to
+  `route-timetable.mts`: `validateTimeBands` (rejects empty lists, invalid
+  per-band frequency, and overlapping-but-not-touching bands — touching
+  boundaries are explicitly allowed) and `generateDepartureMinutesForBands`
+  (merges/dedupes/sorts departures across bands), sitting alongside the
+  existing single-band primitive which callers with one band still use
+  internally; `DEFAULT_TIME_BANDS` gives a sensible UK-shaped default
+  (night/AM peak/inter-peak/PM peak/evening) for a freshly-created day
+  type, adjustable afterwards — this was the user's own answer to "what
+  should the default bands be" (sensible UK defaults, adjustable later).
+  `stop-calling-services.mts` and `route-timetable-grid.mts` swapped their
+  flat departure-generation loop for the new band-aware one.
+  `route-timetable-panel.ts`'s flat start/end/interval inputs became an
+  add/remove list of band rows; the live family/variation comparison
+  timetable (shipped earlier this session) picks up band edits
+  immediately, same as it already did for timing-point edits. Live-tested
+  via CDP against the real running app and real save data: an existing
+  migrated band loads and displays correctly, a fresh day type pre-fills
+  the UK defaults, bands can be added/removed/edited with the live
+  comparison updating immediately, and save/reload round-trips correctly
+  with zero console errors. `tsc --noEmit` and every affected
+  `.verify.mts` script (including `electron/db.verify.mts`'s migration
+  coverage) pass. **Known minor rough edge, not fixed**: adding a new band
+  when the day is already fully covered up to 23:59 produces a valid but
+  zero-length band (start=end=1439, generating exactly one departure) —
+  mathematically valid and saves correctly, just a UX rough edge for the
+  player to notice and adjust, not a bug.
