@@ -70,6 +70,11 @@ const stopColorExpression = ["case", ["get", "usedByService"], "#1677ff", "#8c8c
 // trams (#8A0D04) aren't in that DESIGN.md list but follow the identical
 // pattern, all colours confirmed directly with the user.
 const BUS_STATION_COLOR = "#7c3aed";
+// Grouped stops (DESIGN.md §4, "several shelters serving one location") —
+// a plain slate rather than the bus station's purple, since a group isn't
+// a real bus station, just a decluttering convenience over an OSM
+// stop_area relation with no bus_station member.
+const STOP_GROUP_COLOR = "#64748b";
 const RAILWAY_LINK_COLOR = "#ff4200";
 const SUBWAY_LINK_COLOR = "#F57C14";
 const TRAM_LINK_COLOR = "#8A0D04";
@@ -84,22 +89,25 @@ const TRAM_LINK_COLOR = "#8A0D04";
 // what counts as "linked".
 const TRANSIT_LINK_PICKER_RADIUS_M = 500;
 // Coloured outline for a stop that's part of a bus station's stand
-// grouping, or manually linked to a railway/subway station or tram stop,
-// white otherwise — the same marker distinguishes membership wherever
-// it's drawn, whether that's the main map (an "always show" station) or
-// the temporary reveal-on-click layer. Bus station membership wins over a
-// transit link if a stop somehow has both.
+// grouping, a plain grouped-stop cluster, or manually linked to a
+// railway/subway station or tram stop, white otherwise — the same marker
+// distinguishes membership wherever it's drawn, whether that's the main
+// map (an "always show" station/group) or the temporary reveal-on-click
+// layer. Priority where a stop somehow qualifies for more than one:
+// bus station > grouped stop > transit link.
 const stopStrokeExpression = [
   "case",
   ["get", "partOfStation"],
   BUS_STATION_COLOR,
+  ["get", "partOfGroup"],
+  STOP_GROUP_COLOR,
   ["!=", ["get", "linkedTransitColor"], null],
   ["get", "linkedTransitColor"],
   "#ffffff",
 ];
 const stopStrokeWidthExpression = [
   "case",
-  ["any", ["get", "partOfStation"], ["!=", ["get", "linkedTransitColor"], null]],
+  ["any", ["get", "partOfStation"], ["get", "partOfGroup"], ["!=", ["get", "linkedTransitColor"], null]],
   1.5,
   1,
 ];
@@ -231,6 +239,43 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
   const alwaysShowEntries = await window.overrides.list<boolean>("bus_station", "always_show_stands");
   const alwaysShow = new Map(alwaysShowEntries.map(({ osmId, value }) => [osmId, value]));
 
+  // Grouped stops (DESIGN.md §4: "several shelters serving one location...
+  // Union Street in Aberdeen is the reference case") — a stop_area
+  // relation with no bus_station member at all still groups its own
+  // members for decluttering, the identical reveal-on-click pattern as a
+  // bus station, just under its own colour and entity type since it isn't
+  // one. This is the overwhelming majority of real stop_area relations
+  // (19,396 of 19,398 in the current extract have no bus_station member),
+  // previously silently skipped entirely — only a relation that *does*
+  // name a bus_station member goes through the path above instead, so a
+  // stop is never claimed by both. A relation with fewer than two real
+  // (non-bus_station) members isn't worth grouping — nothing to declutter.
+  // No manual membership editing yet (unlike bus stations' explicit
+  // reassignment) — DESIGN.md only describes this as OSM-seeded.
+  interface StopGroup {
+    osmId: number;
+    name: string | null;
+    lon: number;
+    lat: number;
+  }
+  const groupOfStop = new Map<number, number>();
+  const stopGroupsById = new Map<number, StopGroup>();
+  for (const area of stopAreas) {
+    if (area.memberOsmIds.some((id) => stationOsmIds.has(id))) continue;
+    const members = area.memberOsmIds
+      .map((id) => stopsById.get(id))
+      .filter((s): s is DecodedStop => s !== undefined && s.kind !== "bus_station");
+    if (members.length < 2) continue;
+    const lon = members.reduce((sum, s) => sum + s.lon, 0) / members.length;
+    const lat = members.reduce((sum, s) => sum + s.lat, 0) / members.length;
+    stopGroupsById.set(area.osmId, { osmId: area.osmId, name: area.name, lon, lat });
+    for (const s of members) groupOfStop.set(s.osmId, area.osmId);
+  }
+  const stopGroups = [...stopGroupsById.values()];
+
+  const alwaysShowGroupEntries = await window.overrides.list<boolean>("stop_group", "always_show_members");
+  const alwaysShowGroup = new Map(alwaysShowGroupEntries.map(({ osmId, value }) => [osmId, value]));
+
   // Rename and hide (this section, plus the stops panel below) — the same
   // override layer as everything else here: original OSM data untouched,
   // overrides stored separately and always resettable. A stop or bus
@@ -240,13 +285,13 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     s.kind === "bus_station" ? "bus_station" : "stop";
 
   const nameOverrides = new Map<number, string>();
-  for (const entityType of ["stop", "bus_station"] as const) {
+  for (const entityType of ["stop", "bus_station", "stop_group"] as const) {
     for (const { osmId, value } of await window.overrides.list<string>(entityType, "name")) {
       nameOverrides.set(osmId, value);
     }
   }
   const hidden = new Set<number>();
-  for (const entityType of ["stop", "bus_station"] as const) {
+  for (const entityType of ["stop", "bus_station", "stop_group"] as const) {
     for (const { osmId, value } of await window.overrides.list<boolean>(entityType, "hidden")) {
       if (value) hidden.add(osmId);
     }
@@ -254,6 +299,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
 
   const displayName = (s: DecodedStop): string =>
     nameOverrides.get(s.osmId) ?? s.name ?? (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
+  const groupDisplayName = (g: StopGroup): string => nameOverrides.get(g.osmId) ?? g.name ?? "Grouped stop";
 
   busStationsState.length = 0;
   for (const s of stations) {
@@ -279,9 +325,16 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       osmId: s.osmId,
       usedByService: isUsedByService(s.osmId),
       partOfStation: stationOfStop.has(s.osmId),
+      partOfGroup: groupOfStop.has(s.osmId),
       linkedTransitColor: linkedTransitColorOfStop(s.osmId),
     },
     geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+  });
+
+  const groupToFeature = (g: StopGroup): GeoJSON.Feature => ({
+    type: "Feature",
+    properties: { osmId: g.osmId, name: groupDisplayName(g) },
+    geometry: { type: "Point", coordinates: [g.lon, g.lat] },
   });
 
   const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
@@ -291,14 +344,20 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       if (s.kind === "bus_station") return false;
       if (hidden.has(s.osmId)) return false;
       const stationId = stationOfStop.get(s.osmId);
-      return stationId === undefined || alwaysShow.get(stationId) === true;
+      if (stationId !== undefined) return alwaysShow.get(stationId) === true;
+      const groupId = groupOfStop.get(s.osmId);
+      if (groupId !== undefined) return alwaysShowGroup.get(groupId) === true;
+      return true;
     });
 
   const visibleStations = () => stations.filter((s) => !hidden.has(s.osmId));
+  const visibleGroups = () => stopGroups.filter((g) => !hidden.has(g.osmId));
 
   let openStationOsmId: number | null = null;
+  let openGroupOsmId: number | null = null;
   let stationPopup: maplibregl.Popup | null = null;
   let stopPopup: maplibregl.Popup | null = null;
+  let groupPopup: maplibregl.Popup | null = null;
 
   const addLayers = () => {
     map.addSource("stops", {
@@ -312,6 +371,14 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     // Populated on demand when a station without "always show" set is
     // clicked — that station's own stand stops only.
     map.addSource("station-stands", { type: "geojson", data: emptyGeojson });
+
+    map.addSource("stop-groups", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: visibleGroups().map(groupToFeature) },
+    });
+    // Populated on demand when a group without "always show" set is
+    // clicked — mirrors "station-stands" exactly, just keyed by group.
+    map.addSource("group-members", { type: "geojson", data: emptyGeojson });
 
     map.addLayer({
       id: "stops-points",
@@ -356,6 +423,33 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       },
     });
 
+    // Grouped stops: same visual weight as a bus station's own marker
+    // (bigger, visible from further out) but in the group's own slate
+    // colour, never purple, so the two are never confused on the map.
+    map.addLayer({
+      id: "stop-groups-points",
+      type: "circle",
+      source: "stop-groups",
+      minzoom: 12,
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 3, 17, 7],
+        "circle-color": STOP_GROUP_COLOR,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1.5,
+      },
+    });
+    map.addLayer({
+      id: "group-members-points",
+      type: "circle",
+      source: "group-members",
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 3, 17, 6],
+        "circle-color": stopColorExpression as maplibregl.DataDrivenPropertyValueSpecification<string>,
+        "circle-stroke-color": STOP_GROUP_COLOR,
+        "circle-stroke-width": 1.5,
+      },
+    });
+
     // Shown only while the "Hidden stops" panel is open (populated by
     // refreshHiddenPanel below) — hidden stops otherwise stay genuinely
     // invisible, this is just a "here's where they are" preview.
@@ -381,6 +475,10 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
         type: "FeatureCollection",
         features: visibleStations().map(toFeature),
       });
+      (map.getSource("stop-groups") as maplibregl.GeoJSONSource).setData({
+        type: "FeatureCollection",
+        features: visibleGroups().map(groupToFeature),
+      });
     };
 
     const refreshStandsSource = () => {
@@ -391,6 +489,20 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       }
       const standIds = standsOfStation.get(openStationOsmId) ?? new Set<number>();
       const features = [...standIds]
+        .map((id) => stopsById.get(id))
+        .filter((s): s is DecodedStop => s !== undefined)
+        .map(toFeature);
+      source.setData({ type: "FeatureCollection", features });
+    };
+
+    const refreshGroupMembersSource = () => {
+      const source = map.getSource("group-members") as maplibregl.GeoJSONSource;
+      if (openGroupOsmId === null || alwaysShowGroup.get(openGroupOsmId) === true) {
+        source.setData(emptyGeojson);
+        return;
+      }
+      const memberIds = [...groupOfStop.entries()].filter(([, g]) => g === openGroupOsmId).map(([id]) => id);
+      const features = memberIds
         .map((id) => stopsById.get(id))
         .filter((s): s is DecodedStop => s !== undefined)
         .map(toFeature);
@@ -773,11 +885,15 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       return section;
     };
 
-    // A bus station's calling services, grouped by stand (T29: "grouped by
-    // stand at a station") — every stop currently assigned to this station,
-    // each with its own sub-heading, stands with no services omitted rather
-    // than shown empty.
-    const buildStationCallingServicesSection = async (stationOsmId: number): Promise<HTMLElement> => {
+    // Calling services grouped by member stop — shared by a bus station
+    // (T29: "grouped by stand at a station") and a plain grouped stop
+    // (DESIGN.md §4), the only difference being which member list and
+    // empty-state wording the caller supplies. Members with no services
+    // are omitted rather than shown empty.
+    const buildGroupedCallingServicesSection = async (
+      members: readonly DecodedStop[],
+      emptyLabel = "No services call here yet.",
+    ): Promise<HTMLElement> => {
       const section = document.createElement("div");
       section.style.marginTop = "10px";
       section.style.paddingTop = "10px";
@@ -788,11 +904,10 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       section.appendChild(heading);
 
       const [routes, timetables] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
-      const standsWithServices = stops
-        .filter((s) => stationOfStop.get(s.osmId) === stationOsmId)
-        .map((stand) => ({ stand, services: computeStopCallingServices(stand.osmId, routes, timetables) }))
+      const membersWithServices = members
+        .map((member) => ({ member, services: computeStopCallingServices(member.osmId, routes, timetables) }))
         .filter((x) => x.services.length > 0)
-        .sort((a, b) => displayName(a.stand).localeCompare(displayName(b.stand)));
+        .sort((a, b) => displayName(a.member).localeCompare(displayName(b.member)));
 
       const listWrap = document.createElement("div");
       listWrap.style.maxHeight = "220px";
@@ -802,22 +917,22 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       listWrap.style.flexDirection = "column";
       listWrap.style.gap = "8px";
 
-      if (standsWithServices.length === 0) {
+      if (membersWithServices.length === 0) {
         const empty = document.createElement("div");
         empty.style.fontSize = "11px";
         empty.style.color = "var(--text-muted)";
-        empty.textContent = "No services call at any stand here yet.";
+        empty.textContent = emptyLabel;
         listWrap.appendChild(empty);
       } else {
-        for (const { stand, services } of standsWithServices) {
-          const standBlock = document.createElement("div");
-          const standHeading = document.createElement("div");
-          standHeading.style.fontSize = "11px";
-          standHeading.style.fontWeight = "600";
-          standHeading.textContent = displayName(stand);
-          standBlock.appendChild(standHeading);
-          standBlock.appendChild(buildServicesList(services, routes, timetables));
-          listWrap.appendChild(standBlock);
+        for (const { member, services } of membersWithServices) {
+          const memberBlock = document.createElement("div");
+          const memberHeading = document.createElement("div");
+          memberHeading.style.fontSize = "11px";
+          memberHeading.style.fontWeight = "600";
+          memberHeading.textContent = displayName(member);
+          memberBlock.appendChild(memberHeading);
+          memberBlock.appendChild(buildServicesList(services, routes, timetables));
+          listWrap.appendChild(memberBlock);
         }
       }
       section.appendChild(listWrap);
@@ -833,6 +948,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
 
     const openStationPopup = async (stop: DecodedStop) => {
       stopPopup?.remove();
+      groupPopup?.remove();
       const osmId = stop.osmId;
       const coords: [number, number] = [stop.lon, stop.lat];
 
@@ -937,7 +1053,12 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       });
 
       container.appendChild(bulkSection);
-      container.appendChild(await buildStationCallingServicesSection(osmId));
+      container.appendChild(
+        await buildGroupedCallingServicesSection(
+          stops.filter((s) => stationOfStop.get(s.osmId) === osmId),
+          "No services call at any stand here yet.",
+        ),
+      );
 
       stationPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
         .setLngLat(coords)
@@ -972,12 +1093,98 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       map.getCanvas().style.cursor = "";
     });
 
+    // Grouped stops (DESIGN.md §4) — deliberately lighter than a bus
+    // station's own popup: no bulk-assign (there's no manual membership
+    // editing for a group at all yet, OSM-seeded only) and no transit
+    // link for this first cut, just enough to declutter and to see who
+    // calls at any of its members. Real per-stop editing (rename, pick-
+    // up/set-down, its own bus-station/transit-link assignment) still
+    // happens on each individual member's own popup once revealed.
+    const closeGroupPopup = () => {
+      groupPopup?.remove();
+      groupPopup = null;
+      openGroupOsmId = null;
+      refreshGroupMembersSource();
+    };
+
+    const openGroupPopup = async (group: StopGroup) => {
+      stopPopup?.remove();
+      stationPopup?.remove();
+      const osmId = group.osmId;
+      const coords: [number, number] = [group.lon, group.lat];
+
+      const container = document.createElement("div");
+      container.style.minWidth = "220px";
+
+      const titleRow = document.createElement("div");
+      titleRow.style.fontWeight = "600";
+      titleRow.style.fontSize = "13px";
+      titleRow.style.marginBottom = "8px";
+      titleRow.textContent = groupDisplayName(group);
+      container.appendChild(titleRow);
+
+      const label = document.createElement("label");
+      label.style.display = "flex";
+      label.style.alignItems = "center";
+      label.style.gap = "6px";
+      label.style.cursor = "pointer";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = alwaysShowGroup.get(osmId) === true;
+      checkbox.addEventListener("change", () => {
+        alwaysShowGroup.set(osmId, checkbox.checked);
+        void window.overrides.set("stop_group", osmId, "always_show_members", checkbox.checked);
+        refreshStopsSource();
+        refreshGroupMembersSource();
+      });
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode("Always show stops here"));
+      container.appendChild(label);
+
+      const memberIds = [...groupOfStop.entries()].filter(([, g]) => g === osmId).map(([id]) => id);
+      const memberStops = memberIds.map((id) => stopsById.get(id)).filter((s): s is DecodedStop => s !== undefined);
+      container.appendChild(await buildGroupedCallingServicesSection(memberStops));
+
+      groupPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
+        .setLngLat(coords)
+        .setDOMContent(container)
+        .addTo(map);
+      groupPopup.on("close", () => {
+        groupPopup = null;
+        openGroupOsmId = null;
+        refreshGroupMembersSource();
+      });
+    };
+
+    map.on("click", "stop-groups-points", (e) => {
+      if (routeDrawState.isDrawing) return;
+      const feature = e.features?.[0];
+      if (!feature) return;
+      const osmId = feature.properties?.osmId as number;
+      if (openGroupOsmId === osmId) {
+        closeGroupPopup();
+        return;
+      }
+      const group = stopGroupsById.get(osmId);
+      if (!group) return;
+      openGroupOsmId = osmId;
+      refreshGroupMembersSource();
+      void openGroupPopup(group);
+    });
+    map.on("mouseenter", "stop-groups-points", () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", "stop-groups-points", () => {
+      map.getCanvas().style.cursor = "";
+    });
+
     // Manual assignment: pick which bus station (if any) a stop belongs to.
     // Available on any visible stop, whether it's an ordinary street stop or
     // a currently-revealed station stand — reassigning or clearing either
     // way is the same action.
     const openStopPopup = async (stop: DecodedStop) => {
       stationPopup?.remove();
+      groupPopup?.remove();
       const osmId = stop.osmId;
       const coords: [number, number] = [stop.lon, stop.lat];
 

@@ -989,7 +989,13 @@ export async function mountRouteDrawTool(
   // `stopLayers` is queried manually (not via `map.on("click", layerId,
   // ...)`, which only fires for a hit) so a miss can fall through to the
   // next case.
-  const stopLayers = ["stops-points", "stops-stations", "station-stands-points"];
+  const stopLayers = [
+    "stops-points",
+    "stops-stations",
+    "station-stands-points",
+    "stop-groups-points",
+    "group-members-points",
+  ];
   map.on("click", (e) => {
     if (!routeDrawState.isDrawing) return;
 
