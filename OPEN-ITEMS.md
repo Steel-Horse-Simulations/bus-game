@@ -84,6 +84,20 @@ argued about, not a summary of the design.
   routes, and fuller event contract rules — has now been written into DESIGN.md,
   OPERATIONS.md and CLAUDE.md in one pass. Treat the documents as caught up;
   this file no longer needs to carry that backlog.
+- **Event calendar (DESIGN.md §7 "Structure," Phase 2 checklist)
+  deliberately deferred to Phase 5.** Asked directly rather than guessed:
+  the actual event-services mechanic ("event services sit on top of the
+  normal timetable... services need a calendar as well as day types")
+  depends on event contracts and venues (DESIGN.md §10), which CLAUDE.md's
+  build order puts in Phase 5 — there's nothing to hang it off yet.
+  **User's call: defer to Phase 5**, not build a bare calendar data
+  structure ahead of it. With this and the variation-padding model
+  (already deferred earlier, see the live-comparison note above) both
+  deliberately set aside, Phase 2's DESIGN.md checklist is otherwise
+  complete — route drawing, stop placement with kerb snapping (T36),
+  grouped stops, direction rules (T19), variations, express skip flags,
+  timing points, frequency generation, time-of-day bands (T35), day
+  types, and connection stops are all built and verified.
 - **Region layout conflict resolved.** North Scotland, West Scotland, East
   Scotland, North England (as one), and Shetland as a fifth region. Corrects
   Claude Code's built NE/NW England split, which needs reverting (T14).
