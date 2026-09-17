@@ -18,6 +18,7 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 
 | # | Task | Owner | Status |
 |---|---|---|---|
+| T37 | Vehicles driving the real graph (Phase 3 kickoff, DESIGN.md §2). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T35 | Time-of-day bands for route timetables (DESIGN.md §7). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T34 | User request: show railway lines and railway stations on the map. **This row was stale — actually done across several sessions (2026-09-14/15, commits `7cc5eb5`/`512d7c7`/`d711307`), just never updated back here**, the exact staleness `feedback_write_decisions_to_docs.md` warns about. Rail/subway/tram lines render from the existing vector tiles (no pipeline change needed); stations, platforms (full shape, not markers) and tram stops extracted into a new `railway.bin` artifact; stations recentred on real platform geometry and nudged clear of roads; stop-linking is a manual per-stop dropdown (DESIGN.md §4's ring-colour pattern), not proximity-based. Station-as-higher-demand-point (DESIGN.md §4) is still genuinely unbuilt, but that's Phase 4 (demand) scope, not this task. See `project_railway_work_status.md` for the full history | Claude Code | Done |
@@ -1948,3 +1949,35 @@ argued about, not a summary of the design.
   stop (only hide, the same as a real OSM stop) — logically a player might
   want to actually remove one they created by mistake rather than just
   hiding it; worth a small follow-up if it comes up in play.
+- **T37 done: vehicles driving the real graph (DESIGN.md §2, Phase 3
+  kickoff)** — the user's own choice of where to start Phase 3. Every
+  generated departure on a saved, timetabled route now gets a real moving
+  badge that follows the route's actual road-snapped path (re-routed leg
+  by leg via the existing router, the same way the route panel's own
+  "Show" preview already does, since only the point list is persisted),
+  paced by the timetable's own precomputed stop-to-stop offsets — so a
+  timing point's dwell is already handled for free, no new lateness/
+  recovery logic needed. New pure module `vehicle-position.mts`
+  (`interpolateAlongPolyline`/`computeVehiclePosition`, 15 unit tests)
+  walks a leg's polyline by cumulative distance so a bus follows a bend
+  rather than cutting the corner. Rendered as a coloured circle (the
+  route's own colour) + route number + a rotated direction arrow (reusing
+  the existing "oneway-arrow" icon) — a placeholder for DESIGN.md §11's
+  real "angled rectangle in a simplified livery" badge, which needs the
+  livery primary/secondary colours a later Phase 3 item (the vehicle
+  catalogue) hasn't built yet. A manual Mon-Fri/Sat/Sun selector stands in
+  for a real in-game calendar (doesn't exist yet) — also more useful for
+  testing than waiting for an actual Saturday. Game clock runs
+  continuously at DESIGN.md §3's 1-real-second-=-10-game-seconds rate; no
+  pause/speed control UI yet, since there's nothing to manage mid-
+  simulation until more systems exist. Runs on the main thread via
+  `setInterval`, not yet the Web Worker CLAUDE.md's Stack table names for
+  "Simulation" — deferred until Phase 4's passenger simulation actually
+  needs the headroom. Verified live via CDP against the real running app
+  and real save data: routes 900 (near-24/7) and 888 both showed live,
+  independently-moving badges; two position snapshots 2 real seconds (20
+  game seconds) apart confirmed real movement along the real road network;
+  a close-zoom screenshot confirmed the circle/arrow/number badge renders
+  correctly on a real street; the day-type selector switches correctly.
+  Zero console errors. `cargo test --workspace`, `tsc --noEmit`, `npm run
+  build`, and the new verify script all pass.
