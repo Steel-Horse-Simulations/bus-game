@@ -18,7 +18,7 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 
 | # | Task | Owner | Status |
 |---|---|---|---|
-| T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6) — let the player place a brand-new stop rather than only using imported OSM stops, snapped to the correct kerbside. User's call: start it, own judgement on the mechanics | Claude Code | Pending |
+| T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T35 | Time-of-day bands for route timetables (DESIGN.md §7). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T34 | User request: show railway lines and railway stations on the map. Station-as-higher-demand-point is already specified (DESIGN.md §4, "Station, airport and park-and-ride stop linking") but unbuilt since Phase 4 (demand) hasn't started; the actually-actionable new piece is a new pipeline artifact — rail line geometry and station points don't exist in the pipeline at all yet (CLAUDE.md's artifact list has roads/stops/landuse/venues, no rail). Not started — needs scoping (new `.bin` artifact, WASM decoder, map layer) before starting, same shape as the original stops/landuse/venues work | Claude Code | Pending |
 | T33 | Wrote two chat batches into DESIGN.md/OPERATIONS.md: pantograph charging points now get a local battery buffer (continuous capacity, real cost formula, buildable only at owned stops/stations/interchanges — OPERATIONS.md §15); and a complete island/remote-area review (12 areas' lifeline-need and dedicated-livery status, DESIGN.md's new "Island and remote-area review" table) plus the lifeline payment model (council keeps all farebox, operator paid a fixed isolation-scaled rate per mile instead) and confirmation that adding a route to an already-established remote depot re-runs the same negotiation every time. Also fixed a real task-number collision: this session had already used T29/T30 for its own tracked work before a separate edit reused the same numbers for unrelated content — renumbered the older pair to T31/T32 rather than leaving two different T29s and T30s in the table. One number left genuinely open rather than guessed — Q12: the battery financing was asked to match vehicle finance's deposit/term/interest figures, but §3 doesn't actually specify any of those. Doc-only change, no code affected | Chat | Done |
@@ -1891,3 +1891,46 @@ argued about, not a summary of the design.
   zero-length band (start=end=1439, generating exactly one departure) —
   mathematically valid and saves correctly, just a UX rough edge for the
   player to notice and adjust, not a bug.
+- **T36 done: stop placement with kerb snapping (DESIGN.md §4).** A new
+  "Place stop" toggle (next to "Hidden stops") lets the player place a
+  stop directly on the map instead of only using imported OSM stops.
+  DESIGN.md §4's own wording — "a new stop snaps to the road, on the left
+  kerb for the direction of travel, and creates one stop serving one
+  direction, matching how OSM tags them" — turned out to need no new data
+  field at all: a real OSM stop has no direction attribute either, it's
+  just a point on one physical side of the road, so a placed stop only
+  needs the same. New `Router::place_stop(lon, lat)` (game-wasm) scans
+  every road edge (deliberately not filtered to bus-legal ones, since
+  DESIGN.md explicitly allows placing a stop on a road buses can't use,
+  with a warning — the search itself can't exclude those roads or the
+  warning could never fire), finds the nearest point on the nearest road,
+  and offsets it perpendicular onto the correct kerb: a oneway road's left
+  kerb is fixed by its own direction regardless of which side was clicked;
+  a two-way road lets the click's own side choose which direction the new
+  stop will serve, the same way a real two-way street carries two
+  independently-facing stops rather than one shared one. 4 new Rust unit
+  tests check the actual geometry (both oneway directions' fixed kerb, the
+  two-way click-side behaviour, and the bus-legal warning flag on an
+  access-restricted road) with a synthetic two-node road, not just wiring.
+  New `player_stops` table (`SCHEMA_VERSION` 12->13, additive only) — a
+  placed stop is identified everywhere else in the game (route points, the
+  override layer, stop popups) by the *negative* of its own row id, so it
+  slots into every existing "stop" mechanism (rename, hide, connection
+  stop, pick-up/set-down, calling services) with zero further code, no
+  separate "kind" flag needed anywhere. Verified live via CDP against the
+  real running app: placed a stop in central Glasgow, confirmed it
+  persisted with the correct kerb-snapped coordinates and bus-legal flag,
+  confirmed it renders on the map, and confirmed its popup opens with the
+  full normal stop toolset with zero console errors. `cargo test
+  --workspace`, `tsc --noEmit`, `npm run build`, and `electron/
+  db.verify.mts` (extended with player-stop CRUD and close/reopen
+  persistence coverage) all pass. **Known, deliberate gap**: a road with
+  no highway classification at all (footway, cycleway, a plain pedestrian
+  street with no bus/psv override) never becomes an edge during the
+  pipeline build, so it's outside `place_stop`'s reach — a click near only
+  this kind of "road" currently falls back to whatever real road is
+  nearest instead, rather than genuinely having nothing to snap to.
+  **Not attempted this increment**: no delete action for a player-placed
+  stop (only hide, the same as a real OSM stop) — logically a player might
+  want to actually remove one they created by mistake rather than just
+  hiding it; worth a small follow-up if it comes up in play.
