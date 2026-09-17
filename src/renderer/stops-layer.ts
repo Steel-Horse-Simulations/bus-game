@@ -14,6 +14,7 @@ import {
   DAY_TYPE_SHORT_LABELS,
   type StopCallingService,
 } from "./stop-calling-services.mts";
+import { buildRouteTimetableGrid } from "./route-timetable-grid.mts";
 
 interface DecodedStop {
   lon: number;
@@ -537,11 +538,117 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       return wrap;
     };
 
+    // Full-screen expand (user request): the traditional printed shape
+    // (DESIGN.md §7 "The grid" — "stops down and journeys across"), scrolling
+    // right for more journeys rather than wrapping to a new line, the same
+    // way a real printed timetable spreads across a wide sheet.
+    const showRouteTimetableModal = (route: Route, timetable: RouteTimetable): void => {
+      const grid = buildRouteTimetableGrid(route, timetable);
+
+      const overlay = document.createElement("div");
+      overlay.style.position = "fixed";
+      overlay.style.inset = "0";
+      overlay.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+      overlay.style.zIndex = "1000";
+      overlay.style.display = "flex";
+      overlay.style.alignItems = "center";
+      overlay.style.justifyContent = "center";
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) overlay.remove();
+      });
+
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.style.width = "min(96vw, 1400px)";
+      panel.style.height = "90vh";
+      panel.style.display = "flex";
+      panel.style.flexDirection = "column";
+      panel.style.padding = "12px";
+
+      const header = document.createElement("div");
+      header.style.display = "flex";
+      header.style.alignItems = "center";
+      header.style.gap = "8px";
+      header.style.marginBottom = "10px";
+      const swatch = document.createElement("span");
+      swatch.style.display = "inline-block";
+      swatch.style.width = "12px";
+      swatch.style.height = "12px";
+      swatch.style.borderRadius = "50%";
+      swatch.style.backgroundColor = route.colour;
+      header.appendChild(swatch);
+      const title = document.createElement("strong");
+      title.style.fontSize = "16px";
+      title.textContent = `Route ${route.number} — ${DAY_TYPE_SHORT_LABELS[timetable.dayType]}`;
+      header.appendChild(title);
+      const closeButton = document.createElement("button");
+      closeButton.className = "btn btn-icon";
+      closeButton.textContent = "×";
+      closeButton.style.marginLeft = "auto";
+      closeButton.addEventListener("click", () => overlay.remove());
+      header.appendChild(closeButton);
+      panel.appendChild(header);
+
+      const scrollWrap = document.createElement("div");
+      scrollWrap.style.overflow = "auto";
+      scrollWrap.style.flex = "1";
+
+      const table = document.createElement("table");
+      table.style.borderCollapse = "collapse";
+      table.style.whiteSpace = "nowrap";
+      table.style.fontSize = "12px";
+
+      const tbody = document.createElement("tbody");
+      grid.rows.forEach((row, rowIndex) => {
+        const tr = document.createElement("tr");
+        const th = document.createElement("th");
+        const rowStop = stopsById.get(row.osmId);
+        th.textContent = rowStop ? displayName(rowStop) : `Stop ${row.osmId}`;
+        th.style.position = "sticky";
+        th.style.left = "0";
+        th.style.backgroundColor = "var(--panel-bg, #1e1e1e)";
+        th.style.textAlign = "left";
+        th.style.padding = "4px 10px 4px 4px";
+        th.style.borderBottom = "1px solid var(--border)";
+        tr.appendChild(th);
+        for (const journey of grid.journeys) {
+          const td = document.createElement("td");
+          const value = journey[rowIndex];
+          td.textContent = value === null ? "—" : formatClockMinutes(value);
+          td.style.padding = "4px 10px";
+          td.style.borderBottom = "1px solid var(--border)";
+          td.style.textAlign = "center";
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      scrollWrap.appendChild(table);
+      panel.appendChild(scrollWrap);
+
+      if (grid.journeys.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "label-muted";
+        empty.textContent = "This day type generates no journeys.";
+        panel.appendChild(empty);
+      }
+
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+    };
+
     // Read-only "which services call here" (T29, OPEN-ITEMS.md) — the list
     // itself, with no heading, so a single stop's popup and a station's
     // per-stand grouping (below) can each wrap it with their own heading
-    // rather than duplicating "Calling services" once per stand.
-    const buildServicesList = (services: StopCallingService[]): HTMLElement => {
+    // rather than duplicating "Calling services" once per stand. Needs the
+    // full routes/timetables lists (not just the already-computed
+    // StopCallingService entries) so its expand button can look up the
+    // exact Route/RouteTimetable pair to build the full grid from.
+    const buildServicesList = (
+      services: StopCallingService[],
+      routes: readonly Route[],
+      timetables: readonly RouteTimetable[],
+    ): HTMLElement => {
       if (services.length === 0) {
         const empty = document.createElement("div");
         empty.style.fontSize = "11px";
@@ -559,6 +666,9 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       for (const svc of services) {
         const row = document.createElement("div");
         row.style.fontSize = "11px";
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "4px";
 
         if (svc.routeId !== lastRouteId) {
           const swatch = document.createElement("span");
@@ -567,12 +677,10 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
           swatch.style.height = "8px";
           swatch.style.borderRadius = "50%";
           swatch.style.backgroundColor = svc.routeColour;
-          swatch.style.marginRight = "4px";
           row.appendChild(swatch);
           const numberSpan = document.createElement("strong");
           numberSpan.textContent = svc.routeNumber;
           row.appendChild(numberSpan);
-          row.appendChild(document.createTextNode(" "));
           lastRouteId = svc.routeId;
         } else {
           row.style.paddingLeft = "12px";
@@ -582,6 +690,20 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
             `${DAY_TYPE_SHORT_LABELS[svc.dayType]}: ${svc.departureClockMinutes.map(formatClockMinutes).join(", ")}`,
           ),
         );
+
+        const expandButton = document.createElement("button");
+        expandButton.type = "button";
+        expandButton.className = "btn btn-icon";
+        expandButton.title = "Expand to full timetable";
+        expandButton.textContent = "⤢";
+        expandButton.style.marginLeft = "auto";
+        expandButton.addEventListener("click", () => {
+          const route = routes.find((r) => r.id === svc.routeId);
+          const timetable = timetables.find((t) => t.routeId === svc.routeId && t.dayType === svc.dayType);
+          if (route && timetable) showRouteTimetableModal(route, timetable);
+        });
+        row.appendChild(expandButton);
+
         list.appendChild(row);
       }
       return list;
@@ -606,7 +728,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       listWrap.style.maxHeight = "160px";
       listWrap.style.overflowY = "auto";
       listWrap.style.marginTop = "4px";
-      listWrap.appendChild(buildServicesList(services));
+      listWrap.appendChild(buildServicesList(services, routes, timetables));
       section.appendChild(listWrap);
       return section;
     };
@@ -654,7 +776,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
           standHeading.style.fontWeight = "600";
           standHeading.textContent = displayName(stand);
           standBlock.appendChild(standHeading);
-          standBlock.appendChild(buildServicesList(services));
+          standBlock.appendChild(buildServicesList(services, routes, timetables));
           listWrap.appendChild(standBlock);
         }
       }
