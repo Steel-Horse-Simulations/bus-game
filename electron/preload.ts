@@ -1,6 +1,6 @@
 // Bridges main <-> renderer.
 import { contextBridge, ipcRenderer } from "electron";
-import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, TimeBand, RouteTimetable } from "./db.mts";
+import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, TimeBand, RouteTimetable, PlayerStop } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
 // way to read or write it, since node:sqlite lives in the main process.
@@ -120,4 +120,13 @@ contextBridge.exposeInMainWorld("routeTimetables", {
     ipcRenderer.invoke("routeTimetables:listForRoute", routeId) as Promise<RouteTimetable[]>,
   listAll: () => ipcRenderer.invoke("routeTimetables:listAll") as Promise<RouteTimetable[]>,
   delete: (id: number) => ipcRenderer.invoke("routeTimetables:delete", id) as Promise<void>,
+});
+
+// Player-placed stops (DESIGN.md §4 "Placement") — kerb-snapped by the WASM
+// router in the renderer, persisted here.
+contextBridge.exposeInMainWorld("playerStops", {
+  create: (lon: number, lat: number, busLegal: boolean) =>
+    ipcRenderer.invoke("playerStops:create", lon, lat, busLegal) as Promise<PlayerStop>,
+  list: () => ipcRenderer.invoke("playerStops:list") as Promise<PlayerStop[]>,
+  delete: (osmId: number) => ipcRenderer.invoke("playerStops:delete", osmId) as Promise<void>,
 });

@@ -29,6 +29,9 @@ import {
   listRouteTimetablesForRoute,
   listAllRouteTimetables,
   deleteRouteTimetable,
+  createPlayerStop,
+  listPlayerStops,
+  deletePlayerStop,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -254,6 +257,16 @@ function registerRouteTimetableHandlers(): void {
   ipcMain.handle("routeTimetables:delete", (_e, id: number) => deleteRouteTimetable(save, id));
 }
 
+// Stops the player places directly (DESIGN.md §4), kerb-snapped by the
+// WASM router before this ever runs — this layer just persists the result.
+function registerPlayerStopHandlers(): void {
+  ipcMain.handle("playerStops:create", (_e, lon: number, lat: number, busLegal: boolean) =>
+    createPlayerStop(save, lon, lat, busLegal),
+  );
+  ipcMain.handle("playerStops:list", () => listPlayerStops(save));
+  ipcMain.handle("playerStops:delete", (_e, osmId: number) => deletePlayerStop(save, osmId));
+}
+
 app.whenReady().then(() => {
   const savePath = path.join(app.getPath("userData"), "save.sqlite");
   save = openSave(savePath);
@@ -263,6 +276,7 @@ app.whenReady().then(() => {
   registerDepotGroupHandlers();
   registerRouteHandlers();
   registerRouteTimetableHandlers();
+  registerPlayerStopHandlers();
   startMapDataServer();
   createWindow();
 });

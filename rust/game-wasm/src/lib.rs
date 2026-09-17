@@ -213,6 +213,84 @@ fn point_to_segment_closest(
     (dist, (lon_deg * 1e7).round() as i32, (lat_deg * 1e7).round() as i32)
 }
 
+/// Which side of the line `a`->`b` the point `p` falls on, via the same
+/// local equirectangular flattening as `point_to_segment_closest` — the
+/// sign of the 2D cross product `(b-a) x (p-a)`. Positive means `p` is to
+/// the **left** of someone facing from `a` towards `b` (standard
+/// right-handed convention with x=east, y=north); negative means the
+/// right. Used to decide which physical kerb a placed stop belongs on:
+/// DESIGN.md §4's "left kerb for the direction of travel" is exactly this
+/// side, once the direction of travel itself is known (`Router::
+/// place_stop`).
+fn signed_side_of_segment(
+    p_lon_e7: i32,
+    p_lat_e7: i32,
+    a_lon_e7: i32,
+    a_lat_e7: i32,
+    b_lon_e7: i32,
+    b_lat_e7: i32,
+) -> f64 {
+    const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+    const EARTH_RADIUS_M: f64 = 6_371_000.0;
+    let lat0 = (a_lat_e7 as f64 + b_lat_e7 as f64) * 0.5 * 1e-7 * DEG_TO_RAD;
+    let cos_lat0 = lat0.cos();
+    let to_xy = |lon_e7: i32, lat_e7: i32| -> (f64, f64) {
+        let lon = lon_e7 as f64 * 1e-7 * DEG_TO_RAD;
+        let lat = lat_e7 as f64 * 1e-7 * DEG_TO_RAD;
+        (lon * cos_lat0 * EARTH_RADIUS_M, lat * EARTH_RADIUS_M)
+    };
+    let (px, py) = to_xy(p_lon_e7, p_lat_e7);
+    let (ax, ay) = to_xy(a_lon_e7, a_lat_e7);
+    let (bx, by) = to_xy(b_lon_e7, b_lat_e7);
+    (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+}
+
+/// Moves a point `offset_m` along the **left** normal of the line `a`->`b`
+/// (a negative `offset_m` moves it right instead) — used to slide a road's
+/// nearest point sideways onto the correct kerb. Same local flattening as
+/// `point_to_segment_closest`/`signed_side_of_segment`; a degenerate
+/// zero-length segment (both endpoints coincide, never expected against
+/// real road geometry) leaves the point where it is rather than dividing
+/// by zero.
+fn offset_point_perpendicular(
+    point_lon_e7: i32,
+    point_lat_e7: i32,
+    a_lon_e7: i32,
+    a_lat_e7: i32,
+    b_lon_e7: i32,
+    b_lat_e7: i32,
+    offset_m: f64,
+) -> (i32, i32) {
+    const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+    const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
+    const EARTH_RADIUS_M: f64 = 6_371_000.0;
+    let lat0 = (a_lat_e7 as f64 + b_lat_e7 as f64) * 0.5 * 1e-7 * DEG_TO_RAD;
+    let cos_lat0 = lat0.cos();
+    let to_xy = |lon_e7: i32, lat_e7: i32| -> (f64, f64) {
+        let lon = lon_e7 as f64 * 1e-7 * DEG_TO_RAD;
+        let lat = lat_e7 as f64 * 1e-7 * DEG_TO_RAD;
+        (lon * cos_lat0 * EARTH_RADIUS_M, lat * EARTH_RADIUS_M)
+    };
+    let (px, py) = to_xy(point_lon_e7, point_lat_e7);
+    let (ax, ay) = to_xy(a_lon_e7, a_lat_e7);
+    let (bx, by) = to_xy(b_lon_e7, b_lat_e7);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        return (point_lon_e7, point_lat_e7);
+    }
+    let (nx, ny) = (-dy / len, dx / len); // left normal of a -> b
+    let (ox, oy) = (px + nx * offset_m, py + ny * offset_m);
+    let lon_deg = (ox / (cos_lat0 * EARTH_RADIUS_M)) * RAD_TO_DEG;
+    let lat_deg = (oy / EARTH_RADIUS_M) * RAD_TO_DEG;
+    ((lon_deg * 1e7).round() as i32, (lat_deg * 1e7).round() as i32)
+}
+
+// Placeholder magnitude, not a sourced real-world kerb offset — same
+// caveat as the junction delay constants above, worth revisiting once a
+// placed stop is checked against a real kerb-to-centreline distance.
+const KERB_OFFSET_M: f64 = 4.5;
+
 #[derive(PartialEq)]
 struct QueueEntry {
     cost_s: f64,
@@ -416,6 +494,86 @@ impl Router {
     /// order — see the field doc comment on `last_edge_point_counts`.
     pub fn last_route_edge_point_counts(&self) -> Vec<u32> {
         self.last_edge_point_counts.borrow().clone()
+    }
+
+    /// Kerb-snaps a click to the nearest road for a new player-placed stop
+    /// (DESIGN.md §4 "Placement": "a new stop snaps to the road, on the
+    /// left kerb for the direction of travel, and creates one stop serving
+    /// one direction"). Deliberately scans **every** edge, not just
+    /// bus-legal ones — `nearest_node`'s own scan is filtered to
+    /// `edge_is_routable` because pathfinding must never touch a road it
+    /// can't drive, but DESIGN.md §4 explicitly allows placing a stop on a
+    /// road buses can't use, with a warning; if the search itself excluded
+    /// those roads the warning could never fire near one. A road with no
+    /// highway classification at all (footway, cycleway, a plain
+    /// pedestrian street with no `bus`/`psv` override) is dropped entirely
+    /// during the pipeline build and never becomes an edge here, so it's
+    /// outside this search's reach — a real, known limit, not attempted in
+    /// this increment.
+    ///
+    /// The direction a placed stop serves isn't stored anywhere; it's
+    /// implicit in which physical kerb it lands on, exactly like a real
+    /// imported OSM stop. A oneway road has one legal direction, so its
+    /// left kerb is fixed regardless of where the click landed; a two-way
+    /// road lets the click's own side choose which direction this stop
+    /// will serve, mirroring how a real two-way street carries two
+    /// independent, oppositely-facing stops rather than one shared one.
+    ///
+    /// Returns `[lon, lat, busLegal]` (`busLegal` is `1.0`/`0.0`), or an
+    /// empty array only if the graph has no edges at all (never true
+    /// against real pipeline data).
+    pub fn place_stop(&self, lon: f64, lat: f64) -> Vec<f64> {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
+
+        let mut best_dist = f64::INFINITY;
+        // foot point, segment a, segment b, this edge's oneway, bus-legal.
+        let mut best: Option<(i32, i32, i32, i32, i32, i32, OnewayDirection, bool)> = None;
+
+        for edge in &self.graph.edges {
+            let from = &self.graph.nodes[edge.from as usize];
+            let to = &self.graph.nodes[edge.to as usize];
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in edge.geometry.iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let (d, foot_lon_e7, foot_lat_e7) =
+                    point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
+                if d < best_dist {
+                    best_dist = d;
+                    let bus_legal = edge_is_routable(edge, &self.psv_override_way_ids);
+                    best = Some((foot_lon_e7, foot_lat_e7, prev.0, prev.1, next.0, next.1, edge.oneway, bus_legal));
+                }
+                prev = next;
+            }
+        }
+
+        let Some((foot_lon_e7, foot_lat_e7, a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7, oneway, bus_legal)) = best else {
+            return Vec::new();
+        };
+
+        let cross = signed_side_of_segment(p_lon_e7, p_lat_e7, a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7);
+        let offset_sign = match oneway {
+            OnewayDirection::Forward => 1.0,
+            OnewayDirection::Reverse => -1.0,
+            OnewayDirection::TwoWay => {
+                if cross >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        };
+
+        let (kerb_lon_e7, kerb_lat_e7) = offset_point_perpendicular(
+            foot_lon_e7,
+            foot_lat_e7,
+            a_lon_e7,
+            a_lat_e7,
+            b_lon_e7,
+            b_lat_e7,
+            KERB_OFFSET_M * offset_sign,
+        );
+
+        vec![kerb_lon_e7 as f64 * 1e-7, kerb_lat_e7 as f64 * 1e-7, if bus_legal { 1.0 } else { 0.0 }]
     }
 
     /// Total travel time (seconds) of the most recent `find_route` call,
@@ -1071,5 +1229,87 @@ mod tests {
             (time_s - plain_time_s).abs() < 0.01,
             "expected plain travel time only ({plain_time_s}s), no give-way delay, got {time_s}s"
         );
+    }
+
+    // --- place_stop (kerb snapping for player-placed stops, DESIGN.md §4) ---
+
+    /// A north-south two-way road: clicking to the west of it lands the
+    /// kerb-snapped stop on the west kerb, and clicking to the east lands
+    /// it on the east kerb — DESIGN.md §4's "one stop serving one
+    /// direction" is implicit in which physical side the click chooses,
+    /// since a two-way road carries two independently-facing stops.
+    #[test]
+    fn place_stop_two_way_road_uses_the_click_s_own_side() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)]; // node 1 due north of node 0
+        let road = edge(0, 1, 900, 11, 100.0); // TwoWay by default
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let west = router.place_stop(-0.0005, 0.05);
+        assert_eq!(west.len(), 3, "expected [lon, lat, busLegal]");
+        assert!(west[0] < 0.0, "clicking west of a two-way road should snap the stop to the west kerb, got lon {}", west[0]);
+        assert_eq!(west[2], 1.0, "an ordinary residential road is bus-legal");
+
+        let east = router.place_stop(0.0005, 0.05);
+        assert!(east[0] > 0.0, "clicking east of a two-way road should snap the stop to the east kerb, got lon {}", east[0]);
+    }
+
+    /// A oneway road only legally travelled node0->node1 (northbound): the
+    /// left kerb for northbound travel is fixed on the west side, no
+    /// matter which side of the road the click landed on.
+    #[test]
+    fn place_stop_oneway_forward_always_uses_its_own_left_kerb() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 11, 100.0);
+        road.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        // Clicked on the *east* side — should still land west, matching
+        // the road's own fixed direction rather than the click's side.
+        let result = router.place_stop(0.0005, 0.05);
+        assert!(
+            result[0] < 0.0,
+            "a forward-only road's left kerb (west, for northbound travel) should be used regardless of which side was clicked, got lon {}",
+            result[0]
+        );
+    }
+
+    /// The mirror case: a oneway road only legally travelled node1->node0
+    /// (southbound) always uses the east kerb, the left side for
+    /// southbound travel.
+    #[test]
+    fn place_stop_oneway_reverse_always_uses_its_own_left_kerb() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 11, 100.0);
+        road.oneway = OnewayDirection::Reverse;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        // Clicked on the *west* side — should still land east, matching
+        // the reverse direction's own left kerb.
+        let result = router.place_stop(-0.0005, 0.05);
+        assert!(
+            result[0] > 0.0,
+            "a reverse-only road's left kerb (east, for southbound travel) should be used regardless of which side was clicked, got lon {}",
+            result[0]
+        );
+    }
+
+    /// A road buses can't legally use (access=no, no psv/bus override) is
+    /// still a valid placement target — DESIGN.md §4 explicitly allows
+    /// this, with a warning — so the search must not exclude it, and the
+    /// returned flag must say so.
+    #[test]
+    fn place_stop_flags_a_road_buses_cannot_use() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 11, 100.0);
+        road.access_restricted = true;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.place_stop(0.0005, 0.05);
+        assert_eq!(result.len(), 3, "an access-restricted road should still be a valid placement target, not skipped");
+        assert_eq!(result[2], 0.0, "an access-restricted road with no psv/bus override should be flagged as not bus-legal");
     }
 }

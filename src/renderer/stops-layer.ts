@@ -4,7 +4,13 @@
 // separate, later increment.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
-import { decode_stops, decode_stop_areas, decode_railway_stations, decode_tram_stops } from "./wasm/game_wasm.js";
+import {
+  decode_stops,
+  decode_stop_areas,
+  decode_railway_stations,
+  decode_tram_stops,
+  type Router,
+} from "./wasm/game_wasm.js";
 import { routeDrawState } from "./route-draw";
 import { createDropdown } from "./dropdown";
 import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropoff";
@@ -48,6 +54,11 @@ export const stopsPanelState: {
   openPopupFor: null,
   displayNameFor: null,
 };
+
+// Mirrors routeDrawState's own shape: true while the "Place stop" tool is
+// armed, so a click kerb-snaps a new player-placed stop (DESIGN.md §4)
+// instead of doing whatever a plain click would otherwise do.
+export const placeStopState = { isPlacing: false };
 
 // Every bus station, for anything that needs to offer a station picker
 // (currently: the depot groups panel's main-bus-station field, DESIGN.md
@@ -178,11 +189,24 @@ function buildTransitTargets(
   return targets;
 }
 
-export async function drawStops(map: maplibregl.Map): Promise<void> {
+export async function drawStops(map: maplibregl.Map, router: Router): Promise<void> {
   const res = await fetch("http://127.0.0.1:38271/stops.bin");
   const bytes = new Uint8Array(await res.arrayBuffer());
   const stops = decode_stops(bytes) as DecodedStop[];
   const stopAreas = decode_stop_areas(bytes) as DecodedStopArea[];
+
+  // Stops the player has placed directly (DESIGN.md §4) — kerb-snapped by
+  // the router at creation time (see the "Place stop" tool below), so they
+  // need no further geometry work here, just merging into the same "stops"
+  // array everything else in this function already treats uniformly. Their
+  // osmId is always negative (electron/db.mts's player_stops table), so it
+  // can never collide with a real (always-positive) OSM id.
+  const playerStops = await window.playerStops.list();
+  const playerStopBusLegal = new Map<number, boolean>();
+  for (const p of playerStops) {
+    stops.push({ lon: p.lon, lat: p.lat, kind: "bus_stop", name: null, osmId: p.osmId });
+    playerStopBusLegal.set(p.osmId, p.busLegal);
+  }
 
   const railwayRes = await fetch("http://127.0.0.1:38271/railway.bin");
   const railwayBytes = new Uint8Array(await railwayRes.arrayBuffer());
@@ -1072,7 +1096,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     };
 
     map.on("click", "stops-stations", (e) => {
-      if (routeDrawState.isDrawing) return;
+      if (routeDrawState.isDrawing || placeStopState.isPlacing) return;
       const feature = e.features?.[0];
       if (!feature) return;
       const osmId = feature.properties?.osmId as number;
@@ -1157,7 +1181,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
     };
 
     map.on("click", "stop-groups-points", (e) => {
-      if (routeDrawState.isDrawing) return;
+      if (routeDrawState.isDrawing || placeStopState.isPlacing) return;
       const feature = e.features?.[0];
       if (!feature) return;
       const osmId = feature.properties?.osmId as number;
@@ -1203,6 +1227,19 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       const container = document.createElement("div");
       container.style.minWidth = "220px";
       container.appendChild(buildTitleRow(stop, refreshHiddenPanel));
+
+      // A player-placed stop (DESIGN.md §4) on a road buses can't legally
+      // use — flagged at placement time by the router's own place_stop(),
+      // shown here persistently rather than only as a one-off toast so the
+      // warning is still visible the next time this stop is opened.
+      if (playerStopBusLegal.get(osmId) === false) {
+        const warning = document.createElement("div");
+        warning.className = "badge badge-warning";
+        warning.style.display = "block";
+        warning.style.marginBottom = "6px";
+        warning.textContent = "Buses can't legally use this road";
+        container.appendChild(warning);
+      }
 
       // DESIGN.md §4 "Per-stop settings": "any two services meeting here
       // are connected (§7)" — just the flag for now. §7's actual
@@ -1295,7 +1332,7 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
 
     for (const layerId of ["stops-points", "station-stands-points"]) {
       map.on("click", layerId, (e) => {
-        if (routeDrawState.isDrawing) return;
+        if (routeDrawState.isDrawing || placeStopState.isPlacing) return;
         const feature = e.features?.[0];
         const osmId = feature?.properties?.osmId as number | undefined;
         const stop = osmId === undefined ? undefined : stopsById.get(osmId);
@@ -1443,6 +1480,67 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       hiddenToggle.classList.toggle("is-active", hiddenPanelOpen);
       if (hiddenPanelOpen) refreshHiddenPanel();
       else refreshHiddenPreview([]);
+    });
+
+    // "Place stop" (DESIGN.md §4 "Placement"): kerb-snaps a click onto the
+    // nearest road for a brand-new stop, rather than only using imported
+    // OSM stops. Armed the same way "Draw route" is (routeDrawState) —
+    // while armed, a map click always places a stop instead of whatever a
+    // plain click would otherwise do, via the placeStopState.isPlacing
+    // guards already added to the other click handlers above. Left
+    // toggled on across multiple placements, same as route drawing stays
+    // armed across multiple stop clicks, since placing several stops in a
+    // row is the common case.
+    const placeStopToggle = document.createElement("button");
+    placeStopToggle.className = "btn";
+    placeStopToggle.textContent = "Place stop";
+    placeStopToggle.style.position = "absolute";
+    placeStopToggle.style.bottom = "8px";
+    placeStopToggle.style.right = "128px";
+    placeStopToggle.style.zIndex = "2";
+    document.body.appendChild(placeStopToggle);
+
+    const placeStopStatus = document.createElement("div");
+    placeStopStatus.className = "panel";
+    placeStopStatus.style.position = "absolute";
+    placeStopStatus.style.bottom = "44px";
+    placeStopStatus.style.right = "128px";
+    placeStopStatus.style.zIndex = "2";
+    placeStopStatus.style.padding = "8px 12px";
+    placeStopStatus.style.maxWidth = "260px";
+    placeStopStatus.style.display = "none";
+    document.body.appendChild(placeStopStatus);
+
+    placeStopToggle.addEventListener("click", () => {
+      placeStopState.isPlacing = !placeStopState.isPlacing;
+      placeStopToggle.classList.toggle("is-active", placeStopState.isPlacing);
+      placeStopStatus.style.display = placeStopState.isPlacing ? "block" : "none";
+      placeStopStatus.textContent = placeStopState.isPlacing
+        ? 'Click the map to place a stop. Click "Place stop" again to stop.'
+        : "";
+    });
+
+    map.on("click", (e) => {
+      if (!placeStopState.isPlacing) return;
+      // Scans every road, not just bus-legal ones (game-wasm's own
+      // place_stop doc comment) — DESIGN.md §4 explicitly allows placing a
+      // stop on a road buses can't use, with a warning, rather than
+      // silently refusing.
+      const result = router.place_stop(e.lngLat.lng, e.lngLat.lat);
+      if (result.length !== 3) return;
+      const [lon, lat, busLegalFlag] = result;
+      const busLegal = busLegalFlag === 1;
+      void (async () => {
+        const created = await window.playerStops.create(lon, lat, busLegal);
+        const newStop: DecodedStop = { lon: created.lon, lat: created.lat, kind: "bus_stop", name: null, osmId: created.osmId };
+        stops.push(newStop);
+        stopsById.set(created.osmId, newStop);
+        playerStopBusLegal.set(created.osmId, created.busLegal);
+        refreshStopsSource();
+        placeStopStatus.textContent = created.busLegal
+          ? 'Stop placed. Click the map to place another, or click "Place stop" to stop.'
+          : "Stop placed — warning: buses can't legally use this road. Click the map to place another, or click \"Place stop\" to stop.";
+      })();
     });
   };
 

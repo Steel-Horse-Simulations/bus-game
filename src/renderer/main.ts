@@ -56,10 +56,14 @@ mountDepotGroupsPanel();
 (window as unknown as { __map: maplibregl.Map }).__map = map;
 
 init().then(async () => {
-  await registerSupportVehicleIcons(map);
-  await drawStops(map);
-  await drawRailwayPlatforms(map);
   const router = await loadRouter();
   (window as unknown as { __router: Router }).__router = router;
+  await registerSupportVehicleIcons(map);
+  // drawStops needs the router to kerb-snap a newly placed stop
+  // (DESIGN.md §4 "Placement") — loaded first so it's ready in time,
+  // rather than the previous order where stops drew before any router
+  // existed at all.
+  await drawStops(map, router);
+  await drawRailwayPlatforms(map);
   await mountRoutePanel(map, router);
 });

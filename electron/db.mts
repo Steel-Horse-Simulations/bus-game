@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -115,6 +115,25 @@ CREATE TABLE IF NOT EXISTS route_timetables (
   departure_offsets_seconds TEXT NOT NULL,
   UNIQUE (route_id, day_type)
 );
+
+-- A stop the player places directly (DESIGN.md §4: "Real OSM stops, plus
+-- stops the player places"), kerb-snapped by the WASM router's
+-- place_stop() at creation time rather than stored raw at the click
+-- position. "bus_legal" records the router's own warning flag from that
+-- same call (the road it snapped to may not be one buses can legally use)
+-- so the map/panel can keep showing the warning without re-querying the
+-- router. This table only ever grows an id; everywhere else in the game
+-- (route points, the override layer, stop popups) a player-placed stop is
+-- identified by the *negative* of this id, so it can be treated exactly
+-- like a real OSM stop's (always-positive) osmId without ever colliding
+-- with one — no "kind" flag needed at any of those call sites.
+CREATE TABLE IF NOT EXISTS player_stops (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lon REAL NOT NULL,
+  lat REAL NOT NULL,
+  bus_legal INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -213,6 +232,12 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE route_timetables DROP COLUMN start_minutes");
     db.exec("ALTER TABLE route_timetables DROP COLUMN end_minutes");
     db.exec("ALTER TABLE route_timetables DROP COLUMN interval_minutes");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 12) {
+    // v12 -> v13: player-placed stops (DESIGN.md §4 "Placement") can now be
+    // saved — the player_stops table is created by the SCHEMA statement
+    // above (CREATE TABLE IF NOT EXISTS already ran against this save),
+    // this branch only needs to advance the version.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -629,6 +654,43 @@ export function listAllRouteTimetables(db: SaveDb): RouteTimetable[] {
 
 export function deleteRouteTimetable(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM route_timetables WHERE id = ?").run(id);
+}
+
+// A stop the player places directly (DESIGN.md §4) — see the player_stops
+// table's own comment in SCHEMA for why "osmId" is the negative of the
+// table's own id rather than a separate identity scheme.
+export interface PlayerStop {
+  osmId: number;
+  lon: number;
+  lat: number;
+  busLegal: boolean;
+}
+
+interface PlayerStopRow {
+  id: number;
+  lon: number;
+  lat: number;
+  bus_legal: number;
+}
+
+function playerStopFromRow(row: PlayerStopRow): PlayerStop {
+  return { osmId: -row.id, lon: row.lon, lat: row.lat, busLegal: row.bus_legal !== 0 };
+}
+
+export function createPlayerStop(db: SaveDb, lon: number, lat: number, busLegal: boolean): PlayerStop {
+  const result = db
+    .prepare("INSERT INTO player_stops (lon, lat, bus_legal, created_at) VALUES (?, ?, ?, ?)")
+    .run(lon, lat, busLegal ? 1 : 0, new Date().toISOString());
+  return { osmId: -Number(result.lastInsertRowid), lon, lat, busLegal };
+}
+
+export function listPlayerStops(db: SaveDb): PlayerStop[] {
+  const rows = db.prepare("SELECT id, lon, lat, bus_legal FROM player_stops").all() as unknown as PlayerStopRow[];
+  return rows.map(playerStopFromRow);
+}
+
+export function deletePlayerStop(db: SaveDb, osmId: number): void {
+  db.prepare("DELETE FROM player_stops WHERE id = ?").run(-osmId);
 }
 
 // The override layer (DESIGN.md §1) — one mechanism reused for every category

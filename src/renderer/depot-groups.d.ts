@@ -115,8 +115,22 @@ interface RouteTimetablesApi {
   delete(id: number): Promise<void>;
 }
 
+interface PlayerStop {
+  osmId: number;
+  lon: number;
+  lat: number;
+  busLegal: boolean;
+}
+
+interface PlayerStopsApi {
+  create(lon: number, lat: number, busLegal: boolean): Promise<PlayerStop>;
+  list(): Promise<PlayerStop[]>;
+  delete(osmId: number): Promise<void>;
+}
+
 interface Window {
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   routeTimetables: RouteTimetablesApi;
+  playerStops: PlayerStopsApi;
 }

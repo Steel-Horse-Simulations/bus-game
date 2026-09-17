@@ -20,6 +20,9 @@ import {
   listRouteTimetablesForRoute,
   listAllRouteTimetables,
   deleteRouteTimetable,
+  createPlayerStop,
+  listPlayerStops,
+  deletePlayerStop,
 } from "./db.mts";
 import { unlinkSync, existsSync } from "node:fs";
 
@@ -353,6 +356,28 @@ assert(
   listRouteTimetablesForRoute(db, route2.id).length === 1,
   "a route timetable created just before close survives close+reopen",
 );
+
+// --- player-placed stops (DESIGN.md §4) ---
+const placedLegal = createPlayerStop(db, -3.21, 55.951, true);
+const placedIllegal = createPlayerStop(db, -3.22, 55.952, false);
+assert(placedLegal.osmId < 0 && placedIllegal.osmId < 0, "player stops get a negative synthetic osmId");
+assert(placedLegal.osmId !== placedIllegal.osmId, "each player stop gets a distinct osmId");
+let playerStops = listPlayerStops(db);
+assert(playerStops.length === 2, "both player-placed stops are listed");
+assert(
+  playerStops.find((s) => s.osmId === placedLegal.osmId)?.busLegal === true,
+  "a bus-legal placement keeps its flag",
+);
+assert(
+  playerStops.find((s) => s.osmId === placedIllegal.osmId)?.busLegal === false,
+  "a not-bus-legal placement keeps its warning flag",
+);
+deletePlayerStop(db, placedIllegal.osmId);
+assert(listPlayerStops(db).length === 1, "deleting a player stop removes just that one");
+db.close();
+db = openSave(path);
+playerStops = listPlayerStops(db);
+assert(playerStops.length === 1 && playerStops[0].osmId === placedLegal.osmId, "a player stop survives close+reopen");
 db.close();
 
 unlinkSync(path);
