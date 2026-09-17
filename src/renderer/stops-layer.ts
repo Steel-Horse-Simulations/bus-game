@@ -15,6 +15,7 @@ import {
   type StopCallingService,
 } from "./stop-calling-services.mts";
 import { buildRouteTimetableGrid } from "./route-timetable-grid.mts";
+import { pickContrastColorForHex } from "./icon-contrast";
 
 interface DecodedStop {
   lon: number;
@@ -568,35 +569,62 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       panel.style.height = "90vh";
       panel.style.display = "flex";
       panel.style.flexDirection = "column";
-      panel.style.padding = "12px";
+      panel.style.padding = "0";
+      panel.style.overflow = "hidden";
 
-      const header = document.createElement("div");
-      header.style.display = "flex";
-      header.style.alignItems = "center";
-      header.style.gap = "8px";
-      header.style.marginBottom = "10px";
-      const swatch = document.createElement("span");
-      swatch.style.display = "inline-block";
-      swatch.style.width = "12px";
-      swatch.style.height = "12px";
-      swatch.style.borderRadius = "50%";
-      swatch.style.backgroundColor = route.colour;
-      header.appendChild(swatch);
-      const title = document.createElement("strong");
-      title.style.fontSize = "16px";
-      title.textContent = `Route ${route.number} — ${DAY_TYPE_SHORT_LABELS[timetable.dayType]}`;
-      header.appendChild(title);
+      // Styled after a real printed operator timetable (reference supplied
+      // by the user: Stagecoach Service 28/28A) — a dark masthead carrying
+      // the route number and, underneath, a solid day-type band, rather
+      // than a plain title bar. The route's own colour stands in for a
+      // specific operator's livery colour, since this is a generic style,
+      // not a Stagecoach reproduction.
+      const masthead = document.createElement("div");
+      masthead.style.backgroundColor = "#12131a";
+      masthead.style.color = "#ffffff";
+      masthead.style.display = "flex";
+      masthead.style.alignItems = "center";
+      masthead.style.gap = "12px";
+      masthead.style.padding = "14px 16px";
+      masthead.style.flexShrink = "0";
+      const numberBadge = document.createElement("div");
+      numberBadge.textContent = route.number;
+      numberBadge.style.backgroundColor = route.colour;
+      numberBadge.style.color = pickContrastColorForHex(route.colour);
+      numberBadge.style.fontWeight = "800";
+      numberBadge.style.fontSize = "22px";
+      numberBadge.style.padding = "4px 14px";
+      numberBadge.style.borderRadius = "4px";
+      masthead.appendChild(numberBadge);
+      if (route.name) {
+        const nameEl = document.createElement("div");
+        nameEl.style.fontSize = "14px";
+        nameEl.textContent = route.name;
+        masthead.appendChild(nameEl);
+      }
       const closeButton = document.createElement("button");
       closeButton.className = "btn btn-icon";
       closeButton.textContent = "×";
       closeButton.style.marginLeft = "auto";
+      closeButton.style.color = "#ffffff";
       closeButton.addEventListener("click", () => overlay.remove());
-      header.appendChild(closeButton);
-      panel.appendChild(header);
+      masthead.appendChild(closeButton);
+      panel.appendChild(masthead);
+
+      const dayTypeBand = document.createElement("div");
+      dayTypeBand.style.backgroundColor = "#1677ff";
+      dayTypeBand.style.color = "#ffffff";
+      dayTypeBand.style.fontWeight = "700";
+      dayTypeBand.style.fontSize = "13px";
+      dayTypeBand.style.letterSpacing = "0.05em";
+      dayTypeBand.style.padding = "8px 16px";
+      dayTypeBand.style.flexShrink = "0";
+      dayTypeBand.textContent = DAY_TYPE_SHORT_LABELS[timetable.dayType].toUpperCase();
+      panel.appendChild(dayTypeBand);
 
       const scrollWrap = document.createElement("div");
       scrollWrap.style.overflow = "auto";
       scrollWrap.style.flex = "1";
+      scrollWrap.style.padding = "12px 16px";
 
       const table = document.createElement("table");
       table.style.borderCollapse = "collapse";
@@ -606,22 +634,29 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       const tbody = document.createElement("tbody");
       grid.rows.forEach((row, rowIndex) => {
         const tr = document.createElement("tr");
+        // Alternating row shading, same reason a printed timetable does
+        // it — a long stop list is hard to track across a wide row of
+        // columns without a visual anchor per line.
+        if (rowIndex % 2 === 1) tr.style.backgroundColor = "var(--bg-accent)";
         const th = document.createElement("th");
         const rowStop = stopsById.get(row.osmId);
         th.textContent = rowStop ? displayName(rowStop) : `Stop ${row.osmId}`;
         th.style.position = "sticky";
         th.style.left = "0";
-        th.style.backgroundColor = "var(--panel-bg, #1e1e1e)";
+        th.style.backgroundColor = "inherit";
         th.style.textAlign = "left";
         th.style.padding = "4px 10px 4px 4px";
-        th.style.borderBottom = "1px solid var(--border)";
         tr.appendChild(th);
         for (const journey of grid.journeys) {
           const td = document.createElement("td");
           const value = journey[rowIndex];
-          td.textContent = value === null ? "—" : formatClockMinutes(value);
+          // HHMM with no colon and a plain hyphen for a gap — matching the
+          // reference timetable's own convention exactly, not the HH:MM/
+          // em-dash style used elsewhere in this game's own UI (the
+          // calling-services list, the family comparison) where a colon
+          // reads more easily in a short comma-separated run.
+          td.textContent = value === null ? "-" : formatClockMinutes(value).replace(":", "");
           td.style.padding = "4px 10px";
-          td.style.borderBottom = "1px solid var(--border)";
           td.style.textAlign = "center";
           tr.appendChild(td);
         }
