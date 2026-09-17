@@ -101,6 +101,10 @@ const stopStrokeWidthExpression = [
   1.5,
   1,
 ];
+// A bus station's own base ring is already 1.5 (unlinked, white) — thicker
+// than a plain stop's 1 — so a linked station needs its own slightly
+// thicker step to stay visually distinct from that base ring.
+const stationStrokeWidthExpression = ["case", ["!=", ["get", "linkedTransitColor"], null], 2.5, 1.5];
 
 function approxDistanceM(a: [number, number], b: [number, number]): number {
   const R = 6_371_000;
@@ -171,13 +175,20 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
   const tramStops = decode_tram_stops(railwayBytes) as DecodedTramStop[];
   const transitTargets = buildTransitTargets(railwayStations, tramStops);
 
-  // stop osmId -> linked railway/subway station or tram stop's osmId,
-  // purely the player's manual choice (see TRANSIT_LINK_PICKER_RADIUS_M's
-  // comment) — seeded only from the override layer, nothing computed.
+  // stop or bus station osmId -> linked railway/subway station or tram
+  // stop's osmId, purely the player's manual choice (see
+  // TRANSIT_LINK_PICKER_RADIUS_M's comment) — seeded only from the
+  // override layer, nothing computed. Covers both entity types: a plain
+  // stop/stand links to the platform passengers actually board from, and a
+  // whole bus station can separately be linked too — the stop feeding
+  // people transferring to/from the station complex itself is a different
+  // real-world thing from any one stand's own link.
   const transitLinkOfStop = new Map<number, number>();
-  for (const { osmId, value } of await window.overrides.list<number | null>("stop", "transit_link")) {
-    if (value === null) transitLinkOfStop.delete(osmId);
-    else transitLinkOfStop.set(osmId, value);
+  for (const entityType of ["stop", "bus_station"] as const) {
+    for (const { osmId, value } of await window.overrides.list<number | null>(entityType, "transit_link")) {
+      if (value === null) transitLinkOfStop.delete(osmId);
+      else transitLinkOfStop.set(osmId, value);
+    }
   }
   const linkedTransitColorOfStop = (osmId: number): string | null => {
     const targetId = transitLinkOfStop.get(osmId);
@@ -317,8 +328,12 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       paint: {
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 17, 9],
         "circle-color": BUS_STATION_COLOR,
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 1.5,
+        // A station linked to a railway/subway/tram stop gets the same
+        // coloured ring an individual linked stop would, white otherwise —
+        // this is the station complex's own link, separate from any one
+        // stand's (see buildTransitLinkSection's comment).
+        "circle-stroke-color": stopStrokeExpression as maplibregl.DataDrivenPropertyValueSpecification<string>,
+        "circle-stroke-width": stationStrokeWidthExpression as maplibregl.DataDrivenPropertyValueSpecification<number>,
       },
     });
 
@@ -469,6 +484,57 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       row.appendChild(pencilButton);
       row.appendChild(hideButton);
       return row;
+    };
+
+    // Manual link to a nearby railway/subway station or tram stop —
+    // shared between a plain stop/stand (the stop passengers actually
+    // board from) and a whole bus station (the station complex itself,
+    // for a passenger transferring to/from it rather than any one stand)
+    // per the user's own distinction. Never computed from proximity, only
+    // ever set here — see TRANSIT_LINK_PICKER_RADIUS_M's own comment.
+    const buildTransitLinkSection = (
+      osmId: number,
+      entityType: "stop" | "bus_station",
+      coords: [number, number],
+    ): HTMLElement => {
+      const currentTransitTargetId = transitLinkOfStop.get(osmId) ?? null;
+      const NO_TRANSIT_LINK_LABEL = "(not linked)";
+      const labelToTransitTargetId = new Map<string, number | null>([[NO_TRANSIT_LINK_LABEL, null]]);
+      const nearbyTransitTargets = [...transitTargets.entries()]
+        .map(([id, t]) => ({ id, t, dist: approxDistanceM(coords, [t.lon, t.lat]) }))
+        .filter((c) => c.dist <= TRANSIT_LINK_PICKER_RADIUS_M || c.id === currentTransitTargetId)
+        .sort((a, b) => a.dist - b.dist);
+      for (const { id, t, dist } of nearbyTransitTargets) {
+        labelToTransitTargetId.set(`${t.name ?? t.kindLabel} (${t.kindLabel}, ${Math.round(dist)} m)`, id);
+      }
+      const currentTransitLabel =
+        [...labelToTransitTargetId.entries()].find(([, id]) => id === currentTransitTargetId)?.[0] ??
+        NO_TRANSIT_LINK_LABEL;
+
+      const wrap = document.createElement("div");
+      const transitLinkLabel = document.createElement("div");
+      transitLinkLabel.className = "label-muted";
+      transitLinkLabel.style.marginTop = "6px";
+      transitLinkLabel.textContent =
+        entityType === "bus_station"
+          ? "Linked railway / subway / tram stop (this station)"
+          : "Linked railway / subway / tram stop";
+      wrap.appendChild(transitLinkLabel);
+
+      const transitDropdown = createDropdown(
+        [...labelToTransitTargetId.keys()],
+        currentTransitLabel,
+        (chosenLabel) => {
+          const value = labelToTransitTargetId.get(chosenLabel) ?? null;
+          if (value === null) transitLinkOfStop.delete(osmId);
+          else transitLinkOfStop.set(osmId, value);
+          void window.overrides.set(entityType, osmId, "transit_link", value);
+          refreshStopsSource();
+        },
+      );
+      transitDropdown.el.style.width = "100%";
+      wrap.appendChild(transitDropdown.el);
+      return wrap;
     };
 
     // Read-only "which services call here" (T29, OPEN-ITEMS.md) — the list
@@ -630,6 +696,8 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       label.appendChild(document.createTextNode("Always show stops here"));
       container.appendChild(label);
 
+      container.appendChild(buildTransitLinkSection(osmId, "bus_station", coords));
+
       // Bulk assignment: most real bus stations have no OSM stop_area
       // relation grouping their stands (only 2 of 59 in the current
       // extract do), so one-at-a-time assignment from a stop's own popup
@@ -787,43 +855,10 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
       dropdown.el.style.width = "100%";
       container.appendChild(dropdown.el);
 
-      // Manual link to a nearby railway/subway station or tram stop — same
-      // manual-only mechanism as the bus station dropdown above (see the
-      // comment on TRANSIT_LINK_PICKER_RADIUS_M): never computed from
-      // proximity, only ever set here.
-      const currentTransitTargetId = transitLinkOfStop.get(osmId) ?? null;
-      const NO_TRANSIT_LINK_LABEL = "(not linked)";
-      const labelToTransitTargetId = new Map<string, number | null>([[NO_TRANSIT_LINK_LABEL, null]]);
-      const nearbyTransitTargets = [...transitTargets.entries()]
-        .map(([id, t]) => ({ id, t, dist: approxDistanceM(coords, [t.lon, t.lat]) }))
-        .filter((c) => c.dist <= TRANSIT_LINK_PICKER_RADIUS_M || c.id === currentTransitTargetId)
-        .sort((a, b) => a.dist - b.dist);
-      for (const { id, t, dist } of nearbyTransitTargets) {
-        labelToTransitTargetId.set(`${t.name ?? t.kindLabel} (${t.kindLabel}, ${Math.round(dist)} m)`, id);
-      }
-      const currentTransitLabel =
-        [...labelToTransitTargetId.entries()].find(([, id]) => id === currentTransitTargetId)?.[0] ??
-        NO_TRANSIT_LINK_LABEL;
-
-      const transitLinkLabel = document.createElement("div");
-      transitLinkLabel.className = "label-muted";
-      transitLinkLabel.style.marginTop = "6px";
-      transitLinkLabel.textContent = "Linked railway / subway / tram stop";
-      container.appendChild(transitLinkLabel);
-
-      const transitDropdown = createDropdown(
-        [...labelToTransitTargetId.keys()],
-        currentTransitLabel,
-        (chosenLabel) => {
-          const value = labelToTransitTargetId.get(chosenLabel) ?? null;
-          if (value === null) transitLinkOfStop.delete(osmId);
-          else transitLinkOfStop.set(osmId, value);
-          void window.overrides.set("stop", osmId, "transit_link", value);
-          refreshStopsSource();
-        },
-      );
-      transitDropdown.el.style.width = "100%";
-      container.appendChild(transitDropdown.el);
+      // Manual link to a nearby railway/subway station or tram stop — the
+      // stop passengers actually use to transfer to/from it (see
+      // buildTransitLinkSection's own comment).
+      container.appendChild(buildTransitLinkSection(osmId, "stop", coords));
 
       // The stop's own global pick-up/set-down default (DESIGN.md §6's
       // per-express-variation lists are a separate, route-scoped thing —
