@@ -670,6 +670,44 @@ pub fn decode_tram_stops(bytes: &[u8]) -> js_sys::Array {
     out
 }
 
+/// Decodes `settlements.bin` into a plain JS array of `{lon, lat, name,
+/// rank, population, osmId}` objects — `rank` is `"city"`, `"town"`,
+/// `"village"` or `"hamlet"` (in that order of significance). Consumed by
+/// route-draw.ts's settlement fallback for the direction rule (DESIGN.md
+/// §6) when a depot group has no bus station set.
+#[wasm_bindgen]
+pub fn decode_settlements(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_settlements(bytes);
+    let out = js_sys::Array::new();
+    for s in &data.settlements {
+        let rank = match s.rank {
+            game_data::PlaceRank::City => "city",
+            game_data::PlaceRank::Town => "town",
+            game_data::PlaceRank::Village => "village",
+            game_data::PlaceRank::Hamlet => "hamlet",
+        };
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"lon".into(), &(s.lon_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lat".into(), &(s.lat_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"name".into(),
+            &s.name.as_deref().map(JsValue::from).unwrap_or(JsValue::NULL),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&obj, &"rank".into(), &rank.into()).unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"population".into(),
+            &s.population.map(|p| JsValue::from(p as f64)).unwrap_or(JsValue::NULL),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(s.osm_id as f64).into()).unwrap();
+        out.push(&obj);
+    }
+    out
+}
+
 /// Decodes `stops.bin` into a plain JS array of `{lon, lat, kind, name,
 /// osmId}` objects — `kind` is `"bus_stop"`, `"platform"` or
 /// `"bus_station"`. One flat list rather than separate stop/bus-station

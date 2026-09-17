@@ -252,6 +252,43 @@ pub fn decode_railway(bytes: &[u8]) -> RailwayData {
         .0
 }
 
+/// A `place=city/town/village/hamlet` node — used as the direction-rule
+/// fallback reference (DESIGN.md §6) when a depot group has no bus
+/// station set. See `pipeline/src/settlements.rs`'s own doc comment for
+/// the full reasoning and scoping caveats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, bincode::Encode, bincode::Decode)]
+pub enum PlaceRank {
+    City,
+    Town,
+    Village,
+    Hamlet,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct Settlement {
+    pub osm_id: i64,
+    pub lon_e7: i32,
+    pub lat_e7: i32,
+    pub name: Option<String>,
+    pub rank: PlaceRank,
+    pub population: Option<u32>,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct SettlementData {
+    pub settlements: Vec<Settlement>,
+}
+
+pub fn encode_settlements(data: &SettlementData) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode settlement data")
+}
+
+pub fn decode_settlements(bytes: &[u8]) -> SettlementData {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode settlement data")
+        .0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,7 @@ mod landuse;
 mod railway;
 mod road_avoidance;
 mod road_graph;
+mod settlements;
 mod stops;
 mod venues;
 
@@ -328,5 +329,24 @@ fn main() {
     println!(
         "  saved              {railway_path} ({:.1} MB)",
         railway_bytes as f64 / 1_000_000.0
+    );
+
+    let settlement_data = settlements::SettlementData { settlements: node_pass.settlement_nodes };
+    let mut settlement_counts = [0usize; 4];
+    for s in &settlement_data.settlements {
+        settlement_counts[s.rank as usize] += 1;
+    }
+    println!("\nSettlements:");
+    println!("  cities             {}", settlement_counts[0]);
+    println!("  towns              {}", settlement_counts[1]);
+    println!("  villages           {}", settlement_counts[2]);
+    println!("  hamlets            {}", settlement_counts[3]);
+
+    let settlements_path = pbf_dir.join("settlements.bin").to_string_lossy().to_string();
+    let settlements_bytes =
+        settlements::save(&settlement_data, &settlements_path).expect("failed to save settlement data");
+    println!(
+        "  saved              {settlements_path} ({:.1} MB)",
+        settlements_bytes as f64 / 1_000_000.0
     );
 }

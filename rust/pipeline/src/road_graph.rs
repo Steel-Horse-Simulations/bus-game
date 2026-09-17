@@ -89,6 +89,7 @@ pub struct NodePassResult {
     pub venue_nodes: Vec<crate::venues::Venue>,
     pub railway_station_nodes: Vec<crate::railway::RailwayStation>,
     pub tram_stop_nodes: Vec<crate::railway::TramStop>,
+    pub settlement_nodes: Vec<crate::settlements::Settlement>,
 }
 
 /// Pass 1: stream the whole file once, keeping the coordinates of every node
@@ -109,6 +110,7 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
     let mut venue_nodes = Vec::new();
     let mut railway_station_nodes = Vec::new();
     let mut tram_stop_nodes = Vec::new();
+    let mut settlement_nodes = Vec::new();
 
     reader
         .for_each(|element| match element {
@@ -126,6 +128,7 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
                 &mut venue_nodes,
                 &mut railway_station_nodes,
                 &mut tram_stop_nodes,
+                &mut settlement_nodes,
             ),
             Element::DenseNode(n) => visit_node(
                 n.id(),
@@ -141,6 +144,7 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
                 &mut venue_nodes,
                 &mut railway_station_nodes,
                 &mut tram_stop_nodes,
+                &mut settlement_nodes,
             ),
             _ => {}
         })
@@ -154,6 +158,7 @@ pub fn collect_boundary_node_coords(pbf_path: &str, rings: &[Ring]) -> NodePassR
         venue_nodes,
         railway_station_nodes,
         tram_stop_nodes,
+        settlement_nodes,
     }
 }
 
@@ -172,6 +177,7 @@ fn visit_node<'a>(
     venue_nodes: &mut Vec<crate::venues::Venue>,
     railway_station_nodes: &mut Vec<crate::railway::RailwayStation>,
     tram_stop_nodes: &mut Vec<crate::railway::TramStop>,
+    settlement_nodes: &mut Vec<crate::settlements::Settlement>,
 ) {
     if !point_in_boundary(lon, lat, rings) {
         return;
@@ -231,6 +237,21 @@ fn visit_node<'a>(
             lon_e7,
             lat_e7,
             name: crate::landuse::name_tag(tags.clone()),
+        });
+    }
+
+    if let Some(rank) = tags
+        .clone()
+        .find(|(k, _)| *k == "place")
+        .and_then(|(_, v)| crate::settlements::classify_place_tag(v))
+    {
+        settlement_nodes.push(crate::settlements::Settlement {
+            osm_id: id,
+            lon_e7,
+            lat_e7,
+            name: crate::settlements::name_tag(tags.clone()),
+            rank,
+            population: crate::settlements::population_tag(tags.clone()),
         });
     }
 

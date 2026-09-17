@@ -12,7 +12,8 @@
 // timetables are all later increments.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
-import { Router } from "./wasm/game_wasm.js";
+import { Router, decode_settlements } from "./wasm/game_wasm.js";
+import { findFallbackSettlement, type DecodedSettlement } from "./settlement-fallback.mts";
 import { stopsPanelState, busStationsState } from "./stops-layer";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
@@ -124,6 +125,12 @@ export async function mountRouteDrawTool(
   router: Router,
   onFinish: () => void,
 ): Promise<RouteDrawController> {
+  // Fetched once — settlements don't change while the map's open, and
+  // there's no per-stop editing UI for them the way stops have.
+  const settlementsRes = await fetch("http://127.0.0.1:38271/settlements.bin");
+  const settlementsBytes = new Uint8Array(await settlementsRes.arrayBuffer());
+  const settlements = decode_settlements(settlementsBytes) as DecodedSettlement[];
+
   let draftPoints: DraftPoint[] = [];
   let routeCoords: [number, number][] = [];
   let edgeChunks: EdgeChunk[] = [];
@@ -548,26 +555,46 @@ export async function mountRouteDrawTool(
       saveStatusEl.textContent = "Choose a depot group first.";
       return;
     }
-    if (group.mainBusStationOsmId === null) {
-      saveStatusEl.textContent =
-        `"${group.name}" has no main bus station set — pick one in the Depot groups panel first ` +
-        `(there's no settlement fallback yet for a depot group with none).`;
-      return;
+    const coords: LonLat[] = draftPoints.map((p) => [p.lon, p.lat]);
+
+    // The direction rule's own reference point (DESIGN.md §6): the depot
+    // group's main bus station if it has one, otherwise the largest
+    // settlement near this route — see findFallbackSettlement's own
+    // comment for why "near this route" stands in for "in the depot
+    // group" until depot groups have a real stored location (Phase 3).
+    let referencePoint: LonLat;
+    let usedFallbackSettlement: DecodedSettlement | null = null;
+    if (group.mainBusStationOsmId !== null) {
+      const station = busStationsState.find((s) => s.osmId === group.mainBusStationOsmId);
+      if (!station) {
+        saveStatusEl.textContent = `"${group.name}"'s main bus station couldn't be found in the loaded stop data.`;
+        return;
+      }
+      referencePoint = [station.lon, station.lat];
+    } else {
+      const routeCentroid: LonLat = [
+        coords.reduce((sum, c) => sum + c[0], 0) / coords.length,
+        coords.reduce((sum, c) => sum + c[1], 0) / coords.length,
+      ];
+      const fallback = findFallbackSettlement(routeCentroid, settlements);
+      if (!fallback) {
+        saveStatusEl.textContent =
+          `"${group.name}" has no main bus station set, and no settlement data was found nearby either — ` +
+          `pick a main bus station in the Depot groups panel first.`;
+        return;
+      }
+      usedFallbackSettlement = fallback;
+      referencePoint = [fallback.lon, fallback.lat];
     }
-    const station = busStationsState.find((s) => s.osmId === group.mainBusStationOsmId);
-    if (!station) {
-      saveStatusEl.textContent = `"${group.name}"'s main bus station couldn't be found in the loaded stop data.`;
-      return;
-    }
+
     const startTerminusError = validateStartTerminus(draftPoints, terminusIndex, startIndex);
     if (startTerminusError) {
       saveStatusEl.textContent = startTerminusError;
       return;
     }
 
-    const coords: LonLat[] = draftPoints.map((p) => [p.lon, p.lat]);
     const outboundEndIndex = terminusIndex ?? draftPoints.length - 1;
-    const orientation = computeRouteOrientation(coords, [station.lon, station.lat], outboundEndIndex);
+    const orientation = computeRouteOrientation(coords, referencePoint, outboundEndIndex);
     const savedPoints: RoutePoint[] = draftPoints.map((p) =>
       p.kind === "stop"
         ? { kind: "stop", osmId: p.osmId, lon: p.lon, lat: p.lat }
@@ -579,6 +606,9 @@ export async function mountRouteDrawTool(
     // because editingRouteId got set after the first save.
     const parentRouteId = variationParentRoute?.id ?? null;
     const variationLetter = variationParentRoute ? variationLetterInput.value.trim() || null : null;
+    const directionNote = usedFallbackSettlement
+      ? ` — no bus station set, direction used the nearest settlement instead (${usedFallbackSettlement.name ?? "unnamed"})`
+      : "";
 
     if (editingRouteId !== null) {
       // Updates in place (and clears the route's own timetables — db.mts's
@@ -598,7 +628,7 @@ export async function mountRouteDrawTool(
         variationLetter,
       );
       saveStatusEl.style.color = "var(--text-secondary)";
-      saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation}).`;
+      saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation})${directionNote}.`;
     } else {
       const created = await window.routes.create(
         group.id,
@@ -617,7 +647,7 @@ export async function mountRouteDrawTool(
       editingRouteId = created.id;
       updateHeader();
       saveStatusEl.style.color = "var(--text-secondary)";
-      saveStatusEl.textContent = `Saved route ${number} to "${group.name}" (drawn direction is ${orientation}).`;
+      saveStatusEl.textContent = `Saved route ${number} to "${group.name}" (drawn direction is ${orientation})${directionNote}.`;
     }
   });
 
