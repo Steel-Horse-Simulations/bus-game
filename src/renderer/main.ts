@@ -9,6 +9,7 @@ import { registerMapIcons } from "./map-icons";
 import { registerSupportVehicleIcons } from "./support-vehicle-icons";
 import { mountDepotGroupsPanel } from "./depot-groups-panel";
 import { mountRoutePanel } from "./route-panel";
+import { mountVehicleSimulation } from "./vehicle-simulation";
 import { loadRouter } from "./router";
 
 // MapLibre auto-detects its worker script from import.meta.url, which only
@@ -66,4 +67,5 @@ init().then(async () => {
   await drawStops(map, router);
   await drawRailwayPlatforms(map);
   await mountRoutePanel(map, router);
+  await mountVehicleSimulation(map, router);
 });
