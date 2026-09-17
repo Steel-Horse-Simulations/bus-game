@@ -215,7 +215,7 @@ function registerRouteHandlers(): void {
   ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
   ipcMain.handle(
     "routes:setPickupDropoffOverride",
-    (_e, routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | null) =>
+    (_e, routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | "skip" | null) =>
       setRoutePickupDropoffOverride(save, routeId, pointIndex, value),
   );
 }

@@ -1019,8 +1019,12 @@ export async function drawStops(map: maplibregl.Map): Promise<void> {
 
       const currentPickupDropoff =
         (await window.overrides.get<PickupDropoffOrBoth>("stop", osmId, "pickupDropoff")) ?? "both";
+      // "skip" is deliberately excluded here — it's an express's own
+      // route-scoped skipped-stop flag (route-panel.ts's per-route
+      // dropdown), not a stop-wide default (see pickup-dropoff.ts's own
+      // comment: no stop could ever be called at by any route if it were).
       const pickupDropoffDropdown = createDropdown(
-        Object.values(PICKUP_DROPOFF_LABELS),
+        [PICKUP_DROPOFF_LABELS.both, PICKUP_DROPOFF_LABELS.pickup_only, PICKUP_DROPOFF_LABELS.setdown_only],
         PICKUP_DROPOFF_LABELS[currentPickupDropoff],
         (chosenLabel) => {
           const value = (Object.entries(PICKUP_DROPOFF_LABELS).find(([, l]) => l === chosenLabel)?.[0] ??

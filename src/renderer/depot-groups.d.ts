@@ -24,7 +24,7 @@ interface RoutePoint {
 
 interface RoutePickupDropoffOverride {
   pointIndex: number;
-  value: "pickup_only" | "setdown_only";
+  value: "pickup_only" | "setdown_only" | "skip";
 }
 
 interface Route {
@@ -73,7 +73,7 @@ interface RoutesApi {
   setPickupDropoffOverride(
     routeId: number,
     pointIndex: number,
-    value: "pickup_only" | "setdown_only" | null,
+    value: "pickup_only" | "setdown_only" | "skip" | null,
   ): Promise<void>;
 }
 

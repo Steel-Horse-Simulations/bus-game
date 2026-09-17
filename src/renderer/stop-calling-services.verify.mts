@@ -9,7 +9,12 @@ function assert(cond: boolean, msg: string): void {
   console.log("ok:", msg);
 }
 
-function route(id: number, number: string, points: { kind: "stop" | "waypoint"; osmId?: number }[]): Route {
+function route(
+  id: number,
+  number: string,
+  points: { kind: "stop" | "waypoint"; osmId?: number }[],
+  pickupDropoffOverrides: RoutePickupDropoffOverride[] = [],
+): Route {
   return {
     id,
     depotGroupId: 1,
@@ -20,7 +25,7 @@ function route(id: number, number: string, points: { kind: "stop" | "waypoint"; 
     startIndex: null,
     colour: "#000000",
     name: null,
-    pickupDropoffOverrides: [],
+    pickupDropoffOverrides,
     parentRouteId: null,
     variationLetter: null,
   };
@@ -54,6 +59,25 @@ function timetable(
   const timetables = [timetable(1, 1, "monday_friday", 480, 600, 30, [0, 300])];
   const result = computeStopCallingServices(999, routes, timetables);
   assert(result.length === 0, "a route with no matching point is excluded");
+}
+
+// An express's skipped stop (DESIGN.md §6) is excluded from that stop's
+// calling services entirely, even though the point is still physically on
+// the route and has a real computed offset.
+{
+  const routes = [
+    route(
+      1,
+      "X10",
+      [{ kind: "stop", osmId: 111 }, { kind: "stop", osmId: 222 }, { kind: "stop", osmId: 333 }],
+      [{ pointIndex: 1, value: "skip" }],
+    ),
+  ];
+  const timetables = [timetable(1, 1, "monday_friday", 480, 480, 30, [0, 300, 600])];
+  const resultSkipped = computeStopCallingServices(222, routes, timetables);
+  assert(resultSkipped.length === 0, "the skipped stop shows no calling service for this route at all");
+  const resultOther = computeStopCallingServices(111, routes, timetables);
+  assert(resultOther.length === 1, "an unrelated stop on the same route is unaffected by another point's skip flag");
 }
 
 // A plain single-point stop on a single day type: three departures.

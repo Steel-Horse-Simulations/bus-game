@@ -8,7 +8,10 @@ function assert(cond: boolean, msg: string): void {
   console.log("ok:", msg);
 }
 
-function route(points: { kind: "stop" | "waypoint"; osmId?: number }[]): Route {
+function route(
+  points: { kind: "stop" | "waypoint"; osmId?: number }[],
+  pickupDropoffOverrides: RoutePickupDropoffOverride[] = [],
+): Route {
   return {
     id: 1,
     depotGroupId: 1,
@@ -19,7 +22,7 @@ function route(points: { kind: "stop" | "waypoint"; osmId?: number }[]): Route {
     startIndex: null,
     colour: "#000000",
     name: null,
-    pickupDropoffOverrides: [],
+    pickupDropoffOverrides,
     parentRouteId: null,
     variationLetter: null,
   };
@@ -76,6 +79,28 @@ function timetable(
   const tt = timetable(480, 600, 0, [0]);
   const grid = buildRouteTimetableGrid(r, tt);
   assert(grid.journeys.length === 0, "a zero interval produces no journey columns rather than hanging");
+}
+
+// An express's skipped stop (DESIGN.md §6) stays a real row — the stop is
+// still on the physical path — but every journey shows null (a gap) there
+// instead of a time, since skip is a route-level flag applying uniformly
+// to every journey today, not a per-journey one.
+{
+  const r = route(
+    [{ kind: "stop", osmId: 111 }, { kind: "stop", osmId: 222 }, { kind: "stop", osmId: 333 }],
+    [{ pointIndex: 1, value: "skip" }],
+  );
+  const tt = timetable(480, 510, 30, [0, 300, 600]);
+  const grid = buildRouteTimetableGrid(r, tt);
+  assert(grid.rows.length === 3, "the skipped stop is still a row, not removed from the grid");
+  assert(
+    grid.journeys.every((j) => j[1] === null),
+    `every journey should show null at the skipped row, got ${JSON.stringify(grid.journeys)}`,
+  );
+  assert(
+    grid.journeys.every((j) => j[0] !== null && j[2] !== null),
+    "the non-skipped rows still have real times",
+  );
 }
 
 console.log("\nAll route-timetable-grid checks passed.");

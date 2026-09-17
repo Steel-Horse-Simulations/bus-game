@@ -27,9 +27,17 @@ export function computeStopCallingServices(
 ): StopCallingService[] {
   const services: StopCallingService[] = [];
   for (const route of routes) {
+    // A point this route skips (DESIGN.md §6 "Express services": "a list
+    // of skipped stops") is physically on the road path but never actually
+    // called at — excluded here the same as if it weren't one of this
+    // route's points at all, so an express doesn't show as serving a stop
+    // it drives straight past.
+    const skippedIndexes = new Set(
+      route.pickupDropoffOverrides.filter((o) => o.value === "skip").map((o) => o.pointIndex),
+    );
     const pointIndexes: number[] = [];
     route.points.forEach((p, i) => {
-      if (p.kind === "stop" && p.osmId === osmId) pointIndexes.push(i);
+      if (p.kind === "stop" && p.osmId === osmId && !skippedIndexes.has(i)) pointIndexes.push(i);
     });
     if (pointIndexes.length === 0) continue;
 

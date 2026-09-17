@@ -87,7 +87,11 @@ contextBridge.exposeInMainWorld("routes", {
       variationLetter,
     ) as Promise<Route>,
   delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
-  setPickupDropoffOverride: (routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | null) =>
+  setPickupDropoffOverride: (
+    routeId: number,
+    pointIndex: number,
+    value: "pickup_only" | "setdown_only" | "skip" | null,
+  ) =>
     ipcRenderer.invoke("routes:setPickupDropoffOverride", routeId, pointIndex, value) as Promise<void>,
 });
 

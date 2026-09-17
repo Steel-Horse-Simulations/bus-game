@@ -277,7 +277,10 @@ export interface RoutePoint {
 
 export interface RoutePickupDropoffOverride {
   pointIndex: number;
-  value: "pickup_only" | "setdown_only";
+  // "skip" is an express's skipped stop (DESIGN.md §6) — see
+  // pickup-dropoff.ts's own comment for why it's route-scoped only, never
+  // a stop's global default.
+  value: "pickup_only" | "setdown_only" | "skip";
 }
 
 export interface Route {
@@ -437,7 +440,7 @@ export function setRoutePickupDropoffOverride(
   db: SaveDb,
   routeId: number,
   pointIndex: number,
-  value: "pickup_only" | "setdown_only" | null,
+  value: "pickup_only" | "setdown_only" | "skip" | null,
 ): void {
   const row = db.prepare("SELECT pickup_dropoff_overrides FROM routes WHERE id = ?").get(routeId) as
     | { pickup_dropoff_overrides: string }

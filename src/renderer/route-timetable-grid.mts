@@ -15,14 +15,22 @@ export interface RouteTimetableGridRow {
 export interface RouteTimetableGrid {
   rows: RouteTimetableGridRow[];
   // One array per generated journey (departure), in departure order — each
-  // array has one clock-minutes entry per row, same order as `rows`. All
-  // entries are populated for every journey today (no skipped-stop express
-  // yet), but the shape already allows a future `null` for "this journey
-  // doesn't call here" without changing callers.
+  // array has one clock-minutes entry per row, same order as `rows`. `null`
+  // marks a point this route skips entirely (DESIGN.md §6 "Express
+  // services") — still a real row (the stop is still on the physical
+  // path), but every journey shows a gap there rather than a time, the
+  // same as a real printed timetable's "doesn't call here" convention
+  // (DESIGN.md §7: "a journey that skips stops shows as gaps down its
+  // column"). Skip is a route-level flag today (every journey on this
+  // route skips the same points), not yet a per-journey one — that would
+  // need the merged multi-route timetable this project hasn't built yet.
   journeys: (number | null)[][];
 }
 
 export function buildRouteTimetableGrid(route: Route, timetable: RouteTimetable): RouteTimetableGrid {
+  const skippedIndexes = new Set(
+    route.pickupDropoffOverrides.filter((o) => o.value === "skip").map((o) => o.pointIndex),
+  );
   const rows: RouteTimetableGridRow[] = [];
   route.points.forEach((p, pointIndex) => {
     if (p.kind === "stop" && p.osmId !== undefined) rows.push({ pointIndex, osmId: p.osmId });
@@ -32,7 +40,11 @@ export function buildRouteTimetableGrid(route: Route, timetable: RouteTimetable)
   if (timetable.intervalMinutes > 0) {
     for (let d = timetable.startMinutes; d <= timetable.endMinutes; d += timetable.intervalMinutes) {
       journeys.push(
-        rows.map((row) => Math.round(d + timetable.departureOffsetsSeconds[row.pointIndex] / 60)),
+        rows.map((row) =>
+          skippedIndexes.has(row.pointIndex)
+            ? null
+            : Math.round(d + timetable.departureOffsetsSeconds[row.pointIndex] / 60),
+        ),
       );
     }
   }

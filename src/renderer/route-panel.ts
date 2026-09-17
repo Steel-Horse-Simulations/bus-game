@@ -800,7 +800,12 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
           thisRouteLabel.textContent = "This route:";
           controls.appendChild(thisRouteLabel);
           const thisRouteDropdown = createDropdown(
-            [THIS_ROUTE_DEFAULT, PICKUP_DROPOFF_LABELS.pickup_only, PICKUP_DROPOFF_LABELS.setdown_only],
+            [
+              THIS_ROUTE_DEFAULT,
+              PICKUP_DROPOFF_LABELS.pickup_only,
+              PICKUP_DROPOFF_LABELS.setdown_only,
+              PICKUP_DROPOFF_LABELS.skip,
+            ],
             routeOverride === null ? THIS_ROUTE_DEFAULT : PICKUP_DROPOFF_LABELS[routeOverride],
             (chosenLabel) => {
               const value: PickupDropoff | null =
@@ -808,7 +813,9 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
                   ? "pickup_only"
                   : chosenLabel === PICKUP_DROPOFF_LABELS.setdown_only
                     ? "setdown_only"
-                    : null;
+                    : chosenLabel === PICKUP_DROPOFF_LABELS.skip
+                      ? "skip"
+                      : null;
               void window.routes.setPickupDropoffOverride(route.id, i, value).then(() => {
                 route.pickupDropoffOverrides = route.pickupDropoffOverrides.filter((o) => o.pointIndex !== i);
                 if (value !== null) route.pickupDropoffOverrides.push({ pointIndex: i, value });
