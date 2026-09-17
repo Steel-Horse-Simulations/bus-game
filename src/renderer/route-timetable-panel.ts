@@ -16,6 +16,7 @@ import {
 } from "./route-timetable.mts";
 import { timetableEditorState } from "./timetable-editor-state";
 import { stopsPanelState } from "./stops-layer";
+import { computeStopCallingServices, formatClockMinutes } from "./stop-calling-services.mts";
 
 function stopLabel(point: RoutePoint): string {
   if (point.kind !== "stop" || point.osmId === undefined) return "Stop";
@@ -244,47 +245,150 @@ export function createRouteTimetableEditor(
   const familySection = document.createElement("div");
   familySection.style.display = "flex";
   familySection.style.flexDirection = "column";
-  familySection.style.gap = "4px";
+  familySection.style.gap = "8px";
   familySection.style.borderTop = "1px solid var(--border)";
   familySection.style.paddingTop = "8px";
 
-  async function renderFamilyDepartures(dayType: DayType): Promise<void> {
+  // Leg times depend only on route.points (fixed for this editor instance,
+  // never edited here) — computed once, reused for every live recompute
+  // below so editing the frequency fields doesn't re-route on every
+  // keystroke. Timing points *do* still change (via the left-hand stop
+  // list), so offsets are recomputed from this cache each time, not cached
+  // themselves.
+  const legTimesSecondsCache = computeLegTimesSeconds(router, route.points);
+
+  // A "timetable" the way the user asked for it: the current route (this
+  // route's own in-progress, possibly-unsaved frequency fields — updates
+  // live as they're typed, no save needed) plus every other family
+  // member's own last-saved timetable, restricted to the stops every
+  // family member actually shares — DESIGN.md §7's Case B padding is about
+  // exactly this shared section, and this is where a mismatch would show
+  // up. Reuses computeStopCallingServices/formatClockMinutes verbatim
+  // (stop-calling-services.mts) rather than a second copy of the same
+  // merge-by-point-index logic.
+  async function renderFamilySharedStops(dayType: DayType): Promise<void> {
     const family = await loadRouteFamily(route);
     familySection.innerHTML = "";
     if (family.length <= 1) return;
+
     const heading = document.createElement("div");
     heading.className = "label-muted";
-    heading.textContent = `This family's ${DAY_TYPE_LABELS[dayType]} departures:`;
+    heading.textContent = `Shared stops — ${DAY_TYPE_LABELS[dayType]} (this route's own row updates live as you edit, before saving)`;
     familySection.appendChild(heading);
-    for (const member of family) {
-      const tt = (await window.routeTimetables.listForRoute(member.id)).find((t) => t.dayType === dayType);
-      const row = document.createElement("div");
-      row.style.fontSize = "11px";
-      const swatch = document.createElement("span");
-      swatch.style.display = "inline-block";
-      swatch.style.width = "8px";
-      swatch.style.height = "8px";
-      swatch.style.borderRadius = "50%";
-      swatch.style.backgroundColor = member.colour;
-      swatch.style.marginRight = "4px";
-      row.appendChild(swatch);
-      const numberSpan = document.createElement("strong");
-      numberSpan.textContent = member.number + " ";
-      row.appendChild(numberSpan);
-      row.appendChild(
-        document.createTextNode(
-          tt
-            ? `${minutesToHHMM(tt.startMinutes)}-${minutesToHHMM(tt.endMinutes)} every ${tt.intervalMinutes} min (first departures: ${[
-                minutesToHHMM(tt.startMinutes),
-                minutesToHHMM(Math.min(tt.startMinutes + tt.intervalMinutes, tt.endMinutes)),
-                minutesToHHMM(Math.min(tt.startMinutes + tt.intervalMinutes * 2, tt.endMinutes)),
-              ].join(", ")}…)`
-            : "no timetable for this day type yet",
-        ),
-      );
-      familySection.appendChild(row);
+
+    const stopIdSetsByMember = family.map(
+      (m) => new Set(m.points.filter((p): p is RoutePoint & { kind: "stop" } => p.kind === "stop").map((p) => p.osmId)),
+    );
+    const sharedOsmIds = new Set(
+      [...stopIdSetsByMember[0]].filter((id) => stopIdSetsByMember.every((s) => s.has(id))),
+    );
+    const orderedSharedOsmIds: number[] = [];
+    for (const p of route.points) {
+      if (p.kind !== "stop" || p.osmId === undefined) continue;
+      if (sharedOsmIds.has(p.osmId) && !orderedSharedOsmIds.includes(p.osmId)) {
+        orderedSharedOsmIds.push(p.osmId);
+      }
     }
+    if (orderedSharedOsmIds.length === 0) {
+      const none = document.createElement("div");
+      none.className = "label-muted";
+      none.textContent = "No stops are shared by every member of this family.";
+      familySection.appendChild(none);
+      return;
+    }
+
+    const otherMembers = family.filter((m) => m.id !== route.id);
+    const othersTimetables = (
+      await Promise.all(otherMembers.map((m) => window.routeTimetables.listForRoute(m.id)))
+    ).flat();
+
+    const startMinutes = hhmmToMinutes(startInput.value);
+    const endMinutes = hhmmToMinutes(endInput.value);
+    const intervalMinutes = Number(intervalInput.value);
+    let liveTimetable: RouteTimetable | null = null;
+    if (startMinutes !== null && endMinutes !== null && Number.isFinite(intervalMinutes) && intervalMinutes > 0) {
+      try {
+        const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsets(
+          route.points.length,
+          legTimesSecondsCache,
+          timetableEditorState.timingPoints,
+        );
+        liveTimetable = {
+          id: -1,
+          routeId: route.id,
+          dayType,
+          startMinutes,
+          endMinutes,
+          intervalMinutes,
+          timingPoints: timetableEditorState.timingPoints,
+          arrivalOffsetsSeconds,
+          departureOffsetsSeconds,
+        };
+      } catch {
+        // An in-progress edit that doesn't yet validate (e.g. a timing
+        // point mid-change) — this route's own row just shows nothing
+        // live until it does, same as the save button's own validation.
+      }
+    }
+    const allTimetables = liveTimetable ? [...othersTimetables, liveTimetable] : othersTimetables;
+
+    const list = document.createElement("div");
+    list.style.maxHeight = "220px";
+    list.style.overflowY = "auto";
+    list.style.display = "flex";
+    list.style.flexDirection = "column";
+    list.style.gap = "6px";
+
+    for (const osmId of orderedSharedOsmIds) {
+      const point = route.points.find((p) => p.kind === "stop" && p.osmId === osmId)!;
+      const services = computeStopCallingServices(osmId, family, allTimetables).filter(
+        (s) => s.dayType === dayType,
+      );
+      if (services.length === 0) continue;
+
+      const stopBlock = document.createElement("div");
+      const stopHeading = document.createElement("div");
+      stopHeading.style.fontSize = "11px";
+      stopHeading.style.fontWeight = "600";
+      stopHeading.textContent = stopLabel(point);
+      stopBlock.appendChild(stopHeading);
+
+      for (const svc of services) {
+        const row = document.createElement("div");
+        row.style.fontSize = "11px";
+        row.style.paddingLeft = "10px";
+        const swatch = document.createElement("span");
+        swatch.style.display = "inline-block";
+        swatch.style.width = "8px";
+        swatch.style.height = "8px";
+        swatch.style.borderRadius = "50%";
+        swatch.style.backgroundColor = svc.routeColour;
+        swatch.style.marginRight = "4px";
+        row.appendChild(swatch);
+        const numberSpan = document.createElement("strong");
+        numberSpan.textContent = svc.routeNumber + (svc.routeId === route.id ? " (this route) " : " ");
+        row.appendChild(numberSpan);
+        row.appendChild(document.createTextNode(svc.departureClockMinutes.map(formatClockMinutes).join(", ")));
+        stopBlock.appendChild(row);
+      }
+      list.appendChild(stopBlock);
+    }
+    familySection.appendChild(list);
   }
+
+  // Live triggers: the frequency fields update the comparison on every
+  // keystroke (not just on blur, unlike normalizeTimeInput's reformatting)
+  // so the point of this section — seeing the effect of an edit before
+  // committing to Save — actually holds. Timing-point edits (the left-hand
+  // stop list) go through the same onTimingPointsEdited hook
+  // refreshTimingPointsHint already uses.
+  const refreshFamilyLive = () => {
+    const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value) ?? DAY_TYPES[0];
+    void renderFamilySharedStops(dayType);
+  };
+  startInput.addEventListener("input", refreshFamilyLive);
+  endInput.addEventListener("input", refreshFamilyLive);
+  intervalInput.addEventListener("input", refreshFamilyLive);
 
   async function loadDayType(dayType: DayType): Promise<void> {
     const existing = (await window.routeTimetables.listForRoute(route.id)).find((t) => t.dayType === dayType);
@@ -312,7 +416,7 @@ export function createRouteTimetableEditor(
       intervalInput.value = "";
       statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]} timetable yet.`;
     }
-    void renderFamilyDepartures(dayType);
+    void renderFamilySharedStops(dayType);
   }
 
   const dayTypeDropdown: Dropdown = createDropdown(
@@ -386,7 +490,7 @@ export function createRouteTimetableEditor(
       statusLine.style.color = STATUS_COLOUR_SUCCESS;
       statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
     }
-    void renderFamilyDepartures(dayType);
+    void renderFamilySharedStops(dayType);
   });
 
   body.appendChild(dayTypeDropdown.el);
