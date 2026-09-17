@@ -163,7 +163,10 @@ function stopLabel(point: RoutePoint): string {
   return stopsPanelState.displayNameFor?.(point.osmId) ?? `Stop ${point.osmId}`;
 }
 
-type Mode = { kind: "list" } | { kind: "drawing"; editRoute?: Route } | { kind: "timetable"; route: Route };
+type Mode =
+  | { kind: "list" }
+  | { kind: "drawing"; editRoute?: Route; variationOf?: Route }
+  | { kind: "timetable"; route: Route };
 
 export async function mountRoutePanel(map: maplibregl.Map, router: Router): Promise<void> {
   // "Show" preview line — not gated on map.isStyleLoaded() (see
@@ -257,7 +260,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       void refreshList();
     } else if (next.kind === "drawing") {
       slot.appendChild(drawController.el);
-      if (next.editRoute) drawController.startEditing(next.editRoute);
+      if (next.variationOf) drawController.startVariation(next.variationOf);
+      else if (next.editRoute) drawController.startEditing(next.editRoute);
       else drawController.startDrawing();
     } else {
       // Cleared up front — buildLockedRoutePanel's first render runs before
@@ -474,6 +478,15 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
         setMode({ kind: "timetable", route });
       });
 
+      const variationButton = document.createElement("button");
+      variationButton.className = "btn btn-icon";
+      variationButton.textContent = "Variation";
+      variationButton.title = "Draw a new lettered variation of this route (DESIGN.md §6)";
+      variationButton.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setMode({ kind: "drawing", variationOf: route });
+      });
+
       const deleteButton = document.createElement("button");
       deleteButton.className = "btn btn-icon btn-danger";
       deleteButton.textContent = "×";
@@ -490,6 +503,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       actions.appendChild(showButton);
       actions.appendChild(editButton);
       actions.appendChild(timetableButton);
+      actions.appendChild(variationButton);
       actions.appendChild(deleteButton);
       wrapper.appendChild(actions);
     }

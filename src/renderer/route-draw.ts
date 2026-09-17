@@ -110,6 +110,13 @@ export interface RouteDrawController {
   // this mode updates the route in place (and clears its own timetables,
   // db.mts's updateRoute) rather than creating a duplicate.
   startEditing(route: Route): void;
+  // Loads `parent`'s points as a starting draft for a new lettered
+  // variation (DESIGN.md §6 "Variations" — "the player chooses the last
+  // shared stop, draws the divergent section... then chooses the first
+  // shared stop where it rejoins"). Unlike startEditing, saving always
+  // creates a new route (parentRouteId set to parent.id) rather than
+  // updating the parent.
+  startVariation(parent: Route): void;
 }
 
 export async function mountRouteDrawTool(
@@ -141,6 +148,11 @@ export async function mountRouteDrawTool(
   // handler branches on this to update the existing route rather than
   // creating a duplicate.
   let editingRouteId: number | null = null;
+  // Set by startVariation(), null otherwise — the route this draft is a
+  // lettered variation of (DESIGN.md §6). Never combined with
+  // editingRouteId: a variation always creates a new route on save, even
+  // though its starting draft is a copy of the parent's own points.
+  let variationParentRoute: Route | null = null;
 
   const addLayers = () => {
     map.addSource("route-draft-line", { type: "geojson", data: emptyFeatureCollection });
@@ -312,6 +324,7 @@ export async function mountRouteDrawTool(
     terminusIndex = null;
     startIndex = null;
     editingRouteId = null;
+    variationParentRoute = null;
     numberInput.value = "";
     nameInput.value = "";
     colourInput.value = DEFAULT_ROUTE_COLOUR;
@@ -320,6 +333,7 @@ export async function mountRouteDrawTool(
     updateHeader();
     refresh();
     renderStopList();
+    renderVariationSection();
   };
 
   // No longer positions or shows/hides itself — the caller (route-panel.ts)
@@ -337,7 +351,12 @@ export async function mountRouteDrawTool(
   panel.appendChild(header);
 
   const updateHeader = () => {
-    header.textContent = editingRouteId !== null ? "Editing route" : "Drawing route";
+    header.textContent =
+      variationParentRoute !== null
+        ? `New variation of ${variationParentRoute.number}`
+        : editingRouteId !== null
+          ? "Editing route"
+          : "Drawing route";
   };
 
   const body = document.createElement("div");
@@ -554,6 +573,12 @@ export async function mountRouteDrawTool(
         ? { kind: "stop", osmId: p.osmId, lon: p.lon, lat: p.lat }
         : { kind: "waypoint", lon: p.lon, lat: p.lat },
     );
+    // Carries across a re-save of the same in-progress variation too (the
+    // "second Save updates instead of duplicating" path below), not just
+    // its first save — the variation relationship shouldn't disappear just
+    // because editingRouteId got set after the first save.
+    const parentRouteId = variationParentRoute?.id ?? null;
+    const variationLetter = variationParentRoute ? variationLetterInput.value.trim() || null : null;
 
     if (editingRouteId !== null) {
       // Updates in place (and clears the route's own timetables — db.mts's
@@ -569,11 +594,8 @@ export async function mountRouteDrawTool(
         startIndex,
         colourInput.value,
         name,
-        // Variation parent/letter: not yet settable from this panel (a
-        // separate branch/rejoin editing workflow, DESIGN.md §6) — every
-        // route created or edited here stays a plain route for now.
-        null,
-        null,
+        parentRouteId,
+        variationLetter,
       );
       saveStatusEl.style.color = "var(--text-secondary)";
       saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation}).`;
@@ -587,9 +609,8 @@ export async function mountRouteDrawTool(
         startIndex,
         colourInput.value,
         name,
-        // See the update() call above: no variation-picking UI yet.
-        null,
-        null,
+        parentRouteId,
+        variationLetter,
       );
       // A second Save click without leaving drawing mode now updates this
       // same route instead of creating a duplicate with the same number.
@@ -619,6 +640,121 @@ export async function mountRouteDrawTool(
   pointList.style.overflowY = "auto";
   pointList.style.padding = "0";
   body.appendChild(pointList);
+
+  // Variation controls (DESIGN.md §6 "Variations"), shown only while
+  // variationParentRoute is set. "Diverge from here" cuts everything after
+  // the currently-armed point (the same `insertAfterIndex` the point list
+  // and the terminus button already share) — the player then draws the new
+  // divergent section normally by clicking the map, which inserts right
+  // after the armed point via the existing addPoint/insertAfterIndex
+  // mechanism. "Rejoin at" lists the parent's own stops; picking one
+  // appends that stop and everything after it from the parent's own list
+  // onto wherever the draft currently ends, since "some variations just
+  // end differently" rather than always rejoining.
+  const variationSection = document.createElement("div");
+  variationSection.style.display = "none";
+  variationSection.style.flexDirection = "column";
+  variationSection.style.gap = "6px";
+  variationSection.style.borderTop = "1px solid var(--border)";
+  variationSection.style.borderBottom = "1px solid var(--border)";
+  variationSection.style.padding = "8px";
+  body.appendChild(variationSection);
+
+  // The variation letter itself (stored explicitly, not parsed off
+  // "number" — see db.mts's own comment on why) — pre-filled with the next
+  // unused letter among the parent's existing variations by startVariation,
+  // editable here since the player may want a specific letter instead.
+  const variationLetterRow = document.createElement("div");
+  variationLetterRow.style.display = "flex";
+  variationLetterRow.style.alignItems = "center";
+  variationLetterRow.style.gap = "6px";
+  const variationLetterLabel = document.createElement("span");
+  variationLetterLabel.className = "label-muted";
+  variationLetterLabel.textContent = "Variation letter:";
+  const variationLetterInput = document.createElement("input");
+  variationLetterInput.type = "text";
+  variationLetterInput.className = "field";
+  variationLetterInput.style.width = "50px";
+  variationLetterInput.maxLength = 2;
+  variationLetterRow.appendChild(variationLetterLabel);
+  variationLetterRow.appendChild(variationLetterInput);
+
+  const divergeButton = document.createElement("button");
+  divergeButton.className = "btn";
+  divergeButton.textContent = "Diverge from here";
+  divergeButton.title = "Remove every point after the one currently selected in the list";
+  divergeButton.addEventListener("click", () => {
+    if (insertAfterIndex === null) return;
+    const cutFrom = insertAfterIndex + 1;
+    if (cutFrom >= draftPoints.length) return;
+    draftPoints.splice(cutFrom);
+    if (terminusIndex !== null && terminusIndex >= cutFrom) terminusIndex = null;
+    if (startIndex !== null && startIndex >= cutFrom) startIndex = null;
+    rebuildRoute();
+    refresh();
+    renderStopList();
+    updateStatus();
+  });
+
+  const rejoinHeading = document.createElement("div");
+  rejoinHeading.className = "label-muted";
+  rejoinHeading.textContent = "Rejoin the parent route at:";
+
+  const rejoinList = document.createElement("div");
+  rejoinList.style.display = "flex";
+  rejoinList.style.flexDirection = "column";
+  rejoinList.style.gap = "2px";
+  rejoinList.style.maxHeight = "140px";
+  rejoinList.style.overflowY = "auto";
+
+  const rejoinAt = (parentPointIndex: number) => {
+    if (!variationParentRoute) return;
+    const toAppend = variationParentRoute.points.slice(parentPointIndex);
+    if (toAppend.length === 0 || draftPoints.length === 0) return;
+    insertAfterIndex = draftPoints.length - 1;
+    for (const p of toAppend) {
+      const point: DraftPoint =
+        p.kind === "stop"
+          ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat }
+          : { kind: "waypoint", lon: p.lon, lat: p.lat };
+      addPoint(point);
+    }
+    insertAfterIndex = null;
+    updateStatus();
+    renderStopList();
+  };
+
+  function renderVariationSection(): void {
+    if (!variationParentRoute) {
+      variationSection.style.display = "none";
+      return;
+    }
+    variationSection.style.display = "flex";
+    variationSection.innerHTML = "";
+    variationSection.appendChild(variationLetterRow);
+    variationSection.appendChild(divergeButton);
+    variationSection.appendChild(rejoinHeading);
+    rejoinList.innerHTML = "";
+    const parentStops = variationParentRoute.points
+      .map((p, i) => ({ p, i }))
+      .filter((x): x is { p: DraftStopPoint; i: number } => x.p.kind === "stop");
+    if (parentStops.length === 0) {
+      const none = document.createElement("div");
+      none.className = "label-muted";
+      none.textContent = "The parent route has no stops to rejoin at.";
+      rejoinList.appendChild(none);
+    } else {
+      for (const { p, i } of parentStops) {
+        const btn = document.createElement("button");
+        btn.className = "btn btn-icon";
+        btn.style.textAlign = "left";
+        btn.textContent = stopLabel(p.osmId);
+        btn.addEventListener("click", () => rejoinAt(i));
+        rejoinList.appendChild(btn);
+      }
+    }
+    variationSection.appendChild(rejoinList);
+  }
 
   // The single button for start/terminus stops (DESIGN.md §6), at the
   // bottom of the point list rather than a per-row action — it acts on
@@ -903,9 +1039,9 @@ export async function mountRouteDrawTool(
   return {
     el: panel,
     startDrawing: () => {
-      // A previous session left an *edit* in progress — starting a
-      // genuinely new route shouldn't carry that route's points over.
-      if (editingRouteId !== null) clear();
+      // A previous session left an *edit* or *variation* in progress —
+      // starting a genuinely new route shouldn't carry those points over.
+      if (editingRouteId !== null || variationParentRoute !== null) clear();
       setDrawing(true);
     },
     startEditing: (route: Route) => {
@@ -917,6 +1053,7 @@ export async function mountRouteDrawTool(
       terminusIndex = route.terminusIndex;
       startIndex = route.startIndex;
       editingRouteId = route.id;
+      variationParentRoute = null;
       insertAfterIndex = null;
       warning = null;
       numberInput.value = route.number;
@@ -926,6 +1063,49 @@ export async function mountRouteDrawTool(
       selectedDepotGroupId = route.depotGroupId;
       rebuildRoute();
       refresh();
+      renderVariationSection();
+      setDrawing(true);
+    },
+    startVariation: (parent: Route) => {
+      draftPoints = parent.points.map((p): DraftPoint =>
+        p.kind === "stop"
+          ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat }
+          : { kind: "waypoint", lon: p.lon, lat: p.lat },
+      );
+      terminusIndex = parent.terminusIndex;
+      startIndex = parent.startIndex;
+      editingRouteId = null;
+      variationParentRoute = parent;
+      insertAfterIndex = null;
+      warning = null;
+      nameInput.value = "";
+      colourInput.value = parent.colour;
+      map.setPaintProperty("route-draft-line", "line-color", parent.colour);
+      selectedDepotGroupId = parent.depotGroupId;
+      // The next unused letter among this parent's existing variations
+      // (A, B, C...) — a starting suggestion the player can override in
+      // either the number field or the letter field, independently.
+      numberInput.value = parent.number;
+      variationLetterInput.value = "";
+      void (async () => {
+        const siblings = await window.routes.list();
+        const usedLetters = new Set(
+          siblings.filter((r) => r.parentRouteId === parent.id && r.variationLetter).map((r) => r.variationLetter),
+        );
+        let letter = "A";
+        for (let code = 65; code <= 90; code++) {
+          const candidate = String.fromCharCode(code);
+          if (!usedLetters.has(candidate)) {
+            letter = candidate;
+            break;
+          }
+        }
+        numberInput.value = `${parent.number}${letter}`;
+        variationLetterInput.value = letter;
+      })();
+      rebuildRoute();
+      refresh();
+      renderVariationSection();
       setDrawing(true);
     },
   };
