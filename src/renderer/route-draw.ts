@@ -569,6 +569,11 @@ export async function mountRouteDrawTool(
         startIndex,
         colourInput.value,
         name,
+        // Variation parent/letter: not yet settable from this panel (a
+        // separate branch/rejoin editing workflow, DESIGN.md §6) — every
+        // route created or edited here stays a plain route for now.
+        null,
+        null,
       );
       saveStatusEl.style.color = "var(--text-secondary)";
       saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation}).`;
@@ -582,6 +587,9 @@ export async function mountRouteDrawTool(
         startIndex,
         colourInput.value,
         name,
+        // See the update() call above: no variation-picking UI yet.
+        null,
+        null,
       );
       // A second Save click without leaving drawing mode now updates this
       // same route instead of creating a duplicate with the same number.

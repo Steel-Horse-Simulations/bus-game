@@ -38,6 +38,8 @@ interface Route {
   colour: string;
   name: string | null;
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
+  parentRouteId: number | null;
+  variationLetter: string | null;
 }
 
 interface RoutesApi {
@@ -50,6 +52,8 @@ interface RoutesApi {
     startIndex: number | null,
     colour: string,
     name: string | null,
+    parentRouteId: number | null,
+    variationLetter: string | null,
   ): Promise<Route>;
   list(): Promise<Route[]>;
   update(
@@ -62,6 +66,8 @@ interface RoutesApi {
     startIndex: number | null,
     colour: string,
     name: string | null,
+    parentRouteId: number | null,
+    variationLetter: string | null,
   ): Promise<Route>;
   delete(id: number): Promise<void>;
   setPickupDropoffOverride(

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -54,6 +54,21 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- means unrestricted ("both"). Indexed against this route's own "points",
 -- so cleared on any edit the same way timing points are, since the points
 -- list (and therefore what a given pointIndex means) may have changed.
+-- "parent_route_id" (nullable, soft reference — no foreign-key cascade is
+-- enabled on this database, same as depot_group_id) is the route this is a
+-- lettered variation of (DESIGN.md §6 "Variations"), used for vehicle/
+-- livery inheritance and for finding sibling variations when computing the
+-- padding model (§7). Deliberately nullable even when "variation_letter"
+-- is set: "route 7A and 7B can exist with no 7," so a variation need not
+-- have a real parent row to point to. "variation_letter" (nullable TEXT)
+-- is the single letter identifying this as a lettered variation (e.g. "A"
+-- for "7A") — stored explicitly rather than parsed off the end of
+-- "number", so an express's leading "X" (a separate mechanism, DESIGN.md
+-- §6 "Express services") is never confused with a trailing variation
+-- letter. A route with both columns null is a plain route or an
+-- express-only route, not a variation. Set together by whatever UI creates
+-- a variation; not validated against "number" itself matching at this
+-- layer.
 CREATE TABLE IF NOT EXISTS routes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -64,7 +79,9 @@ CREATE TABLE IF NOT EXISTS routes (
   start_index INTEGER,
   colour TEXT NOT NULL DEFAULT '#3b82f6',
   name TEXT,
-  pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]'
+  pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
+  parent_route_id INTEGER REFERENCES routes(id),
+  variation_letter TEXT
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -163,6 +180,14 @@ export function openSave(path: string): SaveDb {
     // alongside the stop's own global default (an osm_overrides entry).
     // Existing rows get none, same as "no override set" already means.
     db.exec("ALTER TABLE routes ADD COLUMN pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 10) {
+    // v10 -> v11: routes gained an optional parent route + variation letter
+    // (DESIGN.md §6 "Variations"), ahead of the branch/rejoin editing UI.
+    // Existing rows get null in both, same as "not a variation" already
+    // means implicitly.
+    db.exec("ALTER TABLE routes ADD COLUMN parent_route_id INTEGER REFERENCES routes(id)");
+    db.exec("ALTER TABLE routes ADD COLUMN variation_letter TEXT");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -266,6 +291,8 @@ export interface Route {
   colour: string;
   name: string | null;
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
+  parentRouteId: number | null;
+  variationLetter: string | null;
 }
 
 interface RouteRow {
@@ -279,6 +306,8 @@ interface RouteRow {
   colour: string;
   name: string | null;
   pickup_dropoff_overrides: string;
+  parent_route_id: number | null;
+  variation_letter: string | null;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -293,6 +322,8 @@ function routeFromRow(row: RouteRow): Route {
     colour: row.colour,
     name: row.name,
     pickupDropoffOverrides: JSON.parse(row.pickup_dropoff_overrides) as RoutePickupDropoffOverride[],
+    parentRouteId: row.parent_route_id === null ? null : Number(row.parent_route_id),
+    variationLetter: row.variation_letter,
   };
 }
 
@@ -306,12 +337,25 @@ export function createRoute(
   startIndex: number | null,
   colour: string,
   name: string | null,
+  parentRouteId: number | null,
+  variationLetter: string | null,
 ): Route {
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, colour, name);
+    .run(
+      depotGroupId,
+      number,
+      JSON.stringify(points),
+      orientation,
+      terminusIndex,
+      startIndex,
+      colour,
+      name,
+      parentRouteId,
+      variationLetter,
+    );
   return {
     id: Number(result.lastInsertRowid),
     depotGroupId,
@@ -323,6 +367,8 @@ export function createRoute(
     colour,
     name,
     pickupDropoffOverrides: [],
+    parentRouteId,
+    variationLetter,
   };
 }
 
@@ -346,13 +392,40 @@ export function updateRoute(
   startIndex: number | null,
   colour: string,
   name: string | null,
+  parentRouteId: number | null,
+  variationLetter: string | null,
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]'
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?
      WHERE id = ?`,
-  ).run(depotGroupId, number, JSON.stringify(points), orientation, terminusIndex, startIndex, colour, name, id);
+  ).run(
+    depotGroupId,
+    number,
+    JSON.stringify(points),
+    orientation,
+    terminusIndex,
+    startIndex,
+    colour,
+    name,
+    parentRouteId,
+    variationLetter,
+    id,
+  );
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
-  return { id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name, pickupDropoffOverrides: [] };
+  return {
+    id,
+    depotGroupId,
+    number,
+    points,
+    orientation,
+    terminusIndex,
+    startIndex,
+    colour,
+    name,
+    pickupDropoffOverrides: [],
+    parentRouteId,
+    variationLetter,
+  };
 }
 
 // A per-route override of a stop's pick-up/set-down restriction (see the
@@ -383,16 +456,24 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
 }
 
 export function deleteRoute(db: SaveDb, id: number): void {
-  // No foreign-key cascade is enabled on this database, so a route's own
-  // timetables would otherwise survive orphaned — deleted explicitly here
-  // rather than left to accumulate.
+  // No cascade is defined on either reference to a route, so both need
+  // explicit handling before the row itself can go:
+  // - a route's own timetables would otherwise survive orphaned — deleted
+  //   outright, same as updateRoute already does on any point-list edit.
+  // - any variation whose parent_route_id points at this route gets that
+  //   link cleared to null rather than being deleted or blocked — DESIGN.md
+  //   §6 already treats a variation with no real parent as normal ("route
+  //   7A and 7B can exist with no 7"), so losing a parent is a valid state,
+  //   not an error. Node's sqlite enforces the FK by default, so without
+  //   this the DELETE below fails outright whenever a child exists.
+  db.prepare("UPDATE routes SET parent_route_id = NULL WHERE parent_route_id = ?").run(id);
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
   db.prepare("DELETE FROM routes WHERE id = ?").run(id);
 }

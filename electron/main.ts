@@ -163,7 +163,22 @@ function registerRouteHandlers(): void {
       startIndex: number | null,
       colour: string,
       name: string | null,
-    ) => createRoute(save, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name),
+      parentRouteId: number | null,
+      variationLetter: string | null,
+    ) =>
+      createRoute(
+        save,
+        depotGroupId,
+        number,
+        points,
+        orientation,
+        terminusIndex,
+        startIndex,
+        colour,
+        name,
+        parentRouteId,
+        variationLetter,
+      ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
   ipcMain.handle(
@@ -179,7 +194,23 @@ function registerRouteHandlers(): void {
       startIndex: number | null,
       colour: string,
       name: string | null,
-    ) => updateRoute(save, id, depotGroupId, number, points, orientation, terminusIndex, startIndex, colour, name),
+      parentRouteId: number | null,
+      variationLetter: string | null,
+    ) =>
+      updateRoute(
+        save,
+        id,
+        depotGroupId,
+        number,
+        points,
+        orientation,
+        terminusIndex,
+        startIndex,
+        colour,
+        name,
+        parentRouteId,
+        variationLetter,
+      ),
   );
   ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
   ipcMain.handle(

@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld("routes", {
     startIndex: number | null,
     colour: string,
     name: string | null,
+    parentRouteId: number | null,
+    variationLetter: string | null,
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -53,6 +55,8 @@ contextBridge.exposeInMainWorld("routes", {
       startIndex,
       colour,
       name,
+      parentRouteId,
+      variationLetter,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   update: (
@@ -65,6 +69,8 @@ contextBridge.exposeInMainWorld("routes", {
     startIndex: number | null,
     colour: string,
     name: string | null,
+    parentRouteId: number | null,
+    variationLetter: string | null,
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -77,6 +83,8 @@ contextBridge.exposeInMainWorld("routes", {
       startIndex,
       colour,
       name,
+      parentRouteId,
+      variationLetter,
     ) as Promise<Route>,
   delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
   setPickupDropoffOverride: (routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | null) =>

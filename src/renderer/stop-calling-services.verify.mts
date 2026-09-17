@@ -21,6 +21,8 @@ function route(id: number, number: string, points: { kind: "stop" | "waypoint"; 
     colour: "#000000",
     name: null,
     pickupDropoffOverrides: [],
+    parentRouteId: null,
+    variationLetter: null,
   };
 }
 

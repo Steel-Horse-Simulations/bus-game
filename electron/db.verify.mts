@@ -90,12 +90,58 @@ const route = createRoute(
   null,
   "#3b82f6",
   null,
+  null,
+  null,
 );
 assert(route.id > 0, "route created with a real id");
 assert(listRoutes(db).some((r) => r.id === route.id && r.number === "1"), "created route is listed");
 assert(route.colour === "#3b82f6", "route created with the requested colour");
 assert(route.name === null, "route created with no name defaults to null");
 assert(route.pickupDropoffOverrides.length === 0, "route created with no pickup/dropoff overrides");
+assert(route.parentRouteId === null && route.variationLetter === null, "a plain route has no parent/variation letter");
+
+// A lettered variation ("1A") pointing back at "1" as its parent.
+const variation = createRoute(
+  db,
+  g1.id,
+  "1A",
+  [
+    { kind: "stop", osmId: 111, lon: -3.2, lat: 55.95 },
+    { kind: "stop", osmId: 333, lon: -3.18, lat: 55.94 },
+  ],
+  "outbound",
+  null,
+  null,
+  "#3b82f6",
+  null,
+  route.id,
+  "A",
+);
+assert(variation.parentRouteId === route.id && variation.variationLetter === "A", "a variation stores its parent id and letter");
+assert(
+  listRoutes(db).find((r) => r.id === variation.id)?.parentRouteId === route.id,
+  "the variation's parent id round-trips through listRoutes",
+);
+
+// A variation with no real parent row ("route 7A and 7B can exist with no
+// 7," DESIGN.md §6) — parentRouteId stays null even though the letter is set.
+const orphanVariation = createRoute(
+  db,
+  g1.id,
+  "9A",
+  [{ kind: "stop", osmId: 444, lon: -3.2, lat: 55.95 }],
+  "outbound",
+  null,
+  null,
+  "#3b82f6",
+  null,
+  null,
+  "A",
+);
+assert(
+  orphanVariation.parentRouteId === null && orphanVariation.variationLetter === "A",
+  "a variation letter can be set with no parent route at all",
+);
 
 setRoutePickupDropoffOverride(db, route.id, 1, "setdown_only");
 let afterOverride = listRoutes(db).find((r) => r.id === route.id)!;
@@ -186,6 +232,8 @@ const updated = updateRoute(
   null,
   "#ef4444",
   "Gordon Street Express",
+  null,
+  null,
 );
 assert(updated.number === "1A" && updated.points.length === 3, "updateRoute changes the route's own fields");
 assert(updated.colour === "#ef4444", "updateRoute changes the route's colour too");
@@ -195,6 +243,26 @@ assert(
   "updateRoute clears pickup/dropoff overrides too, since the points list may have changed shape",
 );
 assert(listRoutes(db).find((r) => r.id === route.id)?.number === "1A", "the update is reflected in listRoutes");
+
+// updateRoute can also set the parent/letter, not just clear them.
+const relinked = updateRoute(
+  db,
+  orphanVariation.id,
+  g1.id,
+  "9A",
+  orphanVariation.points,
+  "outbound",
+  null,
+  null,
+  "#3b82f6",
+  null,
+  route.id,
+  "A",
+);
+assert(
+  relinked.parentRouteId === route.id && relinked.variationLetter === "A",
+  "updateRoute can attach a parent id and letter to a previously-orphan variation",
+);
 assert(
   listRouteTimetablesForRoute(db, route.id).length === 0,
   "updating a route clears its existing timetables, since they're indexed against the old point list",
@@ -205,11 +273,20 @@ assert(
 upsertRouteTimetable(db, route.id, "sunday", 600, 900, 60, [], [0, 200, 400], [0, 200, 400]);
 assert(listRouteTimetablesForRoute(db, route.id).length === 1, "a new timetable can be built after the update");
 
-// Deleting the route itself cleans up its remaining timetable too, since no
-// foreign-key cascade is enabled on this database.
+// route.id is still a real parent (variation and relinked both point at
+// it) — deleting it must clear those children's links, not fail outright
+// (Node's sqlite enforces the FK by default) or delete the children too.
 deleteRoute(db, route.id);
 assert(listRouteTimetablesForRoute(db, route.id).length === 0, "deleting a route also deletes its own timetables");
 assert(!listRoutes(db).some((r) => r.id === route.id), "deleted route no longer listed");
+assert(
+  listRoutes(db).find((r) => r.id === variation.id)?.parentRouteId === null,
+  "a variation whose parent was deleted has its parent id cleared to null, not left dangling",
+);
+assert(
+  listRoutes(db).some((r) => r.id === variation.id),
+  "the variation itself survives its parent's deletion — only the link is cleared",
+);
 
 db.close();
 
@@ -232,6 +309,8 @@ const route2 = createRoute(
   null,
   null,
   "#3b82f6",
+  null,
+  null,
   null,
 );
 upsertRouteTimetable(db, route2.id, "sunday", 700, 1000, 45, [], [0, 250], [0, 250]);
