@@ -28,15 +28,12 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
-  // §1: exactly two named vehicles state their capacity is "not stated" —
-  // the Cityline (both power variants) and two coaches (9700DD, Yutong
-  // coach) — this count should only grow if a real transcription gap is
-  // found, not silently.
+  // Every gap Q13 (OPEN-ITEMS.md) originally flagged — the Cityline, the
+  // Volvo 9700DD, and the Yutong coach (once confirmed to be GTe12/GTe14,
+  // not T12E/T15E) — is now filled in with real user-supplied figures.
+  // This count should only change deliberately, not silently.
   const unspecified = VEHICLE_MODELS.flatMap((v) => v.lengths.filter((l) => l.capacity.kind === "unspecified").map(() => v.id));
-  assert(
-    unspecified.length === 6,
-    `expected exactly 6 length variants with unspecified capacity (2 Cityline + 2 9700DD lengths + 2 Yutong coach lengths), got ${unspecified.length}: ${JSON.stringify(unspecified)}`,
-  );
+  assert(unspecified.length === 0, `expected no length variants with unspecified capacity left, got ${unspecified.length}: ${JSON.stringify(unspecified)}`);
 }
 
 {
@@ -45,6 +42,35 @@ function assert(cond: boolean, msg: string): void {
   assert(axleCountForLength(13) === "tri-axle", "13m is tri-axle");
   assert(axleCountForLength(12.4) === "twin-axle", "the Volvo 9700's 12.4m length is twin-axle");
   assert(axleCountForLength(15) === "tri-axle", "the Volvo 9700's 15m length is tri-axle");
+}
+
+{
+  const coach = findVehicleModel("yutong-coach")!;
+  const gte12 = coach.lengths.find((l) => l.lengthM === 12)!;
+  const gte14 = coach.lengths.find((l) => l.lengthM === 14)!;
+  assert(gte14 !== undefined, "the Yutong coach's longer length is 14m (GTe14), not the old 15m (T15E)");
+  assert(gte12.capacity.kind === "seatedOnly" && gte12.capacity.seated === 50, "the Yutong GTe12 seats 50");
+  assert(gte14.capacity.kind === "seatedOnly" && gte14.capacity.seated === 57, "the Yutong GTe14 seats 57");
+  assert(axleCountForLength(gte14.lengthM) === "tri-axle", "14m is over the 12.9m threshold, so the GTe14 is correctly tri-axle");
+}
+
+{
+  const dd = findVehicleModel("volvo-9700dd")!;
+  assert(dd.lengths.every((l) => l.capacity.kind === "seatedOnly"), "the Volvo 9700DD's capacity is now a real seatedOnly figure, not unspecified");
+  assert(dd.lengths.every((l) => l.capacity.kind === "seatedOnly" && l.capacity.seated === 81), "the Volvo 9700DD seats 81, the same at both lengths");
+}
+
+{
+  const cityline = findVehicleModel("evm-cityline-diesel")!;
+  const capacity = cityline.lengths[0].capacity;
+  assert(capacity.kind === "configDependent", "the EVM Cityline's capacity depends on its fit-out configuration, not a single fixed figure");
+  if (capacity.kind === "configDependent") {
+    assert(capacity.configs.length === 4, "the Cityline has exactly 4 real fit-out configurations (stepped/low-floor x with/without a wheelchair bay)");
+    const lowFloorWithBay = capacity.configs.find((c) => c.label === "Low floor, wheelchair bay fitted")!;
+    assert(lowFloorWithBay.seated === 26 && lowFloorWithBay.standing === 4 && lowFloorWithBay.wheelchairSpaces === 1, "the low-floor, wheelchair-equipped Cityline config matches the user's figures");
+    const steppedNoBay = capacity.configs.find((c) => c.label === "Stepped entrance, no wheelchair bay")!;
+    assert(steppedNoBay.seated === 16 && steppedNoBay.wheelchairSpaces === 0, "the stepped, no-wheelchair-bay Cityline config matches the user's figures");
+  }
 }
 
 {

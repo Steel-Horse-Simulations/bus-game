@@ -40,6 +40,15 @@ export type Capacity =
       standingWithWheelchair: number;
       standingBayConverted: number;
     }
+  | {
+      // The EVM Cityline: distinct real fit-out configurations (low floor
+      // vs stepped entrance, with or without a wheelchair bay fitted) —
+      // unlike the Evora above, this isn't one vehicle's capacity flexing
+      // live at runtime, it's a purchase-time choice of which configuration
+      // was built.
+      kind: "configDependent";
+      configs: { label: string; seated: number; standing: number; wheelchairSpaces: number; note?: string }[];
+    }
   | { kind: "unspecified" }; // a real gap in VEHICLE-SPECS.md — flagged, not guessed
 
 export interface LengthVariant {
@@ -334,11 +343,23 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     notes: [
       "Fixed length 7.4m (7367mm).",
       "No toilet ever available — if the total journey is over 4 hours, must stop after 3 hours for a toilet break; under 4 hours can run straight through.",
-      "Low floor is a retrofittable option; defaults to steps.",
-      "Seated/standing capacity not stated in VEHICLE-SPECS.md — flagged, not guessed.",
+      "Low floor is a retrofittable option; defaults to steps — capacity depends on which is fitted, and separately on whether a wheelchair bay is fitted (confirmed by the user).",
     ],
     lengths: [
-      { lengthM: 7.4, fleetNumberRange: "40,000s", capacity: { kind: "unspecified" }, energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }] },
+      {
+        lengthM: 7.4,
+        fleetNumberRange: "40,000s",
+        capacity: {
+          kind: "configDependent",
+          configs: [
+            { label: "Stepped entrance, no wheelchair bay", seated: 16, standing: 0, wheelchairSpaces: 0, note: "Standing not stated by the user for the stepped-entrance version — assumed 0 (a stepped/high-floor minibus not carrying standees), not yet confirmed." },
+            { label: "Stepped entrance, wheelchair bay fitted", seated: 14, standing: 0, wheelchairSpaces: 1, note: "Standing not stated by the user for the stepped-entrance version — assumed 0, not yet confirmed." },
+            { label: "Low floor, no wheelchair bay", seated: 16, standing: 8, wheelchairSpaces: 0 },
+            { label: "Low floor, wheelchair bay fitted", seated: 26, standing: 4, wheelchairSpaces: 1 },
+          ],
+        },
+        energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
+      },
     ],
   },
   {
@@ -351,11 +372,23 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     notes: [
       "Fixed length 7.4m (7367mm).",
       "No toilet ever available — same 3-hour/4-hour rule as the diesel Cityline.",
-      "Low floor is a retrofittable option; defaults to steps.",
-      "Seated/standing capacity not stated in VEHICLE-SPECS.md — flagged, not guessed.",
+      "Low floor is a retrofittable option; defaults to steps — capacity depends on which is fitted, and separately on whether a wheelchair bay is fitted (confirmed by the user).",
     ],
     lengths: [
-      { lengthM: 7.4, fleetNumberRange: "40,000s", capacity: { kind: "unspecified" }, energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }] },
+      {
+        lengthM: 7.4,
+        fleetNumberRange: "40,000s",
+        capacity: {
+          kind: "configDependent",
+          configs: [
+            { label: "Stepped entrance, no wheelchair bay", seated: 16, standing: 0, wheelchairSpaces: 0, note: "Standing not stated by the user for the stepped-entrance version — assumed 0 (a stepped/high-floor minibus not carrying standees), not yet confirmed." },
+            { label: "Stepped entrance, wheelchair bay fitted", seated: 14, standing: 0, wheelchairSpaces: 1, note: "Standing not stated by the user for the stepped-entrance version — assumed 0, not yet confirmed." },
+            { label: "Low floor, no wheelchair bay", seated: 16, standing: 8, wheelchairSpaces: 0 },
+            { label: "Low floor, wheelchair bay fitted", seated: 26, standing: 4, wheelchairSpaces: 1 },
+          ],
+        },
+        energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
+      },
     ],
   },
 
@@ -422,11 +455,10 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       "A separate buying menu entry from the single-deck 9700, not merged — single vs double deck is a fundamental distinction.",
       "Both lengths are tri-axle.",
       "Airlink 100 requires the 13m version specifically.",
-      "Seated capacity not stated in VEHICLE-SPECS.md — flagged, not guessed.",
     ],
     lengths: [
-      { lengthM: 13, fleetNumberRange: "50,000s", capacity: { kind: "unspecified" }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
-      { lengthM: 14.8, fleetNumberRange: "50,000s", capacity: { kind: "unspecified" }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }] },
+      { lengthM: 13, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 81 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
+      { lengthM: 14.8, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 81 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }] },
     ],
   },
   {
@@ -437,29 +469,28 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     topSpeedMph: 62,
     basePriceGBP: 310_000,
     notes: [
-      "One buying menu entry with a length dropdown selecting between two real models (T12E / T15E).",
-      "Seated capacity not stated in VEHICLE-SPECS.md — flagged, not guessed.",
+      "One buying menu entry with a length dropdown selecting between two real models (GTe12 / GTe14).",
     ],
     lengths: [
       {
         lengthM: 12,
         fleetNumberRange: "50,000s",
-        capacity: { kind: "unspecified" },
+        capacity: { kind: "seatedOnly", seated: 50 },
         energyOptions: [
-          { label: "T12E battery (smaller)", capacity: 399, unit: "kWh", rangeMiles: 320 },
-          { label: "T12E battery (larger)", capacity: 465, unit: "kWh", rangeMiles: 370 },
+          { label: "GTe12 battery (smaller)", capacity: 399, unit: "kWh", rangeMiles: 320 },
+          { label: "GTe12 battery (larger)", capacity: 465, unit: "kWh", rangeMiles: 370 },
         ],
-        notes: ["T12E, twin-axle."],
+        notes: ["GTe12, twin-axle."],
       },
       {
-        lengthM: 15,
+        lengthM: 14,
         fleetNumberRange: "50,000s",
-        capacity: { kind: "unspecified" },
+        capacity: { kind: "seatedOnly", seated: 57 },
         energyOptions: [
-          { label: "T15E battery (smaller)", capacity: 621, unit: "kWh", rangeMiles: 335 },
-          { label: "T15E battery (larger)", capacity: 704, unit: "kWh", rangeMiles: 380 },
+          { label: "GTe14 battery (smaller)", capacity: 621, unit: "kWh", rangeMiles: 335 },
+          { label: "GTe14 battery (larger)", capacity: 704, unit: "kWh", rangeMiles: 380 },
         ],
-        notes: ["T15E, tri-axle."],
+        notes: ["GTe14, tri-axle."],
       },
     ],
   },
