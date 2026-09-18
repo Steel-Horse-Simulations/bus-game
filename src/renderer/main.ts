@@ -10,6 +10,7 @@ import { registerSupportVehicleIcons } from "./support-vehicle-icons";
 import { mountDepotGroupsPanel } from "./depot-groups-panel";
 import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
+import { mountVehicleCataloguePanel } from "./vehicle-catalogue-panel";
 import { loadRouter } from "./router";
 
 // MapLibre auto-detects its worker script from import.meta.url, which only
@@ -54,6 +55,7 @@ map.addControl(
 );
 registerMapIcons(map);
 mountDepotGroupsPanel();
+mountVehicleCataloguePanel();
 (window as unknown as { __map: maplibregl.Map }).__map = map;
 
 init().then(async () => {
