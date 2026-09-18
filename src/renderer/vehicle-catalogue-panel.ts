@@ -30,37 +30,11 @@ function formatCapacity(capacity: Capacity): string {
       return `${capacity.seated} seated`;
     case "maxCapacity":
       return `max ${capacity.maxCapacity} — max-seating ${capacity.maxSeated} seated, or max-standing ${capacity.maxStanding} standing`;
-    case "wheelchairConvertible":
-      return `${capacity.seated} seated, ${capacity.standingWithWheelchair} standing with a wheelchair aboard / ${capacity.standingBayConverted} standing with the bay converted`;
-    case "configDependent":
-      return `depends on fit-out — see below`;
+    case "wheelchairBayDependent":
+      return `${capacity.bayConverted.seated} seated, ${capacity.bayConverted.standing} standing with the bay converted / ${capacity.bayInUse.seated} seated, ${capacity.bayInUse.standing} standing with a wheelchair user aboard`;
     case "unspecified":
       return "not stated in VEHICLE-SPECS.md";
   }
-}
-
-function buildConfigDependentSection(capacity: Extract<Capacity, { kind: "configDependent" }>): HTMLElement {
-  const list = document.createElement("ul");
-  list.style.margin = "4px 0";
-  list.style.paddingLeft = "18px";
-  for (const config of capacity.configs) {
-    const li = document.createElement("li");
-    const wheelchairText = config.wheelchairSpaces === 0 ? "no wheelchair space" : `${config.wheelchairSpaces} wheelchair space`;
-    const label = document.createElement("span");
-    label.style.fontWeight = "600";
-    label.textContent = `${config.label}: `;
-    li.appendChild(label);
-    li.appendChild(document.createTextNode(`${config.seated} seated, ${config.standing} standing, ${wheelchairText}`));
-    if (config.note) {
-      const note = document.createElement("div");
-      note.style.color = "var(--text-muted)";
-      note.style.fontStyle = "italic";
-      note.textContent = config.note;
-      li.appendChild(note);
-    }
-    list.appendChild(li);
-  }
-  return list;
 }
 
 function formatEnergyOption(o: EnergyOption): string {
@@ -70,6 +44,7 @@ function formatEnergyOption(o: EnergyOption): string {
 
 function formatLengthHeading(vehicle: VehicleModel, length: LengthVariant): string {
   const parts = [`${length.lengthM}m`, `(${length.fleetNumberRange})`];
+  if (length.variantLabel) parts.push(`— ${length.variantLabel}`);
   if (vehicle.category.includes("coaches")) parts.push(`— ${axleCountForLength(length.lengthM)}`);
   return parts.join(" ");
 }
@@ -88,10 +63,6 @@ function buildLengthSection(vehicle: VehicleModel, length: LengthVariant): HTMLE
   capacityLine.style.color = "var(--text-muted)";
   capacityLine.textContent = formatCapacity(length.capacity);
   section.appendChild(capacityLine);
-
-  if (length.capacity.kind === "configDependent") {
-    section.appendChild(buildConfigDependentSection(length.capacity));
-  }
 
   const energyList = document.createElement("ul");
   energyList.style.margin = "4px 0";

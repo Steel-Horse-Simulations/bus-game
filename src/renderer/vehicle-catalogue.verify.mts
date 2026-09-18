@@ -55,32 +55,50 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
+  // Genuinely different seat counts at the two lengths — the earlier
+  // blanket "81 at both lengths" guess was corrected: 75 at 13m, 81 at
+  // 14.8m.
   const dd = findVehicleModel("volvo-9700dd")!;
-  assert(dd.lengths.every((l) => l.capacity.kind === "seatedOnly"), "the Volvo 9700DD's capacity is now a real seatedOnly figure, not unspecified");
-  assert(dd.lengths.every((l) => l.capacity.kind === "seatedOnly" && l.capacity.seated === 81), "the Volvo 9700DD seats 81, the same at both lengths");
+  const short = dd.lengths.find((l) => l.lengthM === 13)!;
+  const long = dd.lengths.find((l) => l.lengthM === 14.8)!;
+  assert(short.capacity.kind === "seatedOnly" && short.capacity.seated === 75, "the 13m Volvo 9700DD seats 75");
+  assert(long.capacity.kind === "seatedOnly" && long.capacity.seated === 81, "the 14.8m Volvo 9700DD seats 81 — genuinely different from the 13m, not the same figure at both lengths");
 }
 
 {
+  // The EVM Cityline: every vehicle in the catalogue always has its
+  // wheelchair bay (corrected mid-session — there's no "no bay fitted"
+  // configuration at all), so capacity is the same live wheelchairBay-
+  // Dependent kind the Evora uses, not a purchase-time fit-out choice.
+  // Low floor vs stepped entrance is real (a retrofittable option), so
+  // they're two separate length variants sharing the same 7.4m length,
+  // distinguished by variantLabel.
   const cityline = findVehicleModel("evm-cityline-diesel")!;
-  const capacity = cityline.lengths[0].capacity;
-  assert(capacity.kind === "configDependent", "the EVM Cityline's capacity depends on its fit-out configuration, not a single fixed figure");
-  if (capacity.kind === "configDependent") {
-    assert(capacity.configs.length === 4, "the Cityline has exactly 4 real fit-out configurations (stepped/low-floor x with/without a wheelchair bay)");
-    const lowFloorWithBay = capacity.configs.find((c) => c.label === "Low floor, wheelchair bay fitted")!;
-    assert(lowFloorWithBay.seated === 26 && lowFloorWithBay.standing === 4 && lowFloorWithBay.wheelchairSpaces === 1, "the low-floor, wheelchair-equipped Cityline config matches the user's figures");
-    const steppedNoBay = capacity.configs.find((c) => c.label === "Stepped entrance, no wheelchair bay")!;
-    assert(steppedNoBay.seated === 16 && steppedNoBay.wheelchairSpaces === 0, "the stepped, no-wheelchair-bay Cityline config matches the user's figures");
+  assert(cityline.lengths.length === 2, "the Cityline has two real builds (stepped entrance, low floor) at the same 7.4m length");
+
+  const stepped = cityline.lengths.find((l) => l.variantLabel === "Stepped entrance")!;
+  assert(stepped.capacity.kind === "wheelchairBayDependent", "the stepped Cityline's capacity is the dynamic wheelchair-bay-dependent kind");
+  if (stepped.capacity.kind === "wheelchairBayDependent") {
+    assert(stepped.capacity.bayConverted.seated === 16 && stepped.capacity.bayConverted.standing === 0, "the stepped Cityline seats 16 with the bay converted, no standing at all");
+    assert(stepped.capacity.bayInUse.seated === 14 && stepped.capacity.bayInUse.standing === 0, "the stepped Cityline seats 14 with a wheelchair user aboard, still no standing — a seat folds away instead");
+  }
+
+  const lowFloor = cityline.lengths.find((l) => l.variantLabel === "Low floor")!;
+  assert(lowFloor.capacity.kind === "wheelchairBayDependent", "the low-floor Cityline's capacity is the dynamic wheelchair-bay-dependent kind");
+  if (lowFloor.capacity.kind === "wheelchairBayDependent") {
+    assert(lowFloor.capacity.bayConverted.seated === 16 && lowFloor.capacity.bayConverted.standing === 8, "the low-floor Cityline seats 16 and stands 8 with the bay converted");
+    assert(lowFloor.capacity.bayInUse.seated === 16 && lowFloor.capacity.bayInUse.standing === 4, "the low-floor Cityline keeps the same 16 seats but only stands 4 with a wheelchair user aboard — unlike the stepped build, seated capacity doesn't change here");
   }
 }
 
 {
   const evora = findVehicleModel("mcv-evora")!;
   const short = evora.lengths.find((l) => l.lengthM === 10.8)!;
-  assert(short.capacity.kind === "wheelchairConvertible", "the Evora's capacity is the dynamic wheelchair-convertible kind, not a fixed configurator choice");
-  if (short.capacity.kind === "wheelchairConvertible") {
-    assert(short.capacity.seated === 35, "the 10.8m Evora seats 35");
-    assert(short.capacity.standingWithWheelchair === 34, "the 10.8m Evora stands 34 with a wheelchair aboard");
-    assert(short.capacity.standingBayConverted === 43, "the 10.8m Evora stands 43 with the bay converted");
+  assert(short.capacity.kind === "wheelchairBayDependent", "the Evora's capacity is the dynamic wheelchair-bay-dependent kind, not a fixed configurator choice");
+  if (short.capacity.kind === "wheelchairBayDependent") {
+    assert(short.capacity.bayConverted.seated === 35 && short.capacity.bayInUse.seated === 35, "the 10.8m Evora seats 35 regardless of bay state");
+    assert(short.capacity.bayInUse.standing === 34, "the 10.8m Evora stands 34 with a wheelchair aboard");
+    assert(short.capacity.bayConverted.standing === 43, "the 10.8m Evora stands 43 with the bay converted");
   }
 }
 

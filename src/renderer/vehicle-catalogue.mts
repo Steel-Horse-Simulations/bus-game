@@ -31,29 +31,30 @@ export type Capacity =
   | { kind: "seatedOnly"; seated: number } // coaches — no standing at all
   | { kind: "maxCapacity"; maxCapacity: number; maxSeated: number; maxStanding: number }
   | {
-      // The MCV Evora: the wheelchair bay itself converts to standing space
-      // when unoccupied, so effective standing capacity is dynamic at
-      // runtime (confirmed by the user — not a purchase-time configurator
-      // choice, see the vehicle's own "notes").
-      kind: "wheelchairConvertible";
-      seated: number;
-      standingWithWheelchair: number;
-      standingBayConverted: number;
-    }
-  | {
-      // The EVM Cityline: distinct real fit-out configurations (low floor
-      // vs stepped entrance, with or without a wheelchair bay fitted) —
-      // unlike the Evora above, this isn't one vehicle's capacity flexing
-      // live at runtime, it's a purchase-time choice of which configuration
-      // was built.
-      kind: "configDependent";
-      configs: { label: string; seated: number; standing: number; wheelchairSpaces: number; note?: string }[];
+      // Every vehicle in the catalogue has a wheelchair bay (confirmed by
+      // the user, correcting an earlier wrong assumption that some Cityline
+      // builds had none) — its standing capacity flexes live at runtime
+      // depending on whether that bay is currently occupied, not a
+      // purchase-time configurator choice. Seated capacity can *also* vary
+      // between the two states on some vehicles (the Cityline's stepped
+      // entrance: a fixed seat folds away to make room for the wheelchair,
+      // since it has no standing capacity to trade against at all), so
+      // both figures are captured per state rather than assuming seated is
+      // always fixed.
+      kind: "wheelchairBayDependent";
+      bayConverted: { seated: number; standing: number }; // no wheelchair user aboard
+      bayInUse: { seated: number; standing: number }; // a wheelchair user occupies the bay
     }
   | { kind: "unspecified" }; // a real gap in VEHICLE-SPECS.md — flagged, not guessed
 
 export interface LengthVariant {
   lengthM: number;
   fleetNumberRange: string;
+  // Distinguishes two real builds that share the same length (the
+  // Cityline's low-floor vs stepped-entrance conversion, DESIGN.md's own
+  // "Low floor is a retrofittable option; defaults to steps") — undefined
+  // everywhere else, where a length uniquely identifies one real build.
+  variantLabel?: string;
   capacity: Capacity;
   energyOptions: EnergyOption[];
   // A hydrogen vehicle's fixed buffer battery, alongside its tank options
@@ -318,14 +319,14 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.8,
         fleetNumberRange: "30,000s",
-        capacity: { kind: "wheelchairConvertible", seated: 35, standingWithWheelchair: 34, standingBayConverted: 43 },
+        capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 35, standing: 43 }, bayInUse: { seated: 35, standing: 34 } },
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 990 }],
         notes: ["69 + wheelchair space, or 78 total with the bay converted to standing."],
       },
       {
         lengthM: 12.9,
         fleetNumberRange: "20,000s",
-        capacity: { kind: "wheelchairConvertible", seated: 47, standingWithWheelchair: 38, standingBayConverted: 46 },
+        capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 47, standing: 46 }, bayInUse: { seated: 47, standing: 38 } },
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 900 }],
         notes: ["86 total with a wheelchair aboard, or 93 total with the bay converted to standing."],
       },
@@ -343,20 +344,33 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     notes: [
       "Fixed length 7.4m (7367mm).",
       "No toilet ever available — if the total journey is over 4 hours, must stop after 3 hours for a toilet break; under 4 hours can run straight through.",
-      "Low floor is a retrofittable option; defaults to steps — capacity depends on which is fitted, and separately on whether a wheelchair bay is fitted (confirmed by the user).",
+      "Low floor is a retrofittable option; defaults to steps (confirmed by the user) — the two builds carry genuinely different capacity, not just an accessibility flag.",
+      "Every vehicle in the catalogue always has its wheelchair bay (confirmed by the user) — capacity varies only with whether it's currently occupied.",
     ],
     lengths: [
       {
         lengthM: 7.4,
+        variantLabel: "Stepped entrance",
         fleetNumberRange: "40,000s",
         capacity: {
-          kind: "configDependent",
-          configs: [
-            { label: "Stepped entrance, no wheelchair bay", seated: 16, standing: 0, wheelchairSpaces: 0, note: "Standing not stated by the user for the stepped-entrance version — assumed 0 (a stepped/high-floor minibus not carrying standees), not yet confirmed." },
-            { label: "Stepped entrance, wheelchair bay fitted", seated: 14, standing: 0, wheelchairSpaces: 1, note: "Standing not stated by the user for the stepped-entrance version — assumed 0, not yet confirmed." },
-            { label: "Low floor, no wheelchair bay", seated: 16, standing: 8, wheelchairSpaces: 0 },
-            { label: "Low floor, wheelchair bay fitted", seated: 26, standing: 4, wheelchairSpaces: 1 },
-          ],
+          kind: "wheelchairBayDependent",
+          bayConverted: { seated: 16, standing: 0 },
+          bayInUse: { seated: 14, standing: 0 },
+        },
+        energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
+        notes: [
+          "No standing capacity at all (confirmed by the user) — a fixed seat folds away to make room when the wheelchair bay is occupied, rather than trading against standing space.",
+          "Used only for private hire work (confirmed by the user) — private hire's own +2-seat rule (§1) applies via the same seats-as-shippable-inventory system, not yet built.",
+        ],
+      },
+      {
+        lengthM: 7.4,
+        variantLabel: "Low floor",
+        fleetNumberRange: "40,000s",
+        capacity: {
+          kind: "wheelchairBayDependent",
+          bayConverted: { seated: 16, standing: 8 },
+          bayInUse: { seated: 16, standing: 4 },
         },
         energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
       },
@@ -372,20 +386,33 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     notes: [
       "Fixed length 7.4m (7367mm).",
       "No toilet ever available — same 3-hour/4-hour rule as the diesel Cityline.",
-      "Low floor is a retrofittable option; defaults to steps — capacity depends on which is fitted, and separately on whether a wheelchair bay is fitted (confirmed by the user).",
+      "Low floor is a retrofittable option; defaults to steps (confirmed by the user) — the two builds carry genuinely different capacity, not just an accessibility flag.",
+      "Every vehicle in the catalogue always has its wheelchair bay (confirmed by the user) — capacity varies only with whether it's currently occupied.",
     ],
     lengths: [
       {
         lengthM: 7.4,
+        variantLabel: "Stepped entrance",
         fleetNumberRange: "40,000s",
         capacity: {
-          kind: "configDependent",
-          configs: [
-            { label: "Stepped entrance, no wheelchair bay", seated: 16, standing: 0, wheelchairSpaces: 0, note: "Standing not stated by the user for the stepped-entrance version — assumed 0 (a stepped/high-floor minibus not carrying standees), not yet confirmed." },
-            { label: "Stepped entrance, wheelchair bay fitted", seated: 14, standing: 0, wheelchairSpaces: 1, note: "Standing not stated by the user for the stepped-entrance version — assumed 0, not yet confirmed." },
-            { label: "Low floor, no wheelchair bay", seated: 16, standing: 8, wheelchairSpaces: 0 },
-            { label: "Low floor, wheelchair bay fitted", seated: 26, standing: 4, wheelchairSpaces: 1 },
-          ],
+          kind: "wheelchairBayDependent",
+          bayConverted: { seated: 16, standing: 0 },
+          bayInUse: { seated: 14, standing: 0 },
+        },
+        energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
+        notes: [
+          "No standing capacity at all (confirmed by the user) — a fixed seat folds away to make room when the wheelchair bay is occupied, rather than trading against standing space.",
+          "Used only for private hire work (confirmed by the user) — private hire's own +2-seat rule (§1) applies via the same seats-as-shippable-inventory system, not yet built.",
+        ],
+      },
+      {
+        lengthM: 7.4,
+        variantLabel: "Low floor",
+        fleetNumberRange: "40,000s",
+        capacity: {
+          kind: "wheelchairBayDependent",
+          bayConverted: { seated: 16, standing: 8 },
+          bayInUse: { seated: 16, standing: 4 },
         },
         energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
       },
@@ -457,8 +484,13 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       "Airlink 100 requires the 13m version specifically.",
     ],
     lengths: [
-      { lengthM: 13, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 81 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
-      { lengthM: 14.8, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 81 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }] },
+      { lengthM: 13, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
+      {
+        lengthM: 14.8,
+        fleetNumberRange: "50,000s",
+        capacity: { kind: "seatedOnly", seated: 81 },
+        energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }],
+      },
     ],
   },
   {
