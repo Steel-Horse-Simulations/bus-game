@@ -13,11 +13,13 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 | # | Question | Blocks | Notes |
 |---|---|---|---|
 | Q12 | Pantograph/battery-buffer financing (OPERATIONS.md §15) was asked to match vehicle finance's deposit percentage, term length and interest premium (§3) — but §3 doesn't actually specify any of those three, only that lease-to-own totals ~10% more than buying outright. What should the real deposit/term/interest figures be, for both this and vehicle leasing itself? | Battery-buffer finance details, and arguably vehicle finance's own numeric detail | Not guessed at — see OPERATIONS.md §15's "Financing" paragraph |
+| Q13 | VEHICLE-SPECS.md gives no seated/standing capacity figures at all for three vehicles — the EVM Cityline (both diesel and electric), the Volvo 9700DD, and the Yutong coach (T12E/T15E) — despite the file's own §5 claiming no gaps remain. Found while transcribing the catalogue into `vehicle-catalogue.mts` (T38). What are the real figures? | The vehicle catalogue's completeness — currently shown in-game as "not stated in VEHICLE-SPECS.md" rather than guessed | Not guessed at — see the vehicle catalogue panel's own "unspecified" capacity entries |
 
 ## Outstanding tasks
 
 | # | Task | Owner | Status |
 |---|---|---|---|
+| T38 | Vehicle catalogue data model + read-only browsable view (Phase 3, from `VEHICLE-SPECS.md`). **Done (2026-09-18)** — see Settled below for the full writeup | Claude Code | Done |
 | T37 | Vehicles driving the real graph (Phase 3 kickoff, DESIGN.md §2). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T35 | Time-of-day bands for route timetables (DESIGN.md §7). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
@@ -1981,3 +1983,39 @@ argued about, not a summary of the design.
   correctly on a real street; the day-type selector switches correctly.
   Zero console errors. `cargo test --workspace`, `tsc --noEmit`, `npm run
   build`, and the new verify script all pass.
+- **T38 done: vehicle catalogue data model + read-only browsable view
+  (Phase 3), from the newly-supplied `VEHICLE-SPECS.md` (T32).** The
+  user's own choice of scope: prove the data model reads correctly before
+  wiring in purchasing, a fleet/ownership table, or depot assignment. New
+  `vehicle-catalogue.mts` transcribes every model (22 models, 40 length
+  variants) as static typed data — not derived from OSM/pipeline data like
+  everything else in this project, so a plain module rather than a Rust/
+  wasm artefact. A `Capacity` union covers the catalogue's real variety:
+  plain seated+standing, coaches' seated-only, the max-seating/max-
+  standing configurator mode (StreetDeck/Kite families), the MCV Evora's
+  dynamic wheelchair-bay conversion (confirmed by the user as a live,
+  per-journey state depending on whether a wheelchair passenger is
+  currently aboard — not a purchase-time configurator choice), and
+  `"unspecified"` for a real gap VEHICLE-SPECS.md itself doesn't state,
+  rather than a guessed number. `axleCountForLength` derives twin/tri-axle
+  from a coach's own length rather than storing it, per §1's "not a
+  selectable option" rule. 22 unit tests, one of which caught a real bug
+  before it ever reached the UI: `generalOptionsFor`'s two-filter chain
+  excluded the EVM Cityline's own low-floor option in its first pass, so
+  the second pass could never let it back in — fixed to a single filter
+  with an explicit early branch. New `vehicle-catalogue-panel.ts` adds a
+  "Vehicles" toggle (bottom-left, beside the route panel) opening a
+  browsable list grouped by fleet-number range exactly like VEHICLE-
+  SPECS.md's own §3 headings; each vehicle expands to its full detail —
+  chassis, top speed, base price, every length's capacity/fuel-or-battery
+  options/notes, and the general options that actually apply to its power
+  type. No save-file interaction, no purchasing, no fleet table yet.
+  **Real gaps found while transcribing, flagged as Q13 rather than
+  guessed at**: seated/standing capacity is genuinely not stated anywhere
+  in VEHICLE-SPECS.md for the EVM Cityline (either power variant), the
+  Volvo 9700DD, or the Yutong coach — despite the source file's own §5
+  saying no gaps remain. Verified live via CDP against the real running
+  app: the panel opens, lists all 22 models under the correct category
+  headings, and expanding the MCV Evora shows the wheelchair-bay note and
+  the correct 35/34/43 figures, with zero console errors. `tsc --noEmit`,
+  `npm run build`, and the new verify script (22 checks) all pass.
