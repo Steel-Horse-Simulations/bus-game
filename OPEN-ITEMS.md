@@ -2019,22 +2019,29 @@ argued about, not a summary of the design.
   the correct 35/34/43 figures, with zero console errors. `tsc --noEmit`,
   `npm run build`, and the new verify script (22 checks) all pass.
 - **Q13 answered — all three vehicle capacity gaps filled in with real
-  figures.** Volvo 9700DD: 81 seated (seatedOnly), same at both lengths.
-  EVM Cityline: capacity genuinely depends on which of two real fit-out
-  choices was built (stepped entrance vs low floor), each with or without
-  a wheelchair bay fitted — a new `Capacity` union member,
-  `"configDependent"`, covers this (distinct from the Evora's
-  `"wheelchairConvertible"`, a live runtime state rather than a
-  purchase-time choice): stepped/no bay 16 seated, stepped/with bay 14
-  seated, low floor/no bay 16 seated + 8 standing, low floor/with bay 26
-  seated + 4 standing. Standing wasn't stated for either stepped
-  configuration — recorded as an explicit, flagged assumption of 0 (a
-  stepped/high-floor minibus not carrying standees), not yet confirmed,
-  following VEHICLE-SPECS.md's own precedent for the Enviro400EV's
-  "estimated, not a real figure" standing note. Yutong coach: asked
-  directly rather than guessed whether "GTe12"/"GTe14" were corrected
-  names for "T12E"/"T15E" or different vehicles — confirmed as corrected
-  names, with GTe14 also a real length correction (14m, not 15m, still
-  correctly tri-axle either way). GTe12 seats 50, GTe14 seats 57. No
-  unspecified capacity remains anywhere in the catalogue; verify script
-  now 32 checks.
+  figures**, corrected once more mid-session after an initial wrong model
+  (kept here as the final state, not the intermediate one). Volvo 9700DD:
+  genuinely different seat counts at its two lengths, not one figure
+  applied to both — 75 seated at 13m, 81 seated at 14.8m. EVM Cityline:
+  the user corrected a wrong assumption of mine directly — every vehicle
+  in the catalogue always has its wheelchair bay, there's no "bay fitted
+  or not" purchase choice at all; capacity varies only with whether the
+  bay is currently occupied, live at runtime, the same pattern the Evora
+  already used. Replaced two separate capacity kinds
+  (`"wheelchairConvertible"` for the Evora, `"configDependent"` for the
+  Cityline) with one general `"wheelchairBayDependent"` kind covering
+  both, since the Cityline's stepped-entrance build loses a *seat* (not
+  standing space — it has none at all) when the bay is occupied, a
+  pattern the Evora-specific shape couldn't express. Low floor vs stepped
+  entrance turned out to be two genuinely different real builds (capacity
+  differs, not just an accessibility flag), so `LengthVariant` gained an
+  optional `variantLabel` to carry two builds sharing one length. Real
+  figures: stepped entrance 16 seated (bay converted) / 14 seated (bay in
+  use), 0 standing throughout, confirmed private-hire-only; low floor 16
+  seated throughout, 8 standing (bay converted) / 4 standing (bay in use).
+  Yutong coach: asked directly rather than guessed whether "GTe12"/"GTe14"
+  were corrected names for "T12E"/"T15E" or different vehicles — confirmed
+  as corrected names, with GTe14 also a real length correction (14m, not
+  15m, still correctly tri-axle either way). GTe12 seats 50, GTe14 seats
+  57. No unspecified capacity remains anywhere in the catalogue; verify
+  script now 36 checks.
