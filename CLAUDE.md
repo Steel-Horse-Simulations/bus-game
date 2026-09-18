@@ -273,5 +273,11 @@ Every figure the player reads stays realistic.
   model in `DESIGN.md` §9 is based on — use for realistic starting values, not
   for structure.
 
+`VEHICLE-SPECS.md` (repo root) is the full vehicle catalogue — every model,
+length, capacity, fuel/battery option, option effect, training buses and the
+L-plate asset, plus base prices. Companion to `DESIGN.md`/`OPERATIONS.md`/this
+file; where it conflicts with any of the three, `VEHICLE-SPECS.md` wins, being
+the more recent and more detailed source.
+
 There is no vehicle artwork to produce. Liveries are colour sets only
 (`OPERATIONS.md` §4).
