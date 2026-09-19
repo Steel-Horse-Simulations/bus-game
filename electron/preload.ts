@@ -1,6 +1,18 @@
 // Bridges main <-> renderer.
 import { contextBridge, ipcRenderer } from "electron";
-import type { DepotGroup, Route, RoutePoint, DayType, TimingPoint, TimeBand, RouteTimetable, PlayerStop } from "./db.mts";
+import type {
+  DepotGroup,
+  Route,
+  RoutePoint,
+  DayType,
+  TimingPoint,
+  TimeBand,
+  RouteTimetable,
+  PlayerStop,
+  Depot,
+  DepotEntrance,
+  DepotEntranceMode,
+} from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
 // way to read or write it, since node:sqlite lives in the main process.
@@ -129,4 +141,19 @@ contextBridge.exposeInMainWorld("playerStops", {
     ipcRenderer.invoke("playerStops:create", lon, lat, busLegal) as Promise<PlayerStop>,
   list: () => ipcRenderer.invoke("playerStops:list") as Promise<PlayerStop[]>,
   delete: (osmId: number) => ipcRenderer.invoke("playerStops:delete", osmId) as Promise<void>,
+});
+
+// Depots (OPERATIONS.md §2 "Placement and entrances") — road-snapped
+// entrances computed by the WASM router in the renderer, persisted here.
+contextBridge.exposeInMainWorld("depots", {
+  create: (depotGroupId: number, name: string, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DepotEntranceMode }[]) =>
+    ipcRenderer.invoke("depots:create", depotGroupId, name, lon, lat, entrances) as Promise<{ depot: Depot; entrances: DepotEntrance[] }>,
+  list: () => ipcRenderer.invoke("depots:list") as Promise<Depot[]>,
+  listAllEntrances: () => ipcRenderer.invoke("depots:listAllEntrances") as Promise<DepotEntrance[]>,
+  rename: (id: number, name: string) => ipcRenderer.invoke("depots:rename", id, name) as Promise<void>,
+  addEntrance: (depotId: number, lon: number, lat: number, mode: DepotEntranceMode) =>
+    ipcRenderer.invoke("depots:addEntrance", depotId, lon, lat, mode) as Promise<DepotEntrance>,
+  setEntranceMode: (id: number, mode: DepotEntranceMode) => ipcRenderer.invoke("depots:setEntranceMode", id, mode) as Promise<void>,
+  deleteEntrance: (id: number) => ipcRenderer.invoke("depots:deleteEntrance", id) as Promise<void>,
+  delete: (id: number) => ipcRenderer.invoke("depots:delete", id) as Promise<void>,
 });

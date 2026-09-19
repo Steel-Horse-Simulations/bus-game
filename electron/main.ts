@@ -32,6 +32,15 @@ import {
   createPlayerStop,
   listPlayerStops,
   deletePlayerStop,
+  type DepotEntranceMode,
+  createDepot,
+  listDepots,
+  listAllDepotEntrances,
+  renameDepot,
+  addDepotEntrance,
+  setDepotEntranceMode,
+  deleteDepotEntrance,
+  deleteDepot,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -267,6 +276,32 @@ function registerPlayerStopHandlers(): void {
   ipcMain.handle("playerStops:delete", (_e, osmId: number) => deletePlayerStop(save, osmId));
 }
 
+// Depots (OPERATIONS.md §2 "Placement and entrances") — just the placement
+// mechanic itself, see the depots/depot_entrances tables' own comments in
+// db.mts for what's deliberately not built yet.
+function registerDepotHandlers(): void {
+  ipcMain.handle(
+    "depots:create",
+    (
+      _e,
+      depotGroupId: number,
+      name: string,
+      lon: number,
+      lat: number,
+      entrances: { lon: number; lat: number; mode: DepotEntranceMode }[],
+    ) => createDepot(save, depotGroupId, name, lon, lat, entrances),
+  );
+  ipcMain.handle("depots:list", () => listDepots(save));
+  ipcMain.handle("depots:listAllEntrances", () => listAllDepotEntrances(save));
+  ipcMain.handle("depots:rename", (_e, id: number, name: string) => renameDepot(save, id, name));
+  ipcMain.handle("depots:addEntrance", (_e, depotId: number, lon: number, lat: number, mode: DepotEntranceMode) =>
+    addDepotEntrance(save, depotId, lon, lat, mode),
+  );
+  ipcMain.handle("depots:setEntranceMode", (_e, id: number, mode: DepotEntranceMode) => setDepotEntranceMode(save, id, mode));
+  ipcMain.handle("depots:deleteEntrance", (_e, id: number) => deleteDepotEntrance(save, id));
+  ipcMain.handle("depots:delete", (_e, id: number) => deleteDepot(save, id));
+}
+
 app.whenReady().then(() => {
   const savePath = path.join(app.getPath("userData"), "save.sqlite");
   save = openSave(savePath);
@@ -277,6 +312,7 @@ app.whenReady().then(() => {
   registerRouteHandlers();
   registerRouteTimetableHandlers();
   registerPlayerStopHandlers();
+  registerDepotHandlers();
   startMapDataServer();
   createWindow();
 });

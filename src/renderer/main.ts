@@ -11,6 +11,7 @@ import { mountDepotGroupsPanel } from "./depot-groups-panel";
 import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
 import { mountVehicleCataloguePanel } from "./vehicle-catalogue-panel";
+import { mountDepotPlacement } from "./depot-placement";
 import { loadRouter } from "./router";
 
 // MapLibre auto-detects its worker script from import.meta.url, which only
@@ -70,4 +71,5 @@ init().then(async () => {
   await drawRailwayPlatforms(map);
   await mountRoutePanel(map, router);
   await mountVehicleSimulation(map, router);
+  await mountDepotPlacement(map, router);
 });

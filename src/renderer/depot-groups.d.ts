@@ -128,9 +128,45 @@ interface PlayerStopsApi {
   delete(osmId: number): Promise<void>;
 }
 
+type DepotEntranceMode = "entry" | "exit" | "both";
+
+interface Depot {
+  id: number;
+  depotGroupId: number;
+  name: string;
+  lon: number;
+  lat: number;
+}
+
+interface DepotEntrance {
+  id: number;
+  depotId: number;
+  lon: number;
+  lat: number;
+  mode: DepotEntranceMode;
+}
+
+interface DepotsApi {
+  create(
+    depotGroupId: number,
+    name: string,
+    lon: number,
+    lat: number,
+    entrances: { lon: number; lat: number; mode: DepotEntranceMode }[],
+  ): Promise<{ depot: Depot; entrances: DepotEntrance[] }>;
+  list(): Promise<Depot[]>;
+  listAllEntrances(): Promise<DepotEntrance[]>;
+  rename(id: number, name: string): Promise<void>;
+  addEntrance(depotId: number, lon: number, lat: number, mode: DepotEntranceMode): Promise<DepotEntrance>;
+  setEntranceMode(id: number, mode: DepotEntranceMode): Promise<void>;
+  deleteEntrance(id: number): Promise<void>;
+  delete(id: number): Promise<void>;
+}
+
 interface Window {
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   routeTimetables: RouteTimetablesApi;
   playerStops: PlayerStopsApi;
+  depots: DepotsApi;
 }

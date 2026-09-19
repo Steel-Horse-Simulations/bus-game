@@ -23,6 +23,15 @@ import {
   createPlayerStop,
   listPlayerStops,
   deletePlayerStop,
+  createDepot,
+  listDepots,
+  listDepotEntrances,
+  listAllDepotEntrances,
+  renameDepot,
+  addDepotEntrance,
+  setDepotEntranceMode,
+  deleteDepotEntrance,
+  deleteDepot,
 } from "./db.mts";
 import { unlinkSync, existsSync } from "node:fs";
 
@@ -378,6 +387,44 @@ db.close();
 db = openSave(path);
 playerStops = listPlayerStops(db);
 assert(playerStops.length === 1 && playerStops[0].osmId === placedLegal.osmId, "a player stop survives close+reopen");
+
+// --- depots and entrances (OPERATIONS.md §2 "Placement and entrances") ---
+const { depot, entrances } = createDepot(db, g1.id, "Test Depot", -3.2, 55.95, [
+  { lon: -3.199, lat: 55.951, mode: "both" },
+  { lon: -3.201, lat: 55.949, mode: "entry" },
+]);
+assert(entrances.length === 2, "both entrances are created alongside the depot in one call");
+let depots = listDepots(db);
+assert(depots.length === 1 && depots[0].name === "Test Depot", "the new depot is listed");
+let depotEntrances = listDepotEntrances(db, depot.id);
+assert(depotEntrances.length === 2, "the depot's own entrances are listed");
+assert(listAllDepotEntrances(db).length === 2, "listAllDepotEntrances finds them too");
+
+renameDepot(db, depot.id, "Renamed Depot");
+assert(listDepots(db)[0].name === "Renamed Depot", "renaming a depot updates it");
+
+const thirdEntrance = addDepotEntrance(db, depot.id, -3.198, 55.952, "exit");
+assert(listDepotEntrances(db, depot.id).length === 3, "a third entrance can be added after creation");
+
+setDepotEntranceMode(db, thirdEntrance.id, "both");
+assert(
+  listDepotEntrances(db, depot.id).find((e) => e.id === thirdEntrance.id)?.mode === "both",
+  "an entrance's mode can be changed",
+);
+
+deleteDepotEntrance(db, thirdEntrance.id);
+assert(listDepotEntrances(db, depot.id).length === 2, "deleting one entrance leaves the others");
+
+deleteDepot(db, depot.id);
+assert(listDepots(db).length === 0, "deleting a depot removes it");
+assert(listDepotEntrances(db, depot.id).length === 0, "deleting a depot also deletes its own entrances (no FK cascade, so this must be explicit)");
+
+const { depot: depot2 } = createDepot(db, g1.id, "Persisted Depot", -3.19, 55.94, [{ lon: -3.189, lat: 55.941, mode: "both" }]);
+db.close();
+db = openSave(path);
+depots = listDepots(db);
+assert(depots.length === 1 && depots[0].name === "Persisted Depot", "a depot survives close+reopen");
+assert(listDepotEntrances(db, depot2.id).length === 1, "a depot's entrances survive close+reopen too");
 db.close();
 
 unlinkSync(path);

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -134,6 +134,39 @@ CREATE TABLE IF NOT EXISTS player_stops (
   bus_legal INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- A depot (OPERATIONS.md §2 "Placement and entrances"): a physical site the
+-- player places on the map, belonging to exactly one depot group. Only the
+-- placement mechanic itself is built here — deliberately not the tier
+-- system (outstation/tiny/small/main), rent-vs-buy economics, build time,
+-- capacity or maintenance facilities, all of which depend on money (Phase
+-- 5) and staffing (Phase 6/7) that don't exist yet. "lon"/"lat" is the raw
+-- click position (the site itself, which OPERATIONS.md says can be "built
+-- anywhere suitable... enough space with road access") — unlike a stop,
+-- this is never kerb-snapped, since a depot isn't a point on the road
+-- itself.
+CREATE TABLE IF NOT EXISTS depots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  name TEXT NOT NULL,
+  lon REAL NOT NULL,
+  lat REAL NOT NULL
+);
+
+-- A depot's access point(s) (OPERATIONS.md: "Entrances are placed by the
+-- player on the surrounding roads, and there can be several. Each can be
+-- entry only, exit only, or both"). Road-snapped at creation time by the
+-- WASM router, the same way a route's own points are snapped — "lon"/"lat"
+-- is the snapped position, not the raw click. No foreign-key cascade is
+-- enabled on this database (same as everywhere else), so deleting a depot
+-- must delete its own entrances first.
+CREATE TABLE IF NOT EXISTS depot_entrances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  lon REAL NOT NULL,
+  lat REAL NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -238,6 +271,12 @@ export function openSave(path: string): SaveDb {
     // saved — the player_stops table is created by the SCHEMA statement
     // above (CREATE TABLE IF NOT EXISTS already ran against this save),
     // this branch only needs to advance the version.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 13) {
+    // v13 -> v14: depots and their entrances (OPERATIONS.md §2 "Placement
+    // and entrances") can now be saved — both tables are created by the
+    // SCHEMA statement above, this branch only needs to advance the
+    // version.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -691,6 +730,113 @@ export function listPlayerStops(db: SaveDb): PlayerStop[] {
 
 export function deletePlayerStop(db: SaveDb, osmId: number): void {
   db.prepare("DELETE FROM player_stops WHERE id = ?").run(-osmId);
+}
+
+// A depot (OPERATIONS.md §2) — see the depots/depot_entrances tables' own
+// comments in SCHEMA for what's deliberately not built yet (tiers, rent/
+// buy economics, build time, capacity, maintenance facilities).
+export type DepotEntranceMode = "entry" | "exit" | "both";
+
+export interface DepotEntrance {
+  id: number;
+  depotId: number;
+  lon: number;
+  lat: number;
+  mode: DepotEntranceMode;
+}
+
+export interface Depot {
+  id: number;
+  depotGroupId: number;
+  name: string;
+  lon: number;
+  lat: number;
+}
+
+interface DepotRow {
+  id: number;
+  depot_group_id: number;
+  name: string;
+  lon: number;
+  lat: number;
+}
+
+function depotFromRow(row: DepotRow): Depot {
+  return { id: row.id, depotGroupId: row.depot_group_id, name: row.name, lon: row.lon, lat: row.lat };
+}
+
+interface DepotEntranceRow {
+  id: number;
+  depot_id: number;
+  lon: number;
+  lat: number;
+  mode: DepotEntranceMode;
+}
+
+function depotEntranceFromRow(row: DepotEntranceRow): DepotEntrance {
+  return { id: row.id, depotId: row.depot_id, lon: row.lon, lat: row.lat, mode: row.mode };
+}
+
+export function createDepot(
+  db: SaveDb,
+  depotGroupId: number,
+  name: string,
+  lon: number,
+  lat: number,
+  entrances: readonly { lon: number; lat: number; mode: DepotEntranceMode }[],
+): { depot: Depot; entrances: DepotEntrance[] } {
+  const result = db
+    .prepare("INSERT INTO depots (depot_group_id, name, lon, lat) VALUES (?, ?, ?, ?)")
+    .run(depotGroupId, name, lon, lat);
+  const depotId = Number(result.lastInsertRowid);
+  const createdEntrances = entrances.map((e) => {
+    const entranceResult = db
+      .prepare("INSERT INTO depot_entrances (depot_id, lon, lat, mode) VALUES (?, ?, ?, ?)")
+      .run(depotId, e.lon, e.lat, e.mode);
+    return { id: Number(entranceResult.lastInsertRowid), depotId, lon: e.lon, lat: e.lat, mode: e.mode };
+  });
+  return { depot: { id: depotId, depotGroupId, name, lon, lat }, entrances: createdEntrances };
+}
+
+export function listDepots(db: SaveDb): Depot[] {
+  const rows = db.prepare("SELECT id, depot_group_id, name, lon, lat FROM depots").all() as unknown as DepotRow[];
+  return rows.map(depotFromRow);
+}
+
+export function listDepotEntrances(db: SaveDb, depotId: number): DepotEntrance[] {
+  const rows = db
+    .prepare("SELECT id, depot_id, lon, lat, mode FROM depot_entrances WHERE depot_id = ?")
+    .all(depotId) as unknown as DepotEntranceRow[];
+  return rows.map(depotEntranceFromRow);
+}
+
+export function listAllDepotEntrances(db: SaveDb): DepotEntrance[] {
+  const rows = db.prepare("SELECT id, depot_id, lon, lat, mode FROM depot_entrances").all() as unknown as DepotEntranceRow[];
+  return rows.map(depotEntranceFromRow);
+}
+
+export function renameDepot(db: SaveDb, id: number, name: string): void {
+  db.prepare("UPDATE depots SET name = ? WHERE id = ?").run(name, id);
+}
+
+export function addDepotEntrance(db: SaveDb, depotId: number, lon: number, lat: number, mode: DepotEntranceMode): DepotEntrance {
+  const result = db
+    .prepare("INSERT INTO depot_entrances (depot_id, lon, lat, mode) VALUES (?, ?, ?, ?)")
+    .run(depotId, lon, lat, mode);
+  return { id: Number(result.lastInsertRowid), depotId, lon, lat, mode };
+}
+
+export function setDepotEntranceMode(db: SaveDb, id: number, mode: DepotEntranceMode): void {
+  db.prepare("UPDATE depot_entrances SET mode = ? WHERE id = ?").run(mode, id);
+}
+
+export function deleteDepotEntrance(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM depot_entrances WHERE id = ?").run(id);
+}
+
+export function deleteDepot(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM depot_entrances WHERE depot_id = ?").run(id);
+  db.prepare("DELETE FROM depots WHERE id = ?").run(id);
 }
 
 // The override layer (DESIGN.md §1) — one mechanism reused for every category
