@@ -18,6 +18,7 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 
 | # | Task | Owner | Status |
 |---|---|---|---|
+| T39 | Depot placement and entrances (Phase 3, OPERATIONS.md §2). **Done (2026-09-19)** — see Settled below for the full writeup | Claude Code | Done |
 | T38 | Vehicle catalogue data model + read-only browsable view (Phase 3, from `VEHICLE-SPECS.md`). **Done (2026-09-18)** — see Settled below for the full writeup | Claude Code | Done |
 | T37 | Vehicles driving the real graph (Phase 3 kickoff, DESIGN.md §2). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
 | T36 | Stop placement with kerb snapping (Phase 2, DESIGN.md §4/§6). **Done (2026-09-17)** — see Settled below for the full writeup | Claude Code | Done |
@@ -2045,3 +2046,40 @@ argued about, not a summary of the design.
   15m, still correctly tri-axle either way). GTe12 seats 50, GTe14 seats
   57. No unspecified capacity remains anywhere in the catalogue; verify
   script now 36 checks.
+- **T39 done: depot placement and entrances (OPERATIONS.md §2, Phase
+  3).** The other unblocked Phase 3 item alongside vehicles/the catalogue
+  — resolves a gap flagged back in T19 (depot groups had no stored
+  location, only the settlement fallback stood in for it). Deliberately
+  narrow scope, matching this session's other Phase 3 increments: just
+  the physical placement mechanic. Not built — the tier system
+  (outstation/tiny/small/main), rent-vs-buy economics, build time,
+  capacity or maintenance facilities, all of which depend on money (Phase
+  5) and staffing (Phase 6/7) that don't exist yet. The full "opening
+  scenario" CLAUDE.md bundles into the same build-order line needs
+  contracts and passengers too (Phase 4/5) and is explicitly out of scope
+  here. New `depots` table (the raw click position — not kerb-snapped
+  like a stop, since OPERATIONS.md says a depot "can be built anywhere
+  suitable... enough space with road access") and `depot_entrances`
+  (road-snapped by the WASM router, "entry only, exit only, or both").
+  `SCHEMA_VERSION` 13→14. A "Place depot" toggle arms a two-step
+  placement — first click drops the site, subsequent clicks near roads
+  snap and add entrances; a draft panel gates Save on a name, a depot
+  group and at least one entrance. **Real bug caught live, not just in
+  code review**: typing the depot's name left Save permanently disabled,
+  since the disabled check was only ever recomputed at the panel's last
+  full render and the name input deliberately doesn't trigger one (or
+  every keystroke would lose cursor focus) — fixed by keeping a live
+  reference to the Save button and recomputing its disabled state
+  directly from the name/group change handlers. Verified end-to-end via
+  CDP against the real running app and real save data: placed a depot in
+  central Glasgow with two entrances snapped to real roads, confirmed
+  Save enables correctly once complete, confirmed persistence via the
+  API, confirmed the depot's popup opens with working rename/entrance-
+  management/delete, cleaned up afterward. `tsc --noEmit`, `npm run
+  build`, and `electron/db.verify.mts` (extended with depot/entrance CRUD
+  and close/reopen persistence coverage) all pass. **Unrelated to this
+  work, noticed and ruled out during testing**: a pre-existing 404 for
+  `fonts/Open%20Sans%20Regular,Arial%20Unicode%20MS%20Regular/0-255.pbf`
+  — some basemap layer's `text-font` falls back to a font family outside
+  the downloaded Noto Sans glyph set. Not fixed, not in scope, worth a
+  look if it recurs.
