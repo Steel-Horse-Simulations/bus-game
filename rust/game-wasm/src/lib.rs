@@ -1,7 +1,7 @@
 use game_data::{OnewayDirection, RoadGraph, StopKind};
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -9,9 +9,13 @@ pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
+
 /// One directed hop usable from a node: which edge to take, and which node
 /// it leads to. Built once from the graph's oneway/access tags so pathfinding
-/// itself never has to re-check them.
+/// itself never has to re-check them. `Copy` so the flat `adjacency` buffer
+/// below can be filled by direct index assignment rather than needing a
+/// placeholder-then-overwrite dance.
+#[derive(Clone, Copy)]
 struct Hop {
     edge: u32,
     to_node: u32,
@@ -24,7 +28,23 @@ struct Hop {
 #[wasm_bindgen]
 pub struct Router {
     graph: RoadGraph,
-    adjacency: Vec<Vec<Hop>>,
+    /// Every node's own outgoing hops, flattened into one shared buffer —
+    /// `adjacency[adjacency_offsets[node]..adjacency_offsets[node + 1]]` is
+    /// that node's own slice, the CSR ("compressed sparse row") shape
+    /// standard for exactly this kind of graph adjacency. Was
+    /// `Vec<Vec<Hop>>` (one separate heap allocation per node) until
+    /// OPEN-ITEMS.md T55-map-boundary's "freezing, not recovering" bug:
+    /// building that at whole-UK scale (10.3M nodes) measured at ~109 of a
+    /// ~224 second freeze, specifically in wasm32 — the default allocator
+    /// handles millions of small separate allocations far worse than a
+    /// native one does (proven fast natively on the identical data first,
+    /// not guessed). Built in two passes now (count hops per node, prefix-
+    /// sum into offsets, then fill the flat buffer via a per-node write
+    /// cursor) — a handful of large allocations instead of one per node.
+    adjacency: Vec<Hop>,
+    /// `adjacency`'s own offset index — see its doc comment. Always has
+    /// exactly `graph.nodes.len() + 1` entries.
+    adjacency_offsets: Vec<u32>,
     /// Edge ids used by the most recent `find_route` call, in traversal
     /// order — set alongside the coordinate result so a caller can ask
     /// `last_route_edges()` afterwards without a second Dijkstra run.
@@ -33,7 +53,7 @@ pub struct Router {
     /// call shape unchanged.
     last_edges: RefCell<Vec<u32>>,
     /// Point count contributed by each edge in `last_edges`, in the same
-    /// order — `edge.geometry.len() + 1` per edge, matching how `find_route`
+    /// order — `edge.geometry_len + 1` per edge, matching how `find_route`
     /// itself builds the flat coordinate array. Lets a caller slice that
     /// flat array back into one chunk per edge without re-deriving it.
     last_edge_point_counts: RefCell<Vec<u32>>,
@@ -71,6 +91,64 @@ pub struct Router {
     /// point barely 10m further away routed fine — the goal had silently
     /// snapped to an unreachable node.
     has_incoming: Vec<bool>,
+    /// A coarse spatial grid over every routable edge's own geometry, keyed
+    /// by cell coordinates (`nearest_node_grid_key`) — built once here so
+    /// `nearest_node` never has to scan the *whole* graph. A real bug this
+    /// fixes, found via a real user report ("whenever I click on something
+    /// it freezes for a long time") and confirmed directly with a CPU
+    /// profile, not guessed: `nearest_node` was doing a full linear scan
+    /// over every one of the ~1.4M routable edges in the whole-of-Great-
+    /// Britain graph, on *every single call* — twice per `find_route` (once
+    /// per endpoint), with no caching between calls. 98% of a real ~3s
+    /// freeze opening a single route's timetable editor (5 legs = up to 10
+    /// calls) was inside this one function. Same ~200m grid-cell technique
+    /// already used elsewhere in this codebase (stops-layer.ts's own
+    /// transit-link grid) for consistency, not because the exact figure
+    /// matters here.
+    edge_grid: HashMap<(i32, i32), Vec<u32>>,
+}
+
+/// Same cell size as stops-layer.ts's own `LINK_GRID_CELL_DEG` (0.002
+/// degrees, roughly 200m at UK latitudes) — see `edge_grid`'s own comment.
+const NEAREST_NODE_GRID_CELL_E7: i32 = 20_000;
+
+fn nearest_node_grid_key(lon_e7: i32, lat_e7: i32) -> (i32, i32) {
+    (
+        lon_e7.div_euclid(NEAREST_NODE_GRID_CELL_E7),
+        lat_e7.div_euclid(NEAREST_NODE_GRID_CELL_E7),
+    )
+}
+
+/// Every grid cell a straight segment between two cells passes through —
+/// Bresenham's line algorithm over cell coordinates, not just the two
+/// endpoint cells. Matters for a long edge with sparse geometry (a few
+/// points over a long stretch of road): without walking the cells in
+/// between, a query from the *middle* of that edge would find it in
+/// neither endpoint's cell and miss it entirely.
+fn cells_along_segment(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32)> {
+    let mut cells = Vec::new();
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let (mut x, mut y) = (x0, y0);
+    loop {
+        cells.push((x, y));
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+    cells
 }
 
 fn edge_is_routable(edge: &game_data::Edge, psv_override_way_ids: &HashSet<i64>) -> bool {
@@ -245,6 +323,22 @@ fn signed_side_of_segment(
     (bx - ax) * (py - ay) - (by - ay) * (px - ax)
 }
 
+/// Compass bearing (degrees, 0 = north, 90 = east) from one point to
+/// another — used to orient a depot entrance's own semi-circle marker
+/// (flat edge against the road it joins, DESIGN.md-adjacent user request)
+/// along the real local direction of the road it's snapped to, the same
+/// local flattening as `point_to_segment_closest`/`signed_side_of_segment`.
+fn bearing_degrees(from_lon_e7: i32, from_lat_e7: i32, to_lon_e7: i32, to_lat_e7: i32) -> f64 {
+    const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+    const RAD_TO_DEG: f64 = 180.0 / std::f64::consts::PI;
+    let lat0 = (from_lat_e7 as f64 + to_lat_e7 as f64) * 0.5 * 1e-7 * DEG_TO_RAD;
+    let cos_lat0 = lat0.cos();
+    let dx = (to_lon_e7 - from_lon_e7) as f64 * 1e-7 * DEG_TO_RAD * cos_lat0;
+    let dy = (to_lat_e7 - from_lat_e7) as f64 * 1e-7 * DEG_TO_RAD;
+    let deg = dx.atan2(dy) * RAD_TO_DEG;
+    if deg < 0.0 { deg + 360.0 } else { deg }
+}
+
 /// Moves a point `offset_m` along the **left** normal of the line `a`->`b`
 /// (a negative `offset_m` moves it right instead) — used to slide a road's
 /// nearest point sideways onto the correct kerb. Same local flattening as
@@ -322,33 +416,105 @@ impl Router {
         let graph = game_data::decode(graph_bytes);
         let psv_override_way_ids: HashSet<i64> =
             psv_override_way_ids.iter().map(|&id| id as i64).collect();
-        let mut adjacency: Vec<Vec<Hop>> = (0..graph.nodes.len()).map(|_| Vec::new()).collect();
         let mut has_incoming = vec![false; graph.nodes.len()];
 
+        // Pass 1 of 2 for the flat adjacency buffer (see its own doc
+        // comment on the `Router` struct): count each node's own outgoing
+        // hops first, so the exact right amount of space can be allocated
+        // once, rather than growing 10M+ separate Vecs incrementally.
+        let mut hop_counts: Vec<u32> = vec![0; graph.nodes.len()];
+        for edge in &graph.edges {
+            if !edge_is_routable(edge, &psv_override_way_ids) {
+                continue;
+            }
+            if matches!(edge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay) {
+                hop_counts[edge.from as usize] += 1;
+                has_incoming[edge.to as usize] = true;
+            }
+            if matches!(edge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay) {
+                hop_counts[edge.to as usize] += 1;
+                has_incoming[edge.from as usize] = true;
+            }
+        }
+
+        let mut adjacency_offsets: Vec<u32> = Vec::with_capacity(graph.nodes.len() + 1);
+        let mut running_offset = 0u32;
+        adjacency_offsets.push(0);
+        for &count in &hop_counts {
+            running_offset += count;
+            adjacency_offsets.push(running_offset);
+        }
+
+        // Pass 2: fill the flat buffer. `write_cursor` starts as a copy of
+        // each node's own starting offset and advances past each hop as
+        // it's written, so every hop lands in its own node's own slice
+        // without needing a second counting pass per node.
+        let mut write_cursor = adjacency_offsets[..graph.nodes.len()].to_vec();
+        let mut adjacency: Vec<Hop> = vec![Hop { edge: 0, to_node: 0 }; running_offset as usize];
         for (idx, edge) in graph.edges.iter().enumerate() {
             if !edge_is_routable(edge, &psv_override_way_ids) {
                 continue;
             }
             let edge_idx = idx as u32;
             if matches!(edge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay) {
-                adjacency[edge.from as usize].push(Hop { edge: edge_idx, to_node: edge.to });
-                has_incoming[edge.to as usize] = true;
+                let pos = write_cursor[edge.from as usize] as usize;
+                adjacency[pos] = Hop { edge: edge_idx, to_node: edge.to };
+                write_cursor[edge.from as usize] += 1;
             }
             if matches!(edge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay) {
-                adjacency[edge.to as usize].push(Hop { edge: edge_idx, to_node: edge.from });
-                has_incoming[edge.from as usize] = true;
+                let pos = write_cursor[edge.to as usize] as usize;
+                adjacency[pos] = Hop { edge: edge_idx, to_node: edge.from };
+                write_cursor[edge.to as usize] += 1;
+            }
+        }
+
+        // See edge_grid's own doc comment for why this exists. Built once
+        // here, alongside adjacency, rather than lazily on first use — the
+        // whole point is that nearest_node itself should never pay for
+        // this, no matter how many times it's called.
+        let mut edge_grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for (idx, edge) in graph.edges.iter().enumerate() {
+            if !edge_is_routable(edge, &psv_override_way_ids) {
+                continue;
+            }
+            let from = &graph.nodes[edge.from as usize];
+            let to = &graph.nodes[edge.to as usize];
+            let mut touched: HashSet<(i32, i32)> = HashSet::new();
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let prev_cell = nearest_node_grid_key(prev.0, prev.1);
+                let next_cell = nearest_node_grid_key(next.0, next.1);
+                for cell in cells_along_segment(prev_cell.0, prev_cell.1, next_cell.0, next_cell.1) {
+                    touched.insert(cell);
+                }
+                prev = next;
+            }
+            let edge_idx = idx as u32;
+            for cell in touched {
+                edge_grid.entry(cell).or_default().push(edge_idx);
             }
         }
 
         Router {
             graph,
             adjacency,
+            adjacency_offsets,
             last_edges: RefCell::new(Vec::new()),
             last_edge_point_counts: RefCell::new(Vec::new()),
             last_route_time_seconds: RefCell::new(0.0),
             has_incoming,
             psv_override_way_ids,
+            edge_grid,
         }
+    }
+
+    /// A node's own outgoing hops — see `adjacency`'s own doc comment on
+    /// the `Router` struct for why this is a slice into a shared flat
+    /// buffer rather than `&self.adjacency[node]` directly.
+    fn node_adjacency(&self, node: u32) -> &[Hop] {
+        let start = self.adjacency_offsets[node as usize] as usize;
+        let end = self.adjacency_offsets[node as usize + 1] as usize;
+        &self.adjacency[start..end]
     }
 
     pub fn node_count(&self) -> usize {
@@ -417,49 +583,93 @@ impl Router {
         let mut best_dist = f64::INFINITY;
         let mut best: Option<(u32, i32, i32, u32)> = None;
 
-        for (edge_idx, edge) in self.graph.edges.iter().enumerate() {
-            if !edge_is_routable(edge, &self.psv_override_way_ids) {
-                continue;
-            }
-            let from = &self.graph.nodes[edge.from as usize];
-            let to = &self.graph.nodes[edge.to as usize];
+        // Only the routable edges in cells actually near the query point —
+        // see edge_grid's own doc comment for why this exists instead of
+        // scanning the whole graph. Expands ring by ring (0 = just the
+        // query's own cell, 1 = the 8 cells around it, 2 = the next layer
+        // out...) until a match has been found *and* no closer edge could
+        // possibly exist further out, the standard grid-search stopping
+        // rule. `seen_edges` skips an edge already evaluated from an
+        // earlier, adjacent cell — every edge is registered in every cell
+        // its own geometry touches, so a long edge is often found from
+        // more than one cell in the same search.
+        const EARTH_RADIUS_M: f64 = 6_371_000.0;
+        let cell_size_m = (NEAREST_NODE_GRID_CELL_E7 as f64 * 1e-7).to_radians() * EARTH_RADIUS_M;
+        let (center_x, center_y) = nearest_node_grid_key(lon_e7, lat_e7);
+        let mut seen_edges: HashSet<u32> = HashSet::new();
 
-            let mut prev = (from.lon_e7, from.lat_e7);
-            for &next in edge.geometry.iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
-                let (d, snap_lon_e7, snap_lat_e7) = point_to_segment_closest(
-                    lon_e7, lat_e7, prev.0, prev.1, next.0, next.1,
-                );
-                if d < best_dist {
-                    best_dist = d;
-                    let d_from = approx_distance_m(lon_e7, lat_e7, from.lon_e7, from.lat_e7);
-                    let d_to = approx_distance_m(lon_e7, lat_e7, to.lon_e7, to.lat_e7);
-                    let node = if needs_outgoing {
-                        // Prefer whichever endpoint can actually go
-                        // somewhere; distance only breaks the tie between
-                        // two that both can (or both can't).
-                        let from_has_out = !self.adjacency[edge.from as usize].is_empty();
-                        let to_has_out = !self.adjacency[edge.to as usize].is_empty();
-                        match (from_has_out, to_has_out) {
-                            (true, false) => edge.from,
-                            (false, true) => edge.to,
-                            _ => if d_from <= d_to { edge.from } else { edge.to },
-                        }
-                    } else if needs_incoming {
-                        // Same idea, mirrored: prefer whichever endpoint can
-                        // actually be arrived at.
-                        let from_has_in = self.has_incoming[edge.from as usize];
-                        let to_has_in = self.has_incoming[edge.to as usize];
-                        match (from_has_in, to_has_in) {
-                            (true, false) => edge.from,
-                            (false, true) => edge.to,
-                            _ => if d_from <= d_to { edge.from } else { edge.to },
-                        }
-                    } else {
-                        if d_from <= d_to { edge.from } else { edge.to }
+        // A ring this wide (~200 * 200m = 40km) comfortably covers "query
+        // point is nowhere near any mapped road at all" as a hard stop
+        // rather than searching forever — real queries (a real stop, a
+        // real click on the map) are never remotely this far from the
+        // nearest routable edge.
+        for ring in 0..=200i32 {
+            for cx in (center_x - ring)..=(center_x + ring) {
+                for cy in (center_y - ring)..=(center_y + ring) {
+                    // Only this ring's own outer edge — smaller rings were
+                    // already fully covered on earlier iterations.
+                    if ring > 0
+                        && cx != center_x - ring
+                        && cx != center_x + ring
+                        && cy != center_y - ring
+                        && cy != center_y + ring
+                    {
+                        continue;
+                    }
+                    let Some(edge_idxs) = self.edge_grid.get(&(cx, cy)) else {
+                        continue;
                     };
-                    best = Some((node, snap_lon_e7, snap_lat_e7, edge_idx as u32));
+                    for &edge_idx in edge_idxs {
+                        if !seen_edges.insert(edge_idx) {
+                            continue;
+                        }
+                        let edge = &self.graph.edges[edge_idx as usize];
+                        let from = &self.graph.nodes[edge.from as usize];
+                        let to = &self.graph.nodes[edge.to as usize];
+
+                        let mut prev = (from.lon_e7, from.lat_e7);
+                        for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                            let (d, snap_lon_e7, snap_lat_e7) = point_to_segment_closest(
+                                lon_e7, lat_e7, prev.0, prev.1, next.0, next.1,
+                            );
+                            if d < best_dist {
+                                best_dist = d;
+                                let d_from = approx_distance_m(lon_e7, lat_e7, from.lon_e7, from.lat_e7);
+                                let d_to = approx_distance_m(lon_e7, lat_e7, to.lon_e7, to.lat_e7);
+                                let node = if needs_outgoing {
+                                    // Prefer whichever endpoint can actually go
+                                    // somewhere; distance only breaks the tie between
+                                    // two that both can (or both can't).
+                                    let from_has_out = !self.node_adjacency(edge.from).is_empty();
+                                    let to_has_out = !self.node_adjacency(edge.to).is_empty();
+                                    match (from_has_out, to_has_out) {
+                                        (true, false) => edge.from,
+                                        (false, true) => edge.to,
+                                        _ => if d_from <= d_to { edge.from } else { edge.to },
+                                    }
+                                } else if needs_incoming {
+                                    // Same idea, mirrored: prefer whichever endpoint can
+                                    // actually be arrived at.
+                                    let from_has_in = self.has_incoming[edge.from as usize];
+                                    let to_has_in = self.has_incoming[edge.to as usize];
+                                    match (from_has_in, to_has_in) {
+                                        (true, false) => edge.from,
+                                        (false, true) => edge.to,
+                                        _ => if d_from <= d_to { edge.from } else { edge.to },
+                                    }
+                                } else {
+                                    if d_from <= d_to { edge.from } else { edge.to }
+                                };
+                                best = Some((node, snap_lon_e7, snap_lat_e7, edge_idx as u32));
+                            }
+                            prev = next;
+                        }
+                    }
                 }
-                prev = next;
+            }
+
+            if best.is_some() && (ring as f64) * cell_size_m > best_dist {
+                break;
             }
         }
 
@@ -534,7 +744,7 @@ impl Router {
             let from = &self.graph.nodes[edge.from as usize];
             let to = &self.graph.nodes[edge.to as usize];
             let mut prev = (from.lon_e7, from.lat_e7);
-            for &next in edge.geometry.iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+            for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
                 let (d, foot_lon_e7, foot_lat_e7) =
                     point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
                 if d < best_dist {
@@ -575,6 +785,301 @@ impl Router {
 
         vec![kerb_lon_e7 as f64 * 1e-7, kerb_lat_e7 as f64 * 1e-7, if bus_legal { 1.0 } else { 0.0 }]
     }
+
+    /// The compass bearing (0 = north) of the direction of travel a stop
+    /// at `(lon, lat)` serves — which way a bus using it is heading. A
+    /// real user request against stop groups (DESIGN.md §4): "each stop
+    /// needs to know the direction it faces, otherwise if [a route
+    /// change] uses a better stop it might be on the wrong side of the
+    /// road." Works for a real imported OSM stop exactly the same way as
+    /// a player-placed one — `place_stop`'s own doc comment already notes
+    /// this direction "isn't stored anywhere; it's implicit in which
+    /// physical kerb it lands on," so it can be derived on demand from any
+    /// stop's already-fixed position, without a pipeline rebuild or a new
+    /// stored field: a oneway road has one legal direction regardless of
+    /// which side the stop is on; a two-way road's direction is read off
+    /// **which side of the road the stop's own real position already
+    /// sits on** — the same side-determination `place_stop` uses against
+    /// a fresh click, applied here to a stop's existing coordinates
+    /// instead.
+    ///
+    /// Returns `0.0` if the graph has no edges at all (never true against
+    /// real pipeline data) — a stop is always near some road in practice,
+    /// so this isn't a meaningful "no road found" signal the caller needs
+    /// to check.
+    pub fn stop_facing_bearing(&self, lon: f64, lat: f64) -> f64 {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
+
+        let mut best_dist = f64::INFINITY;
+        // segment a, segment b, this edge's oneway.
+        let mut best: Option<(i32, i32, i32, i32, OnewayDirection)> = None;
+
+        for edge in &self.graph.edges {
+            let from = &self.graph.nodes[edge.from as usize];
+            let to = &self.graph.nodes[edge.to as usize];
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let (d, _, _) = point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
+                if d < best_dist {
+                    best_dist = d;
+                    best = Some((prev.0, prev.1, next.0, next.1, edge.oneway));
+                }
+                prev = next;
+            }
+        }
+
+        let Some((a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7, oneway)) = best else {
+            return 0.0;
+        };
+
+        let cross = signed_side_of_segment(p_lon_e7, p_lat_e7, a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7);
+        let forward = match oneway {
+            OnewayDirection::Forward => true,
+            OnewayDirection::Reverse => false,
+            OnewayDirection::TwoWay => cross >= 0.0,
+        };
+        if forward {
+            bearing_degrees(a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7)
+        } else {
+            bearing_degrees(b_lon_e7, b_lat_e7, a_lon_e7, a_lat_e7)
+        }
+    }
+
+    /// The nearest point on **any** road (not just a bus-legal one) to
+    /// `(lon, lat)`, as `[lon, lat]` — for depot placement (OPERATIONS.md
+    /// §2), where `snap_to_road`'s own bus-legal-only search
+    /// (`nearest_node`, built for real route drawing where a bus must
+    /// actually be able to drive there) was the wrong tool: a real depot's
+    /// own access road is very often a private/restricted road exactly
+    /// like the ones that filter excludes, so both the depot's own site
+    /// and its entrances would silently snap onto the nearest *public*
+    /// street instead of the depot's own real access road (a live user
+    /// report: "it won't snap to the correct road" near a real depot).
+    /// Shares `place_stop`'s own every-edge foot-point search rather than
+    /// `nearest_node`'s filtered one, but skips its kerb offset — an
+    /// entrance or a depot site sits ON the road it meets, not beside it
+    /// on a kerb the way a passenger-facing stop does.
+    pub fn snap_to_any_road(&self, lon: f64, lat: f64) -> Vec<f64> {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
+
+        let mut best_dist = f64::INFINITY;
+        let mut best: Option<(i32, i32)> = None;
+
+        for edge in &self.graph.edges {
+            let from = &self.graph.nodes[edge.from as usize];
+            let to = &self.graph.nodes[edge.to as usize];
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let (d, foot_lon_e7, foot_lat_e7) =
+                    point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
+                if d < best_dist {
+                    best_dist = d;
+                    best = Some((foot_lon_e7, foot_lat_e7));
+                }
+                prev = next;
+            }
+        }
+
+        let Some((foot_lon_e7, foot_lat_e7)) = best else {
+            return Vec::new();
+        };
+        vec![foot_lon_e7 as f64 * 1e-7, foot_lat_e7 as f64 * 1e-7]
+    }
+
+    /// For a depot **entrance** specifically (OPERATIONS.md §2): a click
+    /// near a private access road that dead-ends into a depot site is
+    /// usually meant as "the entrance is here, where this road meets the
+    /// public road network," not literally the exact point clicked partway
+    /// along that access road — a real user request, with an ASCII
+    /// diagram confirmed against: the marker should sit at the junction
+    /// where the depot's own road meets the main road, not scattered along
+    /// whichever point of the access road happened to be nearest the
+    /// click.
+    ///
+    /// Finds the nearest road the same way `snap_to_any_road` does, then
+    /// checks its own two endpoint nodes' degree (how many edges touch
+    /// each one at all, not just this one) — a routing graph only ever
+    /// creates a node at a real topological point (a junction or a dead
+    /// end), never at a plain shape point (those stay inside `geometry`),
+    /// so degree 1 always means a genuine dead end and degree ≥2 always
+    /// means a real junction. Any end that reaches a real junction (degree
+    /// ≥3) is a candidate; when only one side does (the depot-access-road
+    /// shape from the diagram — one dead end, one junction) that one wins
+    /// outright. When *both* sides do — a real case, not hypothetical: a
+    /// depot's own access road can already meet the wider network this
+    /// close on both sides of wherever was clicked, rather than dead-
+    /// ending cleanly first — snaps to whichever candidate junction is
+    /// geographically nearer the click, since that's the one the player
+    /// meant. Two dead ends (a short isolated stub, touching the road
+    /// network nowhere) is the only shape left with no real junction to
+    /// snap to at all, and falls back to the plain nearest point.
+    ///
+    /// Returns `[lon, lat]` — the junction node's own real position, with
+    /// no offset at all. Entrances/exits are now shown as plain dots (a
+    /// live user request after the previous oriented semi-circle marker
+    /// — which needed a bearing to rotate and a road width to scale by,
+    /// both now removed entirely — proved "constantly breaking": several
+    /// rounds of kerb offsets and pull-back distances all fought the same
+    /// underlying problem, that a real-world metre offset has no reliable
+    /// relationship to the basemap's own fixed-pixel-per-zoom road width,
+    /// see this function's own git history). A plain dot has no
+    /// orientation to get wrong, so anchoring directly at the junction's
+    /// own already-correct position is simply correct, with nothing left
+    /// to calibrate.
+    ///
+    /// This is now the ONLY visual signal a player gets about where an
+    /// entrance will land — a live follow-up instruction removed the
+    /// candidate-junction hint dots `nearby_junctions` used to show before
+    /// a click, since "junction snapping... is now only to let buses know
+    /// which roads to use, not for anything visual." The player simply
+    /// clicks a road near a depot/dealer and this function snaps to
+    /// whichever real junction (or, lacking one, the nearest point on the
+    /// clicked road) is reached by walking outward from there — see
+    /// `walk_to_junction_or_dead_end`'s own doc comment for exactly how
+    /// that walk picks a junction.
+    pub fn snap_entrance_to_junction(&self, lon: f64, lat: f64) -> Vec<f64> {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
+
+        let mut best_dist = f64::INFINITY;
+        let mut best: Option<(u32, i32, i32)> = None; // edge index, foot lon/lat e7
+
+        for (edge_idx, edge) in self.graph.edges.iter().enumerate() {
+            let from = &self.graph.nodes[edge.from as usize];
+            let to = &self.graph.nodes[edge.to as usize];
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let (d, foot_lon_e7, foot_lat_e7) =
+                    point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
+                if d < best_dist {
+                    best_dist = d;
+                    best = Some((edge_idx as u32, foot_lon_e7, foot_lat_e7));
+                }
+                prev = next;
+            }
+        }
+
+        let Some((edge_idx, foot_lon_e7, foot_lat_e7)) = best else {
+            return Vec::new();
+        };
+        let edge = &self.graph.edges[edge_idx as usize];
+
+        // Real OSM depot access roads are very often more than one edge —
+        // a gentle bend, or just how the way happened to get digitized —
+        // so checking only the clicked edge's own two endpoints (as a
+        // first version of this function did) missed real depots whose
+        // access road has an intermediate node before reaching the
+        // junction with the main road. Walk outward from each of the
+        // clicked edge's own endpoints, following a chain of nodes where
+        // only two edges meet (a plain "the road just continues here," not
+        // a real fork) until reaching a node where that's no longer true —
+        // either a genuine dead end (degree 1) or a real junction (degree
+        // >= 3). A 500-hop cap guards a closed loop of degree-2 nodes with
+        // no junction anywhere on it (never true for a real depot access
+        // road, but cheap insurance against looping forever).
+        const MAX_WALK_HOPS: u32 = 500;
+        // Returns (terminal node, its degree, the node one hop back from
+        // it along the walk, the edge id the walk arrived via) — the last
+        // two let the caller compute both the access road's own real
+        // approach bearing AND, separately, the real main road's own
+        // bearing (any OTHER edge touching the junction), rather than
+        // assuming the two roads meet at a clean right angle.
+        //
+        // Stops at the FIRST node that isn't a plain pass-through (degree
+        // != 2) — a real dead end, or a real junction, whichever comes
+        // first walking outward from the clicked edge. A same-session
+        // detour tried "keep walking past a degree >= 3 node whenever
+        // every other road there is less major," aiming to reach a
+        // genuinely major road further out (a real depot's driveway can
+        // pass several minor side-track junctions first) — but a live
+        // follow-up report showed this overshoots just as badly the other
+        // way: it walked straight past the real junction the player
+        // actually clicked near, all the way to an unrelated, much more
+        // major road far away, changing both the position and the
+        // returned road width to a road with no real relationship to
+        // where the player clicked. The player's own proposed fix is the
+        // simpler and more predictable one: snap to whichever real
+        // junction is nearest wherever they actually click, and trust
+        // them to click near the junction they mean — not guess how far
+        // out "the real main road" must be by reasoning about road class.
+        // A 500-hop cap guards a closed loop of degree-2 nodes with no
+        // junction anywhere on it (never true for a real depot access
+        // road, but cheap insurance against looping forever).
+        let walk_to_junction_or_dead_end = |start_node: u32, start_edge: u32, came_from: u32| -> (u32, usize, u32, u32) {
+            let mut current_node = start_node;
+            let mut prev_node = came_from;
+            let mut last_edge = start_edge;
+            for _ in 0..MAX_WALK_HOPS {
+                let touching: Vec<u32> = self
+                    .graph
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.from == current_node || e.to == current_node)
+                    .map(|(i, _)| i as u32)
+                    .collect();
+                if touching.len() != 2 {
+                    return (current_node, touching.len(), prev_node, last_edge);
+                }
+                let Some(&next_edge_idx) = touching.iter().find(|&&i| i != last_edge) else {
+                    // Both touching edges are the same one we arrived on
+                    // (a dangling duplicate) — treat as a dead end rather
+                    // than looping on it.
+                    return (current_node, 1, prev_node, last_edge);
+                };
+                let next_edge = &self.graph.edges[next_edge_idx as usize];
+                prev_node = current_node;
+                current_node = if next_edge.from == current_node { next_edge.to } else { next_edge.from };
+                last_edge = next_edge_idx;
+            }
+            (current_node, 2, prev_node, last_edge) // Hit the hop cap — neither a dead end nor a junction, so it's skipped below.
+        };
+
+        let (from_terminal, from_degree, _, _) = walk_to_junction_or_dead_end(edge.from, edge_idx, edge.to);
+        let (to_terminal, to_degree, _, _) = walk_to_junction_or_dead_end(edge.to, edge_idx, edge.from);
+        // A real user report against a real depot: neither end of the
+        // clicked road was a dead end at all — both walks hit a genuine
+        // junction (degree >= 3) immediately, zero hops in either
+        // direction, because the clicked segment was itself a short link
+        // directly between two nearby junctions (a real access road can
+        // already touch the wider network this closely; the original
+        // "exactly one dead end, one junction" shape was too narrow).
+        // That fell through to the no-junction fallback, which is why the
+        // marker landed on the plain clicked point with an arbitrary
+        // bearing instead of snapping anywhere. When both ends qualify,
+        // snap to whichever is geographically nearer the click — that's
+        // the one the player actually meant.
+        let junction: Option<u32> = match (from_degree, to_degree) {
+            (1, d) if d >= 3 => Some(to_terminal),
+            (d, 1) if d >= 3 => Some(from_terminal),
+            (a, b) if a >= 3 && b >= 3 => {
+                let dist2 = |node: u32| {
+                    let n = &self.graph.nodes[node as usize];
+                    let dlon = (n.lon_e7 - foot_lon_e7) as i64;
+                    let dlat = (n.lat_e7 - foot_lat_e7) as i64;
+                    dlon * dlon + dlat * dlat
+                };
+                if dist2(from_terminal) <= dist2(to_terminal) {
+                    Some(from_terminal)
+                } else {
+                    Some(to_terminal)
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(node) = junction {
+            let n = &self.graph.nodes[node as usize];
+            vec![n.lon_e7 as f64 * 1e-7, n.lat_e7 as f64 * 1e-7]
+        } else {
+            // No real junction to anchor against — the plain nearest
+            // point on the clicked road itself.
+            vec![foot_lon_e7 as f64 * 1e-7, foot_lat_e7 as f64 * 1e-7]
+        }
+    }
+
 
     /// Total travel time (seconds) of the most recent `find_route` call,
     /// including junction delays — the exact cost Dijkstra minimised,
@@ -619,7 +1124,7 @@ impl Router {
         *self.last_edges.borrow_mut() = steps.iter().map(|&(edge_idx, _)| edge_idx).collect();
         *self.last_edge_point_counts.borrow_mut() = steps
             .iter()
-            .map(|&(edge_idx, _)| (self.graph.edges[edge_idx as usize].geometry.len() + 1) as u32)
+            .map(|&(edge_idx, _)| (self.graph.edges[edge_idx as usize].geometry_len + 1) as u32)
             .collect();
 
         let push_e7 = |coords: &mut Vec<f64>, lon_e7: i32, lat_e7: i32| {
@@ -654,11 +1159,11 @@ impl Router {
         for (edge_idx, next_node) in &steps {
             let edge = &self.graph.edges[*edge_idx as usize];
             if edge.from == current {
-                for &(lon_e7, lat_e7) in &edge.geometry {
+                for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge) {
                     push_e7(&mut coords, lon_e7, lat_e7);
                 }
             } else {
-                for &(lon_e7, lat_e7) in edge.geometry.iter().rev() {
+                for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge).iter().rev() {
                     push_e7(&mut coords, lon_e7, lat_e7);
                 }
             }
@@ -715,7 +1220,7 @@ impl Router {
             let incoming_class = prev[node as usize].map(|(_, edge_idx)| self.graph.edges[edge_idx as usize].class);
             let junction_control = self.graph.nodes[node as usize].junction_control;
 
-            for hop in &self.adjacency[node as usize] {
+            for hop in self.node_adjacency(node) {
                 let edge = &self.graph.edges[hop.edge as usize];
                 let delay_s = junction_delay_s(junction_control, incoming_class, edge.class);
                 let next_cost = cost_s + edge_time_cost_s(edge) + delay_s;
@@ -956,12 +1461,55 @@ mod tests {
             psv_yes: false,
             bus_yes: false,
             maxspeed_mph: None,
-            geometry: vec![],
+            geometry_start: 0,
+            geometry_len: 0,
         }
     }
 
     fn graph_node(osm_id: i64, lon_e7: i32, lat_e7: i32) -> GraphNode {
         GraphNode { osm_id, lon_e7, lat_e7, junction_control: game_data::JunctionControl::None }
+    }
+
+
+    /// `adjacency`'s own flat CSR buffer (`Router` struct's own doc
+    /// comment, OPEN-ITEMS.md T55-map-boundary's WASM-allocator fix) must
+    /// give each node exactly its own hops, with no bleed into a
+    /// neighbouring node's own slice — the exact class of off-by-one a
+    /// two-pass offset/write-cursor refactor like this one could silently
+    /// introduce. A 4-node star, all edges two-way (the `edge()` test
+    /// helper's own default): node 0 has three real outgoing hops (to 1,
+    /// 2, 3); nodes 1/2/3 each have exactly one hop of their own, straight
+    /// back to node 0 — never to each other, and never more than one.
+    #[test]
+    fn node_adjacency_gives_each_node_exactly_its_own_hops_no_bleed_into_neighbours() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 1_000_000, 0),
+            graph_node(4, -1_000_000, 0),
+        ];
+        let edges = vec![
+            edge(0, 1, 1, 11, 100.0),
+            edge(0, 2, 2, 11, 100.0),
+            edge(0, 3, 3, 11, 100.0),
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let hops_from_0 = router.node_adjacency(0);
+        let mut to_nodes: Vec<u32> = hops_from_0.iter().map(|h| h.to_node).collect();
+        to_nodes.sort();
+        assert_eq!(to_nodes, vec![1, 2, 3], "node 0 should have exactly its own 3 hops, in no particular order");
+
+        for (node, expected_back_to) in [(1u32, 0u32), (2, 0), (3, 0)] {
+            let hops = router.node_adjacency(node);
+            assert_eq!(
+                hops.len(),
+                1,
+                "node {node} should have exactly its own 1 return hop, no bleed from node 0's own 3"
+            );
+            assert_eq!(hops[0].to_node, expected_back_to, "node {node}'s own hop should lead back to node 0, not to a sibling");
+        }
     }
 
     /// Two parallel edges between the same two nodes: a short one on a slow
@@ -980,7 +1528,7 @@ mod tests {
             edge(0, 1, 100, 13 /* Service */, 100.0),
             edge(0, 1, 101, 0 /* Motorway */, 500.0),
         ];
-        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
 
         let router = Router::new(&bytes, vec![]);
         let coords = router.find_route(0.0, 0.0, 0.0, 0.1);
@@ -1016,6 +1564,7 @@ mod tests {
             nodes,
             edges: vec![restricted_edge],
             restrictions: vec![],
+            geometry_points: vec![],
         });
 
         let router_without_override = Router::new(&bytes, vec![]);
@@ -1052,6 +1601,7 @@ mod tests {
             nodes,
             edges: vec![start_to_reachable, unreachable_to_reachable],
             restrictions: vec![],
+            geometry_points: vec![],
         });
         let router = Router::new(&bytes, vec![]);
 
@@ -1092,6 +1642,7 @@ mod tests {
             nodes,
             edges: vec![edge_c, edge_b],
             restrictions: vec![],
+            geometry_points: vec![],
         });
         let router = Router::new(&bytes, vec![]);
 
@@ -1183,6 +1734,7 @@ mod tests {
             nodes,
             edges: vec![minor_leg, major_leg],
             restrictions: vec![],
+            geometry_points: vec![],
         });
         let router = Router::new(&bytes, vec![]);
 
@@ -1216,6 +1768,7 @@ mod tests {
             nodes,
             edges: vec![major_leg, minor_leg],
             restrictions: vec![],
+            geometry_points: vec![],
         });
         let router = Router::new(&bytes, vec![]);
 
@@ -1242,7 +1795,7 @@ mod tests {
     fn place_stop_two_way_road_uses_the_click_s_own_side() {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)]; // node 1 due north of node 0
         let road = edge(0, 1, 900, 11, 100.0); // TwoWay by default
-        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         let west = router.place_stop(-0.0005, 0.05);
@@ -1262,7 +1815,7 @@ mod tests {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let mut road = edge(0, 1, 900, 11, 100.0);
         road.oneway = OnewayDirection::Forward;
-        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         // Clicked on the *east* side — should still land west, matching
@@ -1283,7 +1836,7 @@ mod tests {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let mut road = edge(0, 1, 900, 11, 100.0);
         road.oneway = OnewayDirection::Reverse;
-        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         // Clicked on the *west* side — should still land east, matching
@@ -1305,11 +1858,246 @@ mod tests {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let mut road = edge(0, 1, 900, 11, 100.0);
         road.access_restricted = true;
-        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         let result = router.place_stop(0.0005, 0.05);
         assert_eq!(result.len(), 3, "an access-restricted road should still be a valid placement target, not skipped");
         assert_eq!(result[2], 0.0, "an access-restricted road with no psv/bus override should be flagged as not bus-legal");
     }
+
+    /// A real user request against stop groups: "each stop needs to know
+    /// the direction it faces." A oneway road has one legal direction
+    /// regardless of which side of the road a stop sits on — same
+    /// north-south road as `place_stop_oneway_forward_always_uses_its_own_left_kerb`.
+    #[test]
+    fn stop_facing_bearing_oneway_forward_always_faces_north() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 11, 100.0);
+        road.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        // Checked from both sides of the road — a forward-only road's
+        // direction doesn't depend on which side the stop is on.
+        let west_side = router.stop_facing_bearing(-0.0005, 0.05);
+        let east_side = router.stop_facing_bearing(0.0005, 0.05);
+        assert!((west_side - 0.0).abs() < 1e-3, "expected north (0°), got {west_side}");
+        assert!((east_side - 0.0).abs() < 1e-3, "expected north (0°), got {east_side}");
+    }
+
+    /// The mirror case: a reverse-only road always faces south.
+    #[test]
+    fn stop_facing_bearing_oneway_reverse_always_faces_south() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 11, 100.0);
+        road.oneway = OnewayDirection::Reverse;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.stop_facing_bearing(0.0005, 0.05);
+        assert!((result - 180.0).abs() < 1e-3, "expected south (180°), got {result}");
+    }
+
+    /// A two-way road: the direction is read off which side of the road
+    /// the stop's own position already sits on — matching
+    /// `place_stop_two_way_road_uses_the_click_s_own_side`'s own west/east
+    /// kerb split, west faces north (left-kerb-for-northbound) and east
+    /// faces south (left-kerb-for-southbound), exactly mirroring which
+    /// kerb `place_stop` would have chosen for each side.
+    #[test]
+    fn stop_facing_bearing_two_way_road_reads_the_stop_s_own_side() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let road = edge(0, 1, 900, 11, 100.0); // TwoWay by default
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let west_side = router.stop_facing_bearing(-0.0005, 0.05);
+        let east_side = router.stop_facing_bearing(0.0005, 0.05);
+        assert!((west_side - 0.0).abs() < 1e-3, "west kerb should face north (0°), got {west_side}");
+        assert!((east_side - 180.0).abs() < 1e-3, "east kerb should face south (180°), got {east_side}");
+    }
+
+    ///        F
+    ///        |
+    /// A --- B --- C --- D
+    ///              \
+    ///               G
+    /// A and D and F and G are genuine dead ends (degree 1). B and C are
+    /// **real** junctions (degree 3 — a third road actually branches off
+    /// each one, F at B and G at C), not just a bend in one continuous
+    /// road. A-B is a depot's own private access road; B-C is the main
+    /// road it joins. Matches the user's own diagram: a short depot road
+    /// meeting a longer main road at a real fork.
+    fn depot_access_road_graph() -> Vec<u8> {
+        let nodes = vec![
+            graph_node(1, 0, 0),                  // 0 = A, depot's own dead end
+            graph_node(2, 0, 1_000_000),           // 1 = B, real junction (A, C, F all meet here)
+            graph_node(3, 1_000_000, 1_000_000),   // 2 = C, real junction (B, D, G all meet here)
+            graph_node(4, 2_000_000, 1_000_000),   // 3 = D, a dead end off the main road's far side
+            graph_node(5, 0, 2_000_000),           // 4 = F, a dead-end stub off B (gives B degree 3)
+            graph_node(6, 1_000_000, 2_000_000),   // 5 = G, a dead-end stub off C (gives C degree 3)
+        ];
+        let edges = vec![
+            edge(0, 1, 1, 11, 100.0), // A-B: the depot access road
+            edge(1, 2, 2, 6, 500.0),  // B-C: the main road
+            edge(2, 3, 3, 11, 100.0), // C-D: continues past C
+            edge(1, 4, 4, 11, 50.0),  // B-F: the stub that makes B a real fork
+            edge(2, 5, 5, 11, 50.0),  // C-G: the stub that makes C a real fork
+        ];
+        game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] })
+    }
+
+    /// A click anywhere along the depot's own access road (A-B) should
+    /// snap to B, the real junction with the main road — not the plain
+    /// nearest point on the clicked edge, which could be anywhere between
+    /// the depot and the road.
+    #[test]
+    fn snap_entrance_to_junction_snaps_a_dead_end_spur_to_its_junction() {
+        let bytes = depot_access_road_graph();
+        let router = Router::new(&bytes, vec![]);
+
+        // Roughly the midpoint of A-B (lat 0.05), off to one side (lon
+        // 0.0003) the same way a real click never lands exactly on the
+        // line.
+        let result = router.snap_entrance_to_junction(0.0003, 0.05);
+        assert_eq!(result.len(), 2, "expected [lon, lat]");
+        // The marker's own position is junction B's own real position,
+        // with no offset at all.
+        assert!(
+            (result[0] - 0.0).abs() < 1e-6 && (result[1] - 0.1).abs() < 1e-6,
+            "expected junction B's own real position (0.0, 0.1), got ({}, {})",
+            result[0],
+            result[1]
+        );
+    }
+
+    /// A real user report against a real depot: the clicked road's own two
+    /// endpoints were BOTH real junctions already (a short link directly
+    /// between two nearby forks, rather than a clean dead-end-to-junction
+    /// shape) — the original version gave up on this entirely and fell
+    /// back to the plain clicked point with an arbitrary bearing, which is
+    /// exactly what the user saw ("not at the junction... 90 degrees
+    /// off"). A click on B-C (both B and C are real forks in this graph,
+    /// degree 3 each) should now snap to whichever of the two is
+    /// geographically nearer the click, not fall back.
+    #[test]
+    fn snap_entrance_to_junction_on_a_through_road_snaps_to_the_nearer_junction() {
+        let bytes = depot_access_road_graph();
+        let router = Router::new(&bytes, vec![]);
+
+        // Clicked clearly nearer B (0.0, 0.1) than C (0.1, 0.1).
+        let result = router.snap_entrance_to_junction(0.03, 0.1005);
+        assert_eq!(result.len(), 2, "expected [lon, lat]");
+        assert!(
+            (result[0] - 0.0).abs() < 1e-6 && (result[1] - 0.1).abs() < 1e-6,
+            "expected junction B's own real position (0.0, 0.1), got ({}, {})",
+            result[0],
+            result[1]
+        );
+
+        // Clicked clearly nearer C (0.1, 0.1) than B.
+        let result = router.snap_entrance_to_junction(0.08, 0.1005);
+        assert_eq!(result.len(), 2, "expected [lon, lat]");
+        assert!(
+            (result[0] - 0.1).abs() < 1e-6 && (result[1] - 0.1).abs() < 1e-6,
+            "expected junction C's own real position (0.1, 0.1), got ({}, {})",
+            result[0],
+            result[1]
+        );
+    }
+
+    /// The real motivation for the walk (not just checking the clicked
+    /// edge's own two endpoints): a depot's own access road is often more
+    /// than one edge — a gentle bend digitized as a separate node, with
+    /// nothing else connecting there. A --- A2 --- B(real junction), where
+    /// A2 only has the two edges either side of it (degree 2, a plain
+    /// continuation, not a fork). A live user report: entrances "snap to
+    /// a road... but don't snap to a junction" — this was exactly the gap,
+    /// since the original single-hop check saw A2 as just "another
+    /// non-dead-end endpoint" and gave up rather than walking past it.
+    #[test]
+    fn snap_entrance_to_junction_walks_past_an_intermediate_bend() {
+        let nodes = vec![
+            graph_node(1, 0, 0),                 // 0 = A, depot's own dead end
+            graph_node(2, 0, 500_000),            // 1 = A2, a mid-road bend (degree 2, not a fork)
+            graph_node(3, 0, 1_000_000),          // 2 = B, the real junction
+            graph_node(4, 1_000_000, 1_000_000),  // 3 = C, main road continuing from B
+            graph_node(5, 0, 2_000_000),          // 4 = F, a dead-end stub off B (gives B degree 3)
+        ];
+        let edges = vec![
+            edge(0, 1, 1, 11, 50.0),  // A-A2: first half of the depot access road
+            edge(1, 2, 1, 11, 50.0),  // A2-B: second half, same way id, just a bend
+            edge(2, 3, 2, 6, 500.0),  // B-C: the main road
+            edge(2, 4, 3, 11, 50.0),  // B-F: the stub that makes B a real fork
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        // A click on the FIRST half of the access road (A-A2) — the real
+        // junction (B) is a whole extra hop past where the click landed.
+        // The walk must still reach it, not stop at A2 (a plain bend).
+        let result = router.snap_entrance_to_junction(0.0003, 0.025);
+        assert_eq!(result.len(), 2, "expected [lon, lat]");
+        assert!(
+            (result[0] - 0.0).abs() < 1e-6 && (result[1] - 0.1).abs() < 1e-6,
+            "expected junction B's own real position (0.0, 0.1), got ({}, {})",
+            result[0],
+            result[1]
+        );
+    }
+
+    /// A same-session detour and revert, both against the same real depot
+    /// (Broom Place, Portree). A live report after T61 shipped ("the
+    /// entrance is facing the wrong road") led to a version that kept
+    /// walking past a degree >= 3 node whenever every other road there was
+    /// *less major* than the one just walked in on, aiming to reach a
+    /// genuinely major road further out rather than stopping at the first
+    /// minor side-track fork. That fix was itself wrong in the other
+    /// direction: a live follow-up report showed it overshooting past the
+    /// real junction the player had actually clicked near, all the way to
+    /// an unrelated, much more major road far away — changing the position
+    /// AND the returned road width to a road with no real connection to
+    /// where the player clicked. The player's own proposed fix — snap to
+    /// whichever real junction is nearest wherever they click, and trust
+    /// them to click near the junction they mean, rather than have the
+    /// algorithm guess how far out "the real main road" must be — is what
+    /// shipped instead (see `walk_to_junction_or_dead_end`'s own doc
+    /// comment). This test pins that choice down: J1 (the *first* fork,
+    /// even though its own other road is a minor, less-major spur) is
+    /// where the walk should stop, not J2 (a genuinely more major road,
+    /// further out) — the reverse of what an earlier version of this test
+    /// asserted.
+    #[test]
+    fn snap_entrance_to_junction_stops_at_the_first_fork_even_when_a_more_major_road_is_further_out() {
+        let nodes = vec![
+            graph_node(1, 0, 0),                 // 0 = A, depot's own dead end
+            graph_node(2, 0, 1_000_000),          // 1 = J1, the first fork — should be where the walk stops
+            graph_node(3, 500_000, 1_000_000),    // 2 = S1, a dead-end track off J1 (gives J1 degree 3)
+            graph_node(4, 0, 2_000_000),          // 3 = J2, a more major road, further out — NOT the answer
+            graph_node(5, 1_000_000, 2_000_000),  // 4 = C, the major road, due east of J2
+            graph_node(6, 0, 3_000_000),          // 5 = F, a dead-end stub off J2 (gives J2 degree 3)
+        ];
+        let edges = vec![
+            edge(0, 1, 1, 11, 100.0), // A-J1: the depot's own driveway (Residential)
+            edge(1, 3, 1, 11, 100.0), // J1-J2: SAME way (1) — the driveway just keeps going
+            edge(1, 2, 2, 13, 30.0),  // J1-S1: a minor track (Service, less major than 11)
+            edge(3, 4, 3, 4, 500.0),  // J2-C: a more major road (Primary), further out
+            edge(3, 5, 4, 11, 50.0),  // J2-F: stub, just to give J2 degree 3
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.snap_entrance_to_junction(0.0003, 0.05);
+        assert_eq!(result.len(), 2, "expected [lon, lat]");
+        // The position must be J1 (lat 0.1), not J2 (lat 0.2) — the walk
+        // should stop at the nearest fork, not overshoot to a more major
+        // road further out.
+        assert!(
+            result[1] < 0.15,
+            "expected the marker anchored near J1 (lat ~0.1), not J2 (lat 0.2) — walked too far, got lat {}",
+            result[1]
+        );
+    }
+
 }

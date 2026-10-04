@@ -90,6 +90,9 @@ pub fn build_graph(
     let mut edges_by_way: HashMap<i64, Vec<u32>> = HashMap::new();
     let mut edges = Vec::new();
     let mut edges_with_gap = 0usize;
+    // Shared flat buffer every edge's own geometry slices into — see
+    // `Edge::geometry_start`'s own doc comment for why.
+    let mut geometry_points: Vec<(i32, i32)> = Vec::new();
 
     for way in ways {
         if way.refs.len() < 2 {
@@ -115,7 +118,7 @@ pub fn build_graph(
                 continue;
             };
 
-            let mut geometry = Vec::new();
+            let geometry_start = geometry_points.len() as u32;
             let mut length_m = 0.0f64;
             let mut prev = nodes.get(from_id).expect("from_id resolved above");
             let mut gap = false;
@@ -123,12 +126,13 @@ pub fn build_graph(
                 match nodes.get(mid_id) {
                     Some(coord) => {
                         length_m += distance_m(prev, coord);
-                        geometry.push(coord);
+                        geometry_points.push(coord);
                         prev = coord;
                     }
                     None => gap = true, // known simplification: boundary-edge gap
                 }
             }
+            let geometry_len = geometry_points.len() as u32 - geometry_start;
             let to_coord = nodes.get(to_id).expect("to_id resolved above");
             length_m += distance_m(prev, to_coord);
             if gap {
@@ -149,7 +153,8 @@ pub fn build_graph(
                 psv_yes: way.psv_yes,
                 bus_yes: way.bus_yes,
                 maxspeed_mph: way.maxspeed_mph,
-                geometry,
+                geometry_start,
+                geometry_len,
             });
 
             segment_start = i;
@@ -212,6 +217,7 @@ pub fn build_graph(
         nodes: graph_nodes,
         edges,
         restrictions,
+        geometry_points,
     };
 
     BuildReport {
@@ -231,6 +237,42 @@ pub fn save(graph: &RoadGraph, path: &str) -> std::io::Result<usize> {
     let bytes = game_data::encode(graph);
     std::fs::write(path, &bytes)?;
     Ok(bytes.len())
+}
+
+/// Appends `other`'s own nodes/edges/restrictions onto `into`, renumbering
+/// every index `other` carries (`Edge::from`/`to`, `Restriction::via`/
+/// `from_edge`/`to_edge`) by `into`'s own pre-merge node/edge counts —
+/// UK-EXPANSION.md §1's multi-source map build (GB + Ireland/NI + Isle of
+/// Man). Building each source's own complete `RoadGraph` first and merging
+/// *those* (small — just nodes/edges/restrictions), rather than merging the
+/// raw per-source node-coordinate maps and way lists before ever calling
+/// `build_graph` once, is what makes a multi-source build actually fit in
+/// memory: a source's own raw pass-1/2 data (up to hundreds of millions of
+/// node coordinates for an unclipped GB) is freed as soon as that source's
+/// own graph is built, never held alongside another source's. Safe simply
+/// because real OSM ids are already globally unique across separate
+/// regional extracts (`NodeCoords::merge`'s own doc comment) — this merge
+/// doesn't need to detect or dedupe anything, only shift index spaces so
+/// they don't collide.
+pub fn merge_road_graphs(into: &mut RoadGraph, other: RoadGraph) {
+    let node_offset = into.nodes.len() as u32;
+    let edge_offset = into.edges.len() as u32;
+    let geometry_offset = into.geometry_points.len() as u32;
+
+    into.nodes.extend(other.nodes);
+    into.edges.extend(other.edges.into_iter().map(|mut e| {
+        e.from += node_offset;
+        e.to += node_offset;
+        e.geometry_start += geometry_offset;
+        e
+    }));
+    into.restrictions.extend(other.restrictions.into_iter().map(|mut r| {
+        r.via += node_offset;
+        r.from_edge += edge_offset;
+        r.to_edge += edge_offset;
+        r
+    }));
+    into.geometry_points.extend(other.geometry_points);
 }
 
 #[cfg(test)]
@@ -285,7 +327,7 @@ mod tests {
         );
         for edge in &report.graph.edges {
             assert!(
-                edge.geometry.is_empty(),
+                edge.geometry_len == 0,
                 "adjacent-node edges carry no intermediate geometry"
             );
         }
@@ -307,7 +349,7 @@ mod tests {
         );
         assert_eq!(report.graph.edges.len(), 1, "the whole way stays one edge");
         assert_eq!(
-            report.graph.edges[0].geometry.len(),
+            report.graph.edges[0].geometry_len,
             1,
             "middle node kept as shape geometry, not promoted to a graph node"
         );
@@ -340,6 +382,134 @@ mod tests {
         assert_eq!(report.graph.nodes[r.via as usize].osm_id, 2);
         assert_eq!(report.graph.edges[r.from_edge as usize].osm_way_id, 100);
         assert_eq!(report.graph.edges[r.to_edge as usize].osm_way_id, 200);
+    }
+
+    /// The whole point of building per-source graphs separately and merging
+    /// *those* (UK-EXPANSION.md §1) rather than merging raw node/way data
+    /// first: graph B's own node/edge indices must be correctly renumbered,
+    /// not just concatenated blindly, or its own edges/restrictions would
+    /// silently point at graph A's nodes instead of its own.
+    #[test]
+    fn merge_road_graphs_renumbers_the_second_graph_s_own_indices() {
+        // Graph A: two separate 3-node/2-edge/1-restriction graphs, built
+        // exactly like restriction_resolves_to_correct_edges above but with
+        // different real osm ids so a mix-up would be obviously wrong.
+        let a_ids = [1i64, 2, 3];
+        let a_nodes = NodeCoords::from_pairs(a_ids.iter().map(|&id| (id, coord(id))));
+        let a_ways = vec![way(100, &[1, 2]), way(200, &[2, 3])];
+        let a_ref_counts = ref_counts_for(&a_ways);
+        let a_restrictions = vec![RestrictionRecord {
+            id: 1,
+            restriction_type: "no_left_turn".to_string(),
+            from_way: Some(100),
+            via_node: Some(2),
+            via_way: None,
+            to_way: Some(200),
+        }];
+        let a_report = build_graph(&a_nodes, &a_ways, &a_ref_counts, &a_restrictions);
+
+        // Graph B: a completely separate graph (different osm ids — real
+        // regional extracts never share ids, but even if they collided this
+        // merge doesn't care, since it never looks at osm ids to decide
+        // indices).
+        let b_ids = [901i64, 902, 903];
+        let b_nodes = NodeCoords::from_pairs(b_ids.iter().map(|&id| (id, coord(id))));
+        let b_ways = vec![way(9100, &[901, 902]), way(9200, &[902, 903])];
+        let b_ref_counts = ref_counts_for(&b_ways);
+        let b_restrictions = vec![RestrictionRecord {
+            id: 2,
+            restriction_type: "no_right_turn".to_string(),
+            from_way: Some(9100),
+            via_node: Some(902),
+            via_way: None,
+            to_way: Some(9200),
+        }];
+        let b_report = build_graph(&b_nodes, &b_ways, &b_ref_counts, &b_restrictions);
+        // HashSet-ordered internally, so node 902's own index within B's
+        // own graph (before merging) isn't assumed — found by osm_id, the
+        // same way the post-merge assertion below does.
+        let b_node_902_index_before_merge =
+            b_report.graph.nodes.iter().position(|n| n.osm_id == 902).unwrap();
+
+        let a_node_count = a_report.graph.nodes.len();
+        let mut merged = a_report.graph;
+        merge_road_graphs(&mut merged, b_report.graph);
+
+        assert_eq!(merged.nodes.len(), 6, "3 + 3 nodes");
+        assert_eq!(merged.edges.len(), 4, "2 + 2 edges");
+        assert_eq!(merged.restrictions.len(), 2, "1 + 1 restrictions");
+
+        // Graph A's own restriction is untouched (it was first, offset 0).
+        let ra = &merged.restrictions[0];
+        assert_eq!(merged.nodes[ra.via as usize].osm_id, 2, "A's restriction still points at A's own via node");
+        assert_eq!(merged.edges[ra.from_edge as usize].osm_way_id, 100);
+        assert_eq!(merged.edges[ra.to_edge as usize].osm_way_id, 200);
+
+        // Graph B's own restriction must have been renumbered to point at
+        // its own nodes/edges in their NEW positions, not A's.
+        let rb = &merged.restrictions[1];
+        assert_eq!(
+            merged.nodes[rb.via as usize].osm_id, 902,
+            "B's restriction should still resolve to B's own via node (osm id 902) at its new, offset index"
+        );
+        assert_eq!(merged.edges[rb.from_edge as usize].osm_way_id, 9100, "B's restriction's from_edge should still be B's own way 9100");
+        assert_eq!(merged.edges[rb.to_edge as usize].osm_way_id, 9200, "B's restriction's to_edge should still be B's own way 9200");
+
+        // Every one of B's own nodes should have moved by exactly A's own
+        // node count — spot-checked via osm_id lookup rather than assuming
+        // a position (node order within a single build_graph call is
+        // HashSet-derived, so not something to hardcode either).
+        let b_node_902_new_index = merged.nodes.iter().position(|n| n.osm_id == 902).unwrap();
+        assert_eq!(
+            b_node_902_new_index,
+            b_node_902_index_before_merge + a_node_count,
+            "node 902 should have moved by exactly A's own node count ({a_node_count})",
+        );
+    }
+
+    /// `merge_road_graphs` must shift a merged-in edge's own `geometry_start`
+    /// by the first graph's own `geometry_points` length, the same way it
+    /// already shifts node/edge indices — a real, separate index space this
+    /// refactor introduced (OPEN-ITEMS.md T55-map-boundary's WASM-allocator
+    /// fix), not covered by the node/edge/restriction renumbering test
+    /// above since that test's own ways have no intermediate geometry at
+    /// all (adjacent-node ways only, geometry_len always 0 there).
+    #[test]
+    fn merge_road_graphs_shifts_the_second_graph_s_own_geometry_offsets() {
+        // Graph A: one way with an unshared middle node (ref count 1), so
+        // it keeps a real geometry point instead of being promoted to a
+        // junction — same shape `unshared_middle_node_does_not_split_the_way`
+        // above already proves in isolation.
+        let a_ids = [1i64, 2, 3];
+        let a_nodes = NodeCoords::from_pairs(a_ids.iter().map(|&id| (id, coord(id))));
+        let a_ways = vec![way(100, &[1, 2, 3])];
+        let a_ref_counts = ref_counts_for(&a_ways);
+        let a_report = build_graph(&a_nodes, &a_ways, &a_ref_counts, &[]);
+        assert_eq!(a_report.graph.geometry_points.len(), 1, "A's own single edge keeps node 2 as a geometry point");
+
+        // Graph B: the same shape, different real osm ids.
+        let b_ids = [901i64, 902, 903];
+        let b_nodes = NodeCoords::from_pairs(b_ids.iter().map(|&id| (id, coord(id))));
+        let b_ways = vec![way(9100, &[901, 902, 903])];
+        let b_ref_counts = ref_counts_for(&b_ways);
+        let b_report = build_graph(&b_nodes, &b_ways, &b_ref_counts, &[]);
+        assert_eq!(b_report.graph.geometry_points.len(), 1);
+        let b_geometry_point = b_report.graph.geometry_points[0];
+
+        let mut merged = a_report.graph;
+        merge_road_graphs(&mut merged, b_report.graph);
+
+        assert_eq!(merged.geometry_points.len(), 2, "1 + 1 geometry points");
+        let b_edge = merged.edges.iter().find(|e| e.osm_way_id == 9100).unwrap();
+        assert_eq!(
+            b_edge.geometry_start, 1,
+            "B's own edge should point 1 past A's own geometry_points (A contributed exactly 1)"
+        );
+        assert_eq!(
+            merged.edge_geometry(b_edge),
+            &[b_geometry_point],
+            "B's own edge should still resolve to its own real geometry point at the new, offset position, not A's"
+        );
     }
 
     #[test]

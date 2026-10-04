@@ -86,8 +86,20 @@ pub struct Edge {
     pub psv_yes: bool,
     pub bus_yes: bool,
     pub maxspeed_mph: Option<u16>,
-    /// Shape points between `from` and `to`, exclusive of both endpoints.
-    pub geometry: Vec<(i32, i32)>,
+    /// Shape points between `from` and `to` (exclusive of both endpoints)
+    /// live in `RoadGraph::geometry_points`, at
+    /// `[geometry_start, geometry_start + geometry_len)` — a flat shared
+    /// buffer rather than a `Vec<(i32,i32)>` per edge (OPEN-ITEMS.md
+    /// T55-map-boundary's "freezing, not recovering" bug): decoding ~11.5M
+    /// edges each carrying their own small heap-allocated Vec measured at
+    /// ~85 of a ~224 second freeze specifically in wasm32 (proven fast
+    /// natively on the identical file first, so this wasn't guessed at —
+    /// the WASM default allocator handles "millions of small separate
+    /// allocations" far worse than a native one). One shared buffer per
+    /// `RoadGraph` means decode is still O(total points) but with a
+    /// handful of large allocations instead of millions of tiny ones.
+    pub geometry_start: u32,
+    pub geometry_len: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -116,6 +128,21 @@ pub struct RoadGraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<Edge>,
     pub restrictions: Vec<Restriction>,
+    /// Shared flat buffer every `Edge`'s own `geometry_start`/`geometry_len`
+    /// slices into — see `Edge::geometry_start`'s own doc comment for why.
+    pub geometry_points: Vec<(i32, i32)>,
+}
+
+impl RoadGraph {
+    /// The shape points between an edge's own `from`/`to` endpoints
+    /// (exclusive of both), in `from`->`to` order — the equivalent of the
+    /// old per-edge `geometry: Vec<(i32,i32)>` field, as a borrowed slice
+    /// into this graph's own shared buffer instead.
+    pub fn edge_geometry(&self, edge: &Edge) -> &[(i32, i32)] {
+        let start = edge.geometry_start as usize;
+        let end = start + edge.geometry_len as usize;
+        &self.geometry_points[start..end]
+    }
 }
 
 pub fn encode(graph: &RoadGraph) -> Vec<u8> {

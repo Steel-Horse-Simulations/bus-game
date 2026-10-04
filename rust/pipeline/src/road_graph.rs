@@ -17,6 +17,15 @@ pub struct NodeCoords {
 }
 
 impl NodeCoords {
+    /// An empty, valid instance — used once a multi-source build (main.rs)
+    /// has already consumed each source's own real coordinates into its own
+    /// graph and no longer needs them; the final combined `NodePassResult`
+    /// still needs *a* `NodeCoords` to satisfy the type, never queried
+    /// again after that point.
+    pub fn empty() -> Self {
+        Self { by_id: HashMap::new(), junction_control: HashMap::new() }
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
@@ -483,6 +492,21 @@ pub struct WayStats {
     pub psv_yes: u64,
     pub bus_yes: u64,
     pub maxspeed_present: u64,
+}
+
+impl WayStats {
+    pub fn merge(&mut self, other: &WayStats) {
+        self.total_matched += other.total_matched;
+        for i in 0..self.by_class.len() {
+            self.by_class[i] += other.by_class[i];
+        }
+        self.oneway_forward += other.oneway_forward;
+        self.oneway_reverse += other.oneway_reverse;
+        self.access_restricted += other.access_restricted;
+        self.psv_yes += other.psv_yes;
+        self.bus_yes += other.bus_yes;
+        self.maxspeed_present += other.maxspeed_present;
+    }
 }
 
 
