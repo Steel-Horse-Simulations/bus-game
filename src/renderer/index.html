@@ -14,10 +14,65 @@
          theme.css, since this is the map's own required OSM/OpenMapTiles
          legal text, not app chrome. */
       .maplibregl-ctrl-attrib { color: rgba(0, 0, 0, 0.75); }
+
+      /* Loading overlay — plain HTML/CSS, not a renderer module, so it's
+         visible from the very first frame rather than waiting on any JS
+         to mount it (OPEN-ITEMS.md T55-map-boundary: the whole-UK road
+         graph's own loading could take real, noticeable time even after
+         the WASM-allocator fix, and there was previously zero feedback
+         between the window opening and the map appearing — exactly what
+         made a genuine multi-minute freeze indistinguishable from a
+         normal-but-slow load). `main.ts` removes this element once its
+         own boot sequence finishes; if boot throws before reaching that
+         point, this stays up rather than silently vanishing over a blank
+         screen, which is the more honest failure mode.
+       */
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: #18181b;
+        color: #f0f0f2;
+        font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+      }
+      #loading-overlay .spinner {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: 3px solid #3f3f46;
+        border-top-color: #60a5fa;
+        animation: loading-spin 0.8s linear infinite;
+      }
+      @keyframes loading-spin {
+        to { transform: rotate(360deg); }
+      }
+      #loading-overlay .bar {
+        width: 280px;
+        height: 6px;
+        border-radius: 3px;
+        background: #3f3f46;
+        overflow: hidden;
+      }
+      #loading-overlay .bar-fill {
+        width: 0%;
+        height: 100%;
+        background: #60a5fa;
+        transition: width 0.2s ease-out;
+      }
     </style>
   </head>
   <body>
     <div id="map"></div>
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <div class="bar"><div class="bar-fill" id="loading-bar-fill"></div></div>
+      <div id="loading-label">Loading road network…</div>
+    </div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

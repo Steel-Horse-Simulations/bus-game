@@ -75,7 +75,19 @@ fn point_in_ring(lon: f64, lat: f64, ring: &[(f64, f64)]) -> bool {
 /// A point is in the extract area if it falls inside any ring — the boundary
 /// is the union of Scotland's real border/coastline plus the hand-drawn
 /// Carlisle/Berwick corridor.
+///
+/// **An empty `rings` slice means "no restriction at all" (everything
+/// passes), not "nothing passes"** — used for a source file that needs no
+/// clipping of its own (UK-EXPANSION.md §1: the GB extract just gets its
+/// old Scotland-only clip dropped entirely, and the Isle of Man's own
+/// Geofabrik file is already self-contained with nothing else to exclude).
+/// Only a source that genuinely needs part of a larger file excluded — the
+/// Republic of Ireland out of the combined "Ireland and Northern Ireland"
+/// extract — passes real rings.
 pub fn point_in_boundary(lon: f64, lat: f64, rings: &[Ring]) -> bool {
+    if rings.is_empty() {
+        return true;
+    }
     rings.iter().any(|ring| point_in_ring(lon, lat, &ring.points))
 }
 
@@ -120,5 +132,14 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UK-EXPANSION.md §1: the GB extract's own clip is dropped entirely
+    /// (whole file processed), and the Isle of Man's own Geofabrik file
+    /// needs no clipping either — both represented by an empty rings slice.
+    #[test]
+    fn empty_rings_means_no_restriction() {
+        assert!(point_in_boundary(-2.2426, 53.4808, &[]), "Manchester, outside the Scotland boundary, should pass with no rings at all");
+        assert!(point_in_boundary(-4.4816, 54.1509, &[]), "Isle of Man (Douglas) should pass with no rings at all");
     }
 }
