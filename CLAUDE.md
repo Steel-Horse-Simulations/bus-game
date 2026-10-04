@@ -272,12 +272,30 @@ Every figure the player reads stays realistic.
 - saved Lothian Buses, Airlink and Lothian Country fares pages, which the fare
   model in `DESIGN.md` §9 is based on — use for realistic starting values, not
   for structure.
+- `Stagecoach Timetable.pdf` (Service 28/28A, Inverness–Contin, both
+  directions) — the real printed-timetable reference the full-screen grid
+  (DESIGN.md §7) is styled after: dark masthead, day-type bands, HHMM with no
+  colon, and each direction as its own page behind a toggle, not one
+  direction's times read backwards. Render its pages as images to compare
+  (no PDF renderer is otherwise available in this environment; PyMuPDF via
+  `pip install pymupdf` works) rather than guessing from a text description.
 
 `VEHICLE-SPECS.md` (repo root) is the full vehicle catalogue — every model,
 length, capacity, fuel/battery option, option effect, training buses and the
 L-plate asset, plus base prices. Companion to `DESIGN.md`/`OPERATIONS.md`/this
 file; where it conflicts with any of the three, `VEHICLE-SPECS.md` wins, being
 the more recent and more detailed source.
+
+`UK-EXPANSION.md` (repo root) is the whole-UK scope expansion — map boundary,
+dealer network, driver duty/double-manning logistics, mandatory regional
+liveries, fare caps by nation, depot group structure at scale, long-distance
+and night-bus numbering, seasonal services, the Isle of Skye's real fixed
+route content, and the finalised fleet-numbering scheme (with the Enviro500 →
+Enviro400 XLB catalogue swap). Companion to `DESIGN.md`/`OPERATIONS.md`/
+`VEHICLE-SPECS.md`/this file; where it conflicts with any of the three, it
+wins, being the more recent and more detailed source. Much of it depends on
+phases (4/5/6/7/9) not yet built — see `OPEN-ITEMS.md` for how each section
+maps onto the current build order.
 
 There is no vehicle artwork to produce. Liveries are colour sets only
 (`OPERATIONS.md` §4).
