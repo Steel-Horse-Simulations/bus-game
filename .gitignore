@@ -7,6 +7,10 @@ src/renderer/public/
 *.pmtiles
 *.osm.pbf
 pipeline-data/
+pipeline-data-uk-expansion-verify/
+.backup-scotland-only-pipeline-data/
+.backup-scotland-only-pipeline-data-new-schema/
+dist-map-data/
 /data/
 release/
 .driver-shots/
