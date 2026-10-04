@@ -91,24 +91,32 @@ interface TimeBand {
   intervalMinutes: number;
 }
 
+type RouteTimetableDirection = "both" | "outbound" | "inbound";
+
 interface RouteTimetable {
   id: number;
   routeId: number;
   dayType: DayType;
+  direction: RouteTimetableDirection;
   timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
+  excludedDepartureMinutes: number[];
+  customDepartureMinutes: number[];
 }
 
 interface RouteTimetablesApi {
   upsert(
     routeId: number,
     dayType: DayType,
+    direction: RouteTimetableDirection,
     timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
+    excludedDepartureMinutes: number[],
+    customDepartureMinutes: number[],
   ): Promise<RouteTimetable>;
   listForRoute(routeId: number): Promise<RouteTimetable[]>;
   listAll(): Promise<RouteTimetable[]>;
@@ -147,13 +155,7 @@ interface DepotEntrance {
 }
 
 interface DepotsApi {
-  create(
-    depotGroupId: number,
-    name: string,
-    lon: number,
-    lat: number,
-    entrances: { lon: number; lat: number; mode: DepotEntranceMode }[],
-  ): Promise<{ depot: Depot; entrances: DepotEntrance[] }>;
+  create(depotGroupId: number, name: string, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DepotEntranceMode }[]): Promise<{ depot: Depot; entrances: DepotEntrance[] }>;
   list(): Promise<Depot[]>;
   listAllEntrances(): Promise<DepotEntrance[]>;
   rename(id: number, name: string): Promise<void>;
@@ -163,10 +165,48 @@ interface DepotsApi {
   delete(id: number): Promise<void>;
 }
 
+type DealerManufacturer = "volvo" | "adl" | "western_commercial" | "wrightbus" | "yutong";
+type DealerEntranceMode = DepotEntranceMode;
+
+interface Dealer {
+  id: number;
+  name: string;
+  manufacturer: DealerManufacturer;
+  lon: number;
+  lat: number;
+}
+
+interface DealerEntrance {
+  id: number;
+  dealerId: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
+}
+
+interface DealersApi {
+  create(name: string, manufacturer: DealerManufacturer, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DealerEntranceMode }[]): Promise<{ dealer: Dealer; entrances: DealerEntrance[] }>;
+  list(): Promise<Dealer[]>;
+  listAllEntrances(): Promise<DealerEntrance[]>;
+  rename(id: number, name: string): Promise<void>;
+  setManufacturer(id: number, manufacturer: DealerManufacturer): Promise<void>;
+  addEntrance(dealerId: number, lon: number, lat: number, mode: DealerEntranceMode): Promise<DealerEntrance>;
+  setEntranceMode(id: number, mode: DealerEntranceMode): Promise<void>;
+  deleteEntrance(id: number): Promise<void>;
+  delete(id: number): Promise<void>;
+}
+
+interface StopGroupsApi {
+  create(): Promise<{ id: number }>;
+  list(): Promise<number[]>;
+}
+
 interface Window {
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   routeTimetables: RouteTimetablesApi;
   playerStops: PlayerStopsApi;
   depots: DepotsApi;
+  dealers: DealersApi;
+  stopGroups: StopGroupsApi;
 }

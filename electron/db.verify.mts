@@ -11,6 +11,7 @@ import {
   getOverride,
   hasOverride,
   resetOverride,
+  listOverrides,
   createRoute,
   listRoutes,
   updateRoute,
@@ -32,8 +33,11 @@ import {
   setDepotEntranceMode,
   deleteDepotEntrance,
   deleteDepot,
+  createStopGroup,
+  listStopGroupIds,
 } from "./db.mts";
 import { unlinkSync, existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 
 const path = "./electron/.verify-save.sqlite";
 if (existsSync(path)) unlinkSync(path);
@@ -190,10 +194,13 @@ const tt = upsertRouteTimetable(
   db,
   route.id,
   "monday_friday",
+  "both",
   [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 30 }],
   [{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }],
   [0, 500],
   [0, 560],
+  [420],
+  [605],
 );
 assert(
   tt.dayType === "monday_friday" && tt.timeBands[0].startMinutes === 360,
@@ -208,42 +215,94 @@ assert(
     JSON.stringify(tt.departureOffsetsSeconds) === JSON.stringify([0, 560]),
   "offset arrays round-trip through JSON",
 );
+assert(
+  JSON.stringify(tt.excludedDepartureMinutes) === JSON.stringify([420]),
+  "excluded departure minutes round-trip through JSON",
+);
+assert(
+  JSON.stringify(tt.customDepartureMinutes) === JSON.stringify([605]),
+  "custom departure minutes round-trip through JSON",
+);
+assert(tt.direction === "both", "a plain upsert defaults to the 'both' direction");
 
 let forRoute = listRouteTimetablesForRoute(db, route.id);
 assert(forRoute.length === 1, "the route now has exactly one timetable");
 
-// Upserting the same (route, day type) again replaces it rather than adding
-// a second row — there's only one component per route per day type yet.
+// Upserting the same (route, day type, direction) again replaces it rather
+// than adding a second row — there's only one component per that triple.
 const tt2 = upsertRouteTimetable(
   db,
   route.id,
   "monday_friday",
+  "both",
   [{ startMinutes: 400, endMinutes: 1200, intervalMinutes: 20 }],
   [],
   [0, 300],
   [0, 300],
+  [],
+  [],
 );
-assert(tt2.id === tt.id, "upserting the same route+day type updates the existing row rather than inserting a new one");
+assert(tt2.id === tt.id, "upserting the same route+day type+direction updates the existing row rather than inserting a new one");
 forRoute = listRouteTimetablesForRoute(db, route.id);
 assert(forRoute.length === 1 && forRoute[0].timeBands[0].startMinutes === 400, "the update replaced the row's fields");
+
+// A terminus-loop route can have independent outbound/inbound components
+// alongside (or instead of) its 'both' one — a different direction is a
+// separate row, same as a different day type is.
+const tt3 = upsertRouteTimetable(
+  db,
+  route.id,
+  "monday_friday",
+  "outbound",
+  [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 15 }],
+  [],
+  [0, 100],
+  [0, 100],
+  [],
+  [],
+);
+assert(tt3.id !== tt2.id, "a different direction is a distinct row, not an update of the 'both' one");
+forRoute = listRouteTimetablesForRoute(db, route.id);
+assert(
+  forRoute.length === 2 && forRoute.some((t) => t.direction === "both") && forRoute.some((t) => t.direction === "outbound"),
+  "the route now has both a 'both' row and its own 'outbound' row",
+);
+// Upserting the SAME direction again still replaces, not duplicates.
+const tt3b = upsertRouteTimetable(
+  db,
+  route.id,
+  "monday_friday",
+  "outbound",
+  [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 30 }],
+  [],
+  [0, 200],
+  [0, 200],
+  [],
+  [],
+);
+assert(tt3b.id === tt3.id, "upserting the same direction again updates that row rather than inserting a third one");
+assert(listRouteTimetablesForRoute(db, route.id).length === 2, "still exactly two rows for this route+day type");
 
 // A different day type on the same route is a separate row.
 upsertRouteTimetable(
   db,
   route.id,
   "saturday",
+  "both",
   [{ startMinutes: 500, endMinutes: 1100, intervalMinutes: 60 }],
   [],
   [0, 400],
   [0, 400],
+  [],
+  [],
 );
 forRoute = listRouteTimetablesForRoute(db, route.id);
-assert(forRoute.length === 2, "a different day type adds a second row rather than replacing the first");
+assert(forRoute.length === 3, "a different day type adds a third row (the two monday_friday directions plus this one) rather than replacing anything");
 
-assert(listAllRouteTimetables(db).length === 2, "listAllRouteTimetables sees every route's timetables");
+assert(listAllRouteTimetables(db).length === 3, "listAllRouteTimetables sees every route's timetables");
 
 deleteRouteTimetable(db, tt2.id);
-assert(listRouteTimetablesForRoute(db, route.id).length === 1, "deleting one timetable leaves the other alone");
+assert(listRouteTimetablesForRoute(db, route.id).length === 2, "deleting the 'both' row leaves the 'outbound' and saturday rows alone");
 
 // --- updating a route ---
 const updated = updateRoute(
@@ -303,10 +362,13 @@ upsertRouteTimetable(
   db,
   route.id,
   "sunday",
+  "both",
   [{ startMinutes: 600, endMinutes: 900, intervalMinutes: 60 }],
   [],
   [0, 200, 400],
   [0, 200, 400],
+  [],
+  [],
 );
 assert(listRouteTimetablesForRoute(db, route.id).length === 1, "a new timetable can be built after the update");
 
@@ -354,10 +416,13 @@ upsertRouteTimetable(
   db,
   route2.id,
   "sunday",
+  "both",
   [{ startMinutes: 700, endMinutes: 1000, intervalMinutes: 45 }],
   [],
   [0, 250],
   [0, 250],
+  [],
+  [],
 );
 db.close();
 db = openSave(path);
@@ -425,7 +490,119 @@ db = openSave(path);
 depots = listDepots(db);
 assert(depots.length === 1 && depots[0].name === "Persisted Depot", "a depot survives close+reopen");
 assert(listDepotEntrances(db, depot2.id).length === 1, "a depot's entrances survive close+reopen too");
+
+// --- stop groups (DESIGN.md §4) — player-created only, 2026-09-27 ---
+// stop_groups mints only an id; name/hidden/always_show_members and
+// membership ('stop'/osmId/'group_id') both go through the existing
+// override layer, already covered above — this just checks the id-minting
+// and listing half.
+const sg1 = createStopGroup(db);
+const sg2 = createStopGroup(db);
+assert(sg1.id !== sg2.id, "each stop group gets a distinct id");
+let stopGroupIds = listStopGroupIds(db);
+assert(stopGroupIds.includes(sg1.id) && stopGroupIds.includes(sg2.id), "both stop groups are listed");
+
+setOverride(db, "stop", 5001, "group_id", sg1.id);
+setOverride(db, "stop", 5002, "group_id", sg1.id);
+setOverride(db, "stop_group", sg1.id, "name", "Princes Street eastbound");
+assert(
+  getOverride(db, "stop_group", sg1.id, "name") === "Princes Street eastbound",
+  "a stop group's manually-set name round-trips through the override layer",
+);
+let groupMembers = listOverrides<number | null>(db, "stop", "group_id").filter((o) => o.value === sg1.id);
+assert(groupMembers.length === 2, "both stops assigned to the group show up via the same override query bus stations use");
+
+resetOverride(db, "stop", 5002, "group_id");
+groupMembers = listOverrides<number | null>(db, "stop", "group_id").filter((o) => o.value === sg1.id);
+assert(groupMembers.length === 1, "removing one stop from a group leaves the other");
+
 db.close();
+db = openSave(path);
+stopGroupIds = listStopGroupIds(db);
+assert(stopGroupIds.includes(sg1.id) && stopGroupIds.includes(sg2.id), "stop groups survive close+reopen");
+assert(getOverride(db, "stop_group", sg1.id, "name") === "Princes Street eastbound", "a stop group's name survives close+reopen");
+assert(
+  getOverride<number | null>(db, "stop", 5001, "group_id") === sg1.id,
+  "stop group membership survives close+reopen",
+);
+db.close();
+
+// --- v19 -> v20 migration: day_type becomes weekday_mask + term_facet ---
+// A hand-built v19-schema file (route_timetables still has the old
+// day_type column), the same way v17->v18 was verified — opening it with
+// the current openSave() must migrate it correctly, preserving every
+// existing row's real day type and other fields, not just avoid throwing.
+{
+  const migrationPath = "./electron/.verify-migration-v19.sqlite";
+  if (existsSync(migrationPath)) unlinkSync(migrationPath);
+  const raw = new DatabaseSync(migrationPath);
+  raw.exec(`
+    CREATE TABLE depot_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      region TEXT NOT NULL,
+      main_bus_station_osm_id INTEGER
+    );
+    CREATE TABLE routes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      number TEXT NOT NULL,
+      points TEXT NOT NULL,
+      orientation TEXT NOT NULL,
+      terminus_index INTEGER,
+      start_index INTEGER,
+      colour TEXT NOT NULL,
+      name TEXT,
+      pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
+      parent_route_id INTEGER REFERENCES routes(id),
+      variation_letter TEXT
+    );
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, day_type, direction)
+    );
+  `);
+  raw.prepare("INSERT INTO depot_groups (id, name, region) VALUES (1, 'Edinburgh', 'East Scotland')").run();
+  raw
+    .prepare(
+      "INSERT INTO routes (id, depot_group_id, number, points, orientation, colour) VALUES (1, 1, '42', '[]', 'clockwise', '#ff0000')",
+    )
+    .run();
+  for (const dayType of ["monday_friday", "saturday", "sunday"]) {
+    raw
+      .prepare(
+        `INSERT INTO route_timetables (route_id, day_type, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
+         VALUES (1, ?, 'both', '[{"startMinutes":360,"endMinutes":1140,"intervalMinutes":30}]', '[]', '[0]', '[0]')`,
+      )
+      .run(dayType);
+  }
+  raw.exec("PRAGMA user_version = 19");
+  raw.close();
+
+  const migrated = openSave(migrationPath);
+  const migratedTimetables = listRouteTimetablesForRoute(migrated, 1);
+  assert(migratedTimetables.length === 3, "all 3 pre-migration timetable rows survive the v19->v20 migration");
+  const dayTypesAfterMigration = migratedTimetables.map((t) => t.dayType).sort();
+  assert(
+    JSON.stringify(dayTypesAfterMigration) === JSON.stringify(["monday_friday", "saturday", "sunday"]),
+    "each row's real day type is preserved through the weekday_mask/term_facet round-trip, not just migrated without throwing",
+  );
+  assert(
+    migratedTimetables.every((t) => t.timeBands[0].startMinutes === 360),
+    "other fields (time bands) survive the migration untouched",
+  );
+  migrated.close();
+  unlinkSync(migrationPath);
+}
 
 unlinkSync(path);
 console.log("\nAll checks passed.");

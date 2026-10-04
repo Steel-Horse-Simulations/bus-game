@@ -8,10 +8,15 @@ import type {
   TimingPoint,
   TimeBand,
   RouteTimetable,
+  RouteTimetableDirection,
   PlayerStop,
   Depot,
   DepotEntrance,
   DepotEntranceMode,
+  Dealer,
+  DealerEntrance,
+  DealerEntranceMode,
+  DealerManufacturer,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -114,19 +119,25 @@ contextBridge.exposeInMainWorld("routeTimetables", {
   upsert: (
     routeId: number,
     dayType: DayType,
+    direction: RouteTimetableDirection,
     timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
+    excludedDepartureMinutes: number[],
+    customDepartureMinutes: number[],
   ) =>
     ipcRenderer.invoke(
       "routeTimetables:upsert",
       routeId,
       dayType,
+      direction,
       timeBands,
       timingPoints,
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,
+      excludedDepartureMinutes,
+      customDepartureMinutes,
     ) as Promise<RouteTimetable>,
   listForRoute: (routeId: number) =>
     ipcRenderer.invoke("routeTimetables:listForRoute", routeId) as Promise<RouteTimetable[]>,
@@ -156,4 +167,31 @@ contextBridge.exposeInMainWorld("depots", {
   setEntranceMode: (id: number, mode: DepotEntranceMode) => ipcRenderer.invoke("depots:setEntranceMode", id, mode) as Promise<void>,
   deleteEntrance: (id: number) => ipcRenderer.invoke("depots:deleteEntrance", id) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depots:delete", id) as Promise<void>,
+});
+
+// Dealers (T62, OPEN-ITEMS.md) — exact mirror of the depots bridge above,
+// except a dealer has no owning depot group and carries a manufacturer
+// instead.
+contextBridge.exposeInMainWorld("dealers", {
+  create: (name: string, manufacturer: DealerManufacturer, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DealerEntranceMode }[]) =>
+    ipcRenderer.invoke("dealers:create", name, manufacturer, lon, lat, entrances) as Promise<{ dealer: Dealer; entrances: DealerEntrance[] }>,
+  list: () => ipcRenderer.invoke("dealers:list") as Promise<Dealer[]>,
+  listAllEntrances: () => ipcRenderer.invoke("dealers:listAllEntrances") as Promise<DealerEntrance[]>,
+  rename: (id: number, name: string) => ipcRenderer.invoke("dealers:rename", id, name) as Promise<void>,
+  setManufacturer: (id: number, manufacturer: DealerManufacturer) => ipcRenderer.invoke("dealers:setManufacturer", id, manufacturer) as Promise<void>,
+  addEntrance: (dealerId: number, lon: number, lat: number, mode: DealerEntranceMode) =>
+    ipcRenderer.invoke("dealers:addEntrance", dealerId, lon, lat, mode) as Promise<DealerEntrance>,
+  setEntranceMode: (id: number, mode: DealerEntranceMode) => ipcRenderer.invoke("dealers:setEntranceMode", id, mode) as Promise<void>,
+  deleteEntrance: (id: number) => ipcRenderer.invoke("dealers:deleteEntrance", id) as Promise<void>,
+  delete: (id: number) => ipcRenderer.invoke("dealers:delete", id) as Promise<void>,
+});
+
+// Stop groups (DESIGN.md §4) — player-created only (2026-09-27: dropped the
+// automatic OSM stop_area-relation seeding, see stops-layer.ts). This only
+// mints an id; name and membership both go through the existing `overrides`
+// bridge above ('stop_group'/id for name+display state, 'stop'/osmId/
+// 'group_id' for membership).
+contextBridge.exposeInMainWorld("stopGroups", {
+  create: () => ipcRenderer.invoke("stopGroups:create") as Promise<{ id: number }>,
+  list: () => ipcRenderer.invoke("stopGroups:list") as Promise<number[]>,
 });

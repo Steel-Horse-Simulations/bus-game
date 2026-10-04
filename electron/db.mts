@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 24;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -104,16 +104,63 @@ CREATE TABLE IF NOT EXISTS routes (
 -- leg just to read a time back. Regenerated whenever the frequency,
 -- timing points, or the route's own point list changes. One row per
 -- (route, day type): a route not yet given a timetable for a day type
--- simply has no row for it.
+-- simply has no row for it. "excluded_departure_minutes" is a JSON array
+-- of specific generated departure minutes this component should NOT run
+-- (a live user request: 398A taking over 398's own 0100 slot without
+-- editing 398's own time bands) — checked against the live generated
+-- list each time, so a minute that's no longer generated (bands changed)
+-- simply has no effect rather than needing its own cleanup pass.
+-- "custom_departure_minutes" is the opposite: specific one-off departures
+-- entered directly rather than produced by any band's own interval (a
+-- live user request: "an option to put in custom times for departures
+-- instead of everything being on an interval") — merged into the
+-- generated list (deduplicated against it, not appended blindly) rather
+-- than kept as a separate, second timetable to reconcile.
+-- "direction" defaults to 'both' — one component drives the whole route,
+-- today's only behaviour. A terminus-loop route (DESIGN.md §6: one point
+-- list encoding an outbound leg and a return leg) can instead have up to
+-- two further components, 'outbound' and 'inbound', each independently
+-- timetabled against just that leg's own points — a live user request:
+-- "I should be able to set inbound and outbound times separately... useful
+-- if I am running from multiple depots," since two depots each crewing
+-- one leg of a loop are genuinely two separate operations, not one bus
+-- continuing round a shared schedule. A non-loop route (most routes —
+-- inbound/outbound already two separate Route rows, like 398/398A) only
+-- ever has 'both' rows; the UI never offers the direction-specific option
+-- for one. Reading a route's timetable prefers a leg-specific row over
+-- 'both' where one exists (stops-layer.ts / route-timetable-panel.ts),
+-- and falls back to 'both' otherwise — both kinds can coexist per
+-- (route, day type), the extra ones simply unused once split rows exist.
+-- "day_type" became "weekday_mask" + "term_facet" (schema v19->v20) — real
+-- Skye timetable data (UK-EXPANSION.md §13) needs sub-patterns the old
+-- fixed monday_friday/saturday/sunday enum can't express at all: 608 runs
+-- Tuesdays-and-Thursdays on a different pattern than the rest of the week,
+-- 607 runs Fridays differently from Monday-Thursday, and Portree High
+-- School/Portree Square need a school-day vs non-school-day split. A
+-- bitmask (bit 0 = Monday ... bit 6 = Sunday, see WEEKDAY_BITS below) can
+-- express any weekday combination without a schema change every time real
+-- data shows a new one, crossed with an independent term_facet ('any' /
+-- 'term_time' / 'holiday'). **No UI lets a player create anything beyond
+-- the original 3 presets yet** — the TS-facing DayType type and every
+-- existing caller are deliberately unchanged (still exactly
+-- "monday_friday" | "saturday" | "sunday"); this only makes what's
+-- actually stored able to represent more, translated at the boundary by
+-- dayTypeToMaskAndFacet/maskAndFacetToDayType below. Letting a player
+-- actually pick a custom weekday+term-time pattern in the timetable editor
+-- is a separate, later increment (OPEN-ITEMS.md).
 CREATE TABLE IF NOT EXISTS route_timetables (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   route_id INTEGER NOT NULL REFERENCES routes(id),
-  day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
+  weekday_mask INTEGER NOT NULL,
+  term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+  direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
   time_bands TEXT NOT NULL,
   timing_points TEXT NOT NULL,
   arrival_offsets_seconds TEXT NOT NULL,
   departure_offsets_seconds TEXT NOT NULL,
-  UNIQUE (route_id, day_type)
+  excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+  custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+  UNIQUE (route_id, weekday_mask, term_facet, direction)
 );
 
 -- A stop the player places directly (DESIGN.md §4: "Real OSM stops, plus
@@ -156,13 +203,72 @@ CREATE TABLE IF NOT EXISTS depots (
 -- A depot's access point(s) (OPERATIONS.md: "Entrances are placed by the
 -- player on the surrounding roads, and there can be several. Each can be
 -- entry only, exit only, or both"). Road-snapped at creation time by the
--- WASM router, the same way a route's own points are snapped — "lon"/"lat"
--- is the snapped position, not the raw click. No foreign-key cascade is
--- enabled on this database (same as everywhere else), so deleting a depot
--- must delete its own entrances first.
+-- WASM router (Router::snap_entrance_to_junction) — "lon"/"lat" is the
+-- snapped position, not the raw click. No foreign-key cascade is enabled
+-- on this database (same as everywhere else), so deleting a depot must
+-- delete its own entrances first.
+-- Shown as a plain dot, not an oriented marker — a live user correction
+-- (2026-10-02) after the previous oriented semi-circle marker (needing a
+-- bearing to rotate and a road width to scale by, plus a manual nudge to
+-- compensate for both) proved "constantly breaking": "entrances and exits
+-- should not be shown on the map, only dots on the road... We should
+-- remove all code that isnt needed other than for the basic
+-- functionality." The bearing/road_width_m/size_scale columns and the
+-- whole nudge mechanism were removed accordingly (schema v23->v24) — see
+-- OPEN-ITEMS.md T61/T62 for the full history of why they existed.
 CREATE TABLE IF NOT EXISTS depot_entrances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_id INTEGER NOT NULL REFERENCES depots(id),
+  lon REAL NOT NULL,
+  lat REAL NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
+);
+
+-- A player-created stop group (DESIGN.md §4 "Grouped stops"). Originally
+-- seeded automatically from OSM public_transport=stop_area relations; that
+-- was dropped (2026-09-27, see OPEN-ITEMS.md) after a real relation on
+-- Princes Street, Edinburgh grouped far more stops than made sense
+-- together, with no way to correct it. Now the same "manual only, no
+-- automatic seeding" model as the railway/subway/tram stop link
+-- (stops-layer.ts). This table exists only to mint a stable id for a group
+-- the player has created — its own name/hidden/always_show_members state
+-- lives in osm_overrides under entity_type 'stop_group' exactly as before,
+-- and its membership lives in osm_overrides under entity_type 'stop',
+-- field 'group_id' (mirroring how bus station stand membership already
+-- works), not a column here. A group's own map position is always the
+-- live centroid of its current members, recomputed in the renderer, not
+-- stored.
+CREATE TABLE IF NOT EXISTS stop_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL
+);
+
+-- A vehicle dealer (T62, OPEN-ITEMS.md — CLAUDE.md's Phase 9 "dealer
+-- network," placed now so the real UK-EXPANSION.md §2 locations aren't
+-- lost before Phase 9's buying/collection logistics exist). Deliberately
+-- NOT linked to a depot_group — a real dealer (e.g. Volvo Glasgow) isn't
+-- owned by any one operator, any depot group can buy from it, confirmed
+-- directly with the user rather than assumed. "manufacturer" is a fixed
+-- enum, not free text, matching UK-EXPANSION.md §2's own closed list —
+-- Phase 9's nearest-depot collection rule (Wrightbus/Yutong) is
+-- manufacturer-specific, so this needs to be a real, queryable field now
+-- rather than inferred from a name string later. Otherwise an exact
+-- mirror of "depots": same "lon"/"lat" is the raw site click, never
+-- kerb-snapped.
+CREATE TABLE IF NOT EXISTS dealers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'western_commercial', 'wrightbus', 'yutong')),
+  lon REAL NOT NULL,
+  lat REAL NOT NULL
+);
+
+-- A dealer's own entrances — exact mirror of depot_entrances, including
+-- its plain-dot-not-oriented-marker simplification (see that table's own
+-- comment).
+CREATE TABLE IF NOT EXISTS dealer_entrances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dealer_id INTEGER NOT NULL REFERENCES dealers(id),
   lon REAL NOT NULL,
   lat REAL NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
@@ -277,6 +383,143 @@ export function openSave(path: string): SaveDb {
     // and entrances") can now be saved — both tables are created by the
     // SCHEMA statement above, this branch only needs to advance the
     // version.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 14) {
+    // v14 -> v15: grouped stops (DESIGN.md §4) became player-created only
+    // instead of OSM-relation-seeded (see stop_groups' own SCHEMA comment)
+    // — the stop_groups table is created by the SCHEMA statement above,
+    // this branch only needs to advance the version. Any existing
+    // 'stop'/'bus_station' override rows are untouched; any existing
+    // 'stop'/<old relation osmId> group-membership state never existed as
+    // an override in the first place (grouping was derived at read time,
+    // never persisted), so there's nothing to migrate or lose.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 15) {
+    // v15 -> v16: a route timetable can now exclude specific generated
+    // departure minutes (a variation taking over one of the base route's
+    // own slots, see route_timetables' own SCHEMA comment) — every
+    // existing row simply gets an empty exclusion list, unchanged
+    // behaviour until the player actually excludes something.
+    db.exec("ALTER TABLE route_timetables ADD COLUMN excluded_departure_minutes TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 16) {
+    // v16 -> v17: a route timetable can now also add one-off custom
+    // departure minutes that no band's own interval produces (see
+    // route_timetables' own SCHEMA comment) — every existing row simply
+    // gets an empty list, unchanged behaviour until the player actually
+    // adds one.
+    db.exec("ALTER TABLE route_timetables ADD COLUMN custom_departure_minutes TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 17) {
+    // v17 -> v18: a terminus-loop route can now have independent outbound/
+    // inbound timetable components (see route_timetables' own SCHEMA
+    // comment) — the UNIQUE constraint itself changes shape
+    // ((route_id, day_type) -> (route_id, day_type, direction)), which
+    // SQLite can't alter in place, so this rebuilds the table rather than
+    // just adding a column. Every existing row becomes a 'both' row,
+    // identical behaviour to before this migration.
+    db.exec("ALTER TABLE route_timetables RENAME TO route_timetables_v17");
+    db.exec(`
+      CREATE TABLE route_timetables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        route_id INTEGER NOT NULL REFERENCES routes(id),
+        day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
+        direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+        time_bands TEXT NOT NULL,
+        timing_points TEXT NOT NULL,
+        arrival_offsets_seconds TEXT NOT NULL,
+        departure_offsets_seconds TEXT NOT NULL,
+        excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+        custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+        UNIQUE (route_id, day_type, direction)
+      )
+    `);
+    db.exec(`
+      INSERT INTO route_timetables
+        (id, route_id, day_type, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes)
+      SELECT id, route_id, day_type, 'both', time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+      FROM route_timetables_v17
+    `);
+    db.exec("DROP TABLE route_timetables_v17");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 18) {
+    // v18 -> v19: a depot entrance now carries its own bearing (see
+    // depot_entrances' own SCHEMA comment) — every existing entrance
+    // simply gets 0 (due north), a harmless default until it's re-created
+    // or the player nudges it; no gameplay logic reads bearing yet
+    // besides the marker's own visual orientation.
+    db.exec("ALTER TABLE depot_entrances ADD COLUMN bearing REAL NOT NULL DEFAULT 0");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 19) {
+    // v19 -> v20: "day_type" becomes "weekday_mask" + "term_facet" (see
+    // route_timetables' own SCHEMA comment for why) — the UNIQUE
+    // constraint's own shape changes, so this rebuilds the table rather
+    // than just adding a column. Every existing row's day_type maps
+    // straight across to the equivalent mask (still exactly the 3 original
+    // presets, term_facet 'any') — identical behaviour to before this
+    // migration, since no UI creates anything else yet.
+    db.exec("ALTER TABLE route_timetables RENAME TO route_timetables_v19");
+    db.exec(`
+      CREATE TABLE route_timetables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        route_id INTEGER NOT NULL REFERENCES routes(id),
+        weekday_mask INTEGER NOT NULL,
+        term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+        direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+        time_bands TEXT NOT NULL,
+        timing_points TEXT NOT NULL,
+        arrival_offsets_seconds TEXT NOT NULL,
+        departure_offsets_seconds TEXT NOT NULL,
+        excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+        custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+        UNIQUE (route_id, weekday_mask, term_facet, direction)
+      )
+    `);
+    db.exec(`
+      INSERT INTO route_timetables
+        (id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes)
+      SELECT id, route_id,
+        CASE day_type
+          WHEN 'monday_friday' THEN ${MONDAY_FRIDAY_MASK}
+          WHEN 'saturday' THEN ${SATURDAY_MASK}
+          WHEN 'sunday' THEN ${SUNDAY_MASK}
+        END,
+        'any', direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+      FROM route_timetables_v19
+    `);
+    db.exec("DROP TABLE route_timetables_v19");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 20) {
+    // v20 -> v21: a depot entrance now also carries the real width of the
+    // road it sits against (see depot_entrances' own SCHEMA comment) —
+    // every existing entrance simply gets the same 5.5m placeholder
+    // `snap_entrance_to_junction` used before this existed, a harmless
+    // default until it's re-created or the player nudges it.
+    db.exec("ALTER TABLE depot_entrances ADD COLUMN road_width_m REAL NOT NULL DEFAULT 5.5");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 21) {
+    // v21 -> v22: a manual per-entrance size multiplier (see
+    // depot_entrances' own SCHEMA comment) — every existing entrance
+    // starts at 1.0 (no change from its current auto-computed size).
+    db.exec("ALTER TABLE depot_entrances ADD COLUMN size_scale REAL NOT NULL DEFAULT 1.0");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 22) {
+    // v22 -> v23: the dealers/dealer_entrances tables (T62, OPEN-ITEMS.md)
+    // — brand new tables, `CREATE TABLE IF NOT EXISTS` in SCHEMA above
+    // already creates them on this very `db.exec(SCHEMA)` call, so this
+    // branch only needs to advance the version number.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 23) {
+    // v23 -> v24: entrances/exits are shown as plain dots, not an
+    // oriented marker (a live user correction — see depot_entrances' own
+    // SCHEMA comment) — bearing/road_width_m/size_scale are no longer
+    // used by anything, so dropped outright rather than left unused.
+    db.exec("ALTER TABLE depot_entrances DROP COLUMN bearing");
+    db.exec("ALTER TABLE depot_entrances DROP COLUMN road_width_m");
+    db.exec("ALTER TABLE depot_entrances DROP COLUMN size_scale");
+    db.exec("ALTER TABLE dealer_entrances DROP COLUMN bearing");
+    db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
+    db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -573,8 +816,61 @@ export function deleteRoute(db: SaveDb, id: number): void {
 // A route's timetable (DESIGN.md §7) — see the route_timetables table's own
 // comment in SCHEMA for what's built so far and what's deliberately left
 // out (variations, padding, connections, extensions, the event calendar).
+//
+// Stored underneath as a weekday bitmask + term-time facet (schema
+// v19->v20, see SCHEMA's own comment) so real sub-patterns Skye's actual
+// timetables need (UK-EXPANSION.md §13 — 608/607's Tuesday/Thursday
+// footnote, 607's own separate Friday-differs pattern, Portree High
+// School vs Portree Square's school-day split) can be represented without
+// another schema change every time real data shows a new one. `DayType`
+// itself stays exactly the original 3 presets for now — no UI lets a
+// player create anything else yet, that's a separate later increment —
+// translated at this boundary by dayTypeToMaskAndFacet/
+// maskAndFacetToDayType below.
 export type DayType = "monday_friday" | "saturday" | "sunday";
 export const DAY_TYPES: readonly DayType[] = ["monday_friday", "saturday", "sunday"];
+
+export type TermFacet = "any" | "term_time" | "holiday";
+
+// Bit 0 = Monday ... bit 6 = Sunday.
+export const WEEKDAY_BITS = {
+  monday: 1,
+  tuesday: 2,
+  wednesday: 4,
+  thursday: 8,
+  friday: 16,
+  saturday: 32,
+  sunday: 64,
+} as const;
+
+export const MONDAY_FRIDAY_MASK =
+  WEEKDAY_BITS.monday | WEEKDAY_BITS.tuesday | WEEKDAY_BITS.wednesday | WEEKDAY_BITS.thursday | WEEKDAY_BITS.friday;
+export const SATURDAY_MASK: number = WEEKDAY_BITS.saturday;
+export const SUNDAY_MASK: number = WEEKDAY_BITS.sunday;
+
+function dayTypeToMaskAndFacet(dayType: DayType): { weekdayMask: number; termFacet: TermFacet } {
+  switch (dayType) {
+    case "monday_friday":
+      return { weekdayMask: MONDAY_FRIDAY_MASK, termFacet: "any" };
+    case "saturday":
+      return { weekdayMask: SATURDAY_MASK, termFacet: "any" };
+    case "sunday":
+      return { weekdayMask: SUNDAY_MASK, termFacet: "any" };
+  }
+}
+
+// Throws on any combination beyond the 3 original presets — correct for
+// now, since nothing can create one yet (see the type's own doc comment
+// above); once a real picker exists this becomes the natural place to
+// widen DayType itself rather than a fixed 3-value union.
+function maskAndFacetToDayType(weekdayMask: number, termFacet: string): DayType {
+  if (weekdayMask === MONDAY_FRIDAY_MASK && termFacet === "any") return "monday_friday";
+  if (weekdayMask === SATURDAY_MASK && termFacet === "any") return "saturday";
+  if (weekdayMask === SUNDAY_MASK && termFacet === "any") return "sunday";
+  throw new Error(
+    `unrecognised weekday_mask/term_facet combination (${weekdayMask}/${termFacet}) — no DayType beyond the 3 original presets exists yet`,
+  );
+}
 
 // A timing point is a published scheduling location, not every physical
 // stop (route-timetable.mts's own comment has the full reasoning).
@@ -597,82 +893,103 @@ export interface TimeBand {
   intervalMinutes: number;
 }
 
+export type RouteTimetableDirection = "both" | "outbound" | "inbound";
+
 export interface RouteTimetable {
   id: number;
   routeId: number;
   dayType: DayType;
+  direction: RouteTimetableDirection;
   timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
+  excludedDepartureMinutes: number[];
+  customDepartureMinutes: number[];
 }
 
 interface RouteTimetableRow {
   id: number;
   route_id: number;
-  day_type: string;
+  weekday_mask: number;
+  term_facet: string;
+  direction: string;
   time_bands: string;
   timing_points: string;
   arrival_offsets_seconds: string;
   departure_offsets_seconds: string;
+  excluded_departure_minutes: string;
+  custom_departure_minutes: string;
 }
 
 function routeTimetableFromRow(row: RouteTimetableRow): RouteTimetable {
   return {
     id: row.id,
     routeId: row.route_id,
-    dayType: row.day_type as DayType,
+    dayType: maskAndFacetToDayType(row.weekday_mask, row.term_facet),
+    direction: row.direction as RouteTimetableDirection,
     timeBands: JSON.parse(row.time_bands) as TimeBand[],
     timingPoints: JSON.parse(row.timing_points) as TimingPoint[],
     arrivalOffsetsSeconds: JSON.parse(row.arrival_offsets_seconds) as number[],
     departureOffsetsSeconds: JSON.parse(row.departure_offsets_seconds) as number[],
+    excludedDepartureMinutes: JSON.parse(row.excluded_departure_minutes) as number[],
+    customDepartureMinutes: JSON.parse(row.custom_departure_minutes) as number[],
   };
 }
 
-// One row per (route, day type) — creating a second timetable for a day
-// type that already has one replaces it outright, since there's only ever
-// one component per route per day type in this slice (no variations to
-// tell apart yet).
+// One row per (route, day type, direction) — creating a second timetable
+// for a (route, day type, direction) that already has one replaces it
+// outright, since there's still only ever one component per that triple.
 export function upsertRouteTimetable(
   db: SaveDb,
   routeId: number,
   dayType: DayType,
+  direction: RouteTimetableDirection,
   timeBands: TimeBand[],
   timingPoints: TimingPoint[],
   arrivalOffsetsSeconds: number[],
   departureOffsetsSeconds: number[],
+  excludedDepartureMinutes: number[],
+  customDepartureMinutes: number[],
 ): RouteTimetable {
+  const { weekdayMask, termFacet } = dayTypeToMaskAndFacet(dayType);
   db.prepare(
     `INSERT INTO route_timetables
-       (route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (route_id, day_type) DO UPDATE SET
+       (route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (route_id, weekday_mask, term_facet, direction) DO UPDATE SET
        time_bands = excluded.time_bands,
        timing_points = excluded.timing_points,
        arrival_offsets_seconds = excluded.arrival_offsets_seconds,
-       departure_offsets_seconds = excluded.departure_offsets_seconds`,
+       departure_offsets_seconds = excluded.departure_offsets_seconds,
+       excluded_departure_minutes = excluded.excluded_departure_minutes,
+       custom_departure_minutes = excluded.custom_departure_minutes`,
   ).run(
     routeId,
-    dayType,
+    weekdayMask,
+    termFacet,
+    direction,
     JSON.stringify(timeBands),
     JSON.stringify(timingPoints),
     JSON.stringify(arrivalOffsetsSeconds),
     JSON.stringify(departureOffsetsSeconds),
+    JSON.stringify(excludedDepartureMinutes),
+    JSON.stringify(customDepartureMinutes),
   );
   const row = db
     .prepare(
-      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
-       FROM route_timetables WHERE route_id = ? AND day_type = ?`,
+      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+       FROM route_timetables WHERE route_id = ? AND weekday_mask = ? AND term_facet = ? AND direction = ?`,
     )
-    .get(routeId, dayType) as unknown as RouteTimetableRow;
+    .get(routeId, weekdayMask, termFacet, direction) as unknown as RouteTimetableRow;
   return routeTimetableFromRow(row);
 }
 
 export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteTimetable[] {
   const rows = db
     .prepare(
-      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
-       FROM route_timetables WHERE route_id = ? ORDER BY day_type`,
+      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+       FROM route_timetables WHERE route_id = ? ORDER BY weekday_mask, term_facet`,
     )
     .all(routeId) as unknown as RouteTimetableRow[];
   return rows.map(routeTimetableFromRow);
@@ -684,7 +1001,7 @@ export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteT
 export function listAllRouteTimetables(db: SaveDb): RouteTimetable[] {
   const rows = db
     .prepare(
-      `SELECT id, route_id, day_type, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds
+      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
        FROM route_timetables`,
     )
     .all() as unknown as RouteTimetableRow[];
@@ -820,9 +1137,7 @@ export function renameDepot(db: SaveDb, id: number, name: string): void {
 }
 
 export function addDepotEntrance(db: SaveDb, depotId: number, lon: number, lat: number, mode: DepotEntranceMode): DepotEntrance {
-  const result = db
-    .prepare("INSERT INTO depot_entrances (depot_id, lon, lat, mode) VALUES (?, ?, ?, ?)")
-    .run(depotId, lon, lat, mode);
+  const result = db.prepare("INSERT INTO depot_entrances (depot_id, lon, lat, mode) VALUES (?, ?, ?, ?)").run(depotId, lon, lat, mode);
   return { id: Number(result.lastInsertRowid), depotId, lon, lat, mode };
 }
 
@@ -837,6 +1152,130 @@ export function deleteDepotEntrance(db: SaveDb, id: number): void {
 export function deleteDepot(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM depot_entrances WHERE depot_id = ?").run(id);
   db.prepare("DELETE FROM depots WHERE id = ?").run(id);
+}
+
+// A vehicle dealer (T62, OPEN-ITEMS.md) — see the dealers/dealer_entrances
+// tables' own comments in SCHEMA. Exact mirror of the Depot/DepotEntrance
+// functions above except there is no owning depot_group_id (a dealer
+// isn't owned by any one operator) and "manufacturer" replaces that field.
+export type DealerManufacturer = "volvo" | "adl" | "western_commercial" | "wrightbus" | "yutong";
+export type DealerEntranceMode = DepotEntranceMode;
+
+export interface DealerEntrance {
+  id: number;
+  dealerId: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
+}
+
+export interface Dealer {
+  id: number;
+  name: string;
+  manufacturer: DealerManufacturer;
+  lon: number;
+  lat: number;
+}
+
+interface DealerRow {
+  id: number;
+  name: string;
+  manufacturer: DealerManufacturer;
+  lon: number;
+  lat: number;
+}
+
+function dealerFromRow(row: DealerRow): Dealer {
+  return { id: row.id, name: row.name, manufacturer: row.manufacturer, lon: row.lon, lat: row.lat };
+}
+
+interface DealerEntranceRow {
+  id: number;
+  dealer_id: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
+}
+
+function dealerEntranceFromRow(row: DealerEntranceRow): DealerEntrance {
+  return { id: row.id, dealerId: row.dealer_id, lon: row.lon, lat: row.lat, mode: row.mode };
+}
+
+export function createDealer(
+  db: SaveDb,
+  name: string,
+  manufacturer: DealerManufacturer,
+  lon: number,
+  lat: number,
+  entrances: readonly { lon: number; lat: number; mode: DealerEntranceMode }[],
+): { dealer: Dealer; entrances: DealerEntrance[] } {
+  const result = db
+    .prepare("INSERT INTO dealers (name, manufacturer, lon, lat) VALUES (?, ?, ?, ?)")
+    .run(name, manufacturer, lon, lat);
+  const dealerId = Number(result.lastInsertRowid);
+  const createdEntrances = entrances.map((e) => {
+    const entranceResult = db
+      .prepare("INSERT INTO dealer_entrances (dealer_id, lon, lat, mode) VALUES (?, ?, ?, ?)")
+      .run(dealerId, e.lon, e.lat, e.mode);
+    return { id: Number(entranceResult.lastInsertRowid), dealerId, lon: e.lon, lat: e.lat, mode: e.mode };
+  });
+  return { dealer: { id: dealerId, name, manufacturer, lon, lat }, entrances: createdEntrances };
+}
+
+export function listDealers(db: SaveDb): Dealer[] {
+  const rows = db.prepare("SELECT id, name, manufacturer, lon, lat FROM dealers").all() as unknown as DealerRow[];
+  return rows.map(dealerFromRow);
+}
+
+export function listDealerEntrances(db: SaveDb, dealerId: number): DealerEntrance[] {
+  const rows = db
+    .prepare("SELECT id, dealer_id, lon, lat, mode FROM dealer_entrances WHERE dealer_id = ?")
+    .all(dealerId) as unknown as DealerEntranceRow[];
+  return rows.map(dealerEntranceFromRow);
+}
+
+export function listAllDealerEntrances(db: SaveDb): DealerEntrance[] {
+  const rows = db.prepare("SELECT id, dealer_id, lon, lat, mode FROM dealer_entrances").all() as unknown as DealerEntranceRow[];
+  return rows.map(dealerEntranceFromRow);
+}
+
+export function renameDealer(db: SaveDb, id: number, name: string): void {
+  db.prepare("UPDATE dealers SET name = ? WHERE id = ?").run(name, id);
+}
+
+export function setDealerManufacturer(db: SaveDb, id: number, manufacturer: DealerManufacturer): void {
+  db.prepare("UPDATE dealers SET manufacturer = ? WHERE id = ?").run(manufacturer, id);
+}
+
+export function addDealerEntrance(db: SaveDb, dealerId: number, lon: number, lat: number, mode: DealerEntranceMode): DealerEntrance {
+  const result = db.prepare("INSERT INTO dealer_entrances (dealer_id, lon, lat, mode) VALUES (?, ?, ?, ?)").run(dealerId, lon, lat, mode);
+  return { id: Number(result.lastInsertRowid), dealerId, lon, lat, mode };
+}
+
+export function setDealerEntranceMode(db: SaveDb, id: number, mode: DealerEntranceMode): void {
+  db.prepare("UPDATE dealer_entrances SET mode = ? WHERE id = ?").run(mode, id);
+}
+
+export function deleteDealerEntrance(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM dealer_entrances WHERE id = ?").run(id);
+}
+
+export function deleteDealer(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM dealer_entrances WHERE dealer_id = ?").run(id);
+  db.prepare("DELETE FROM dealers WHERE id = ?").run(id);
+}
+
+// A player-created stop group (DESIGN.md §4) — see the stop_groups table's
+// own comment in SCHEMA for why this mints only an id, with everything
+// else (name, membership) living in the override layer.
+export function createStopGroup(db: SaveDb): { id: number } {
+  const result = db.prepare("INSERT INTO stop_groups (created_at) VALUES (?)").run(new Date().toISOString());
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export function listStopGroupIds(db: SaveDb): number[] {
+  const rows = db.prepare("SELECT id FROM stop_groups").all() as unknown as { id: number }[];
+  return rows.map((r) => Number(r.id));
 }
 
 // The override layer (DESIGN.md §1) — one mechanism reused for every category

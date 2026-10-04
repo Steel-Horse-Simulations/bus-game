@@ -25,6 +25,7 @@ import {
   type DayType,
   type TimingPoint,
   type TimeBand,
+  type RouteTimetableDirection,
   upsertRouteTimetable,
   listRouteTimetablesForRoute,
   listAllRouteTimetables,
@@ -41,6 +42,19 @@ import {
   setDepotEntranceMode,
   deleteDepotEntrance,
   deleteDepot,
+  type DealerManufacturer,
+  type DealerEntranceMode,
+  createDealer,
+  listDealers,
+  listAllDealerEntrances,
+  renameDealer,
+  setDealerManufacturer,
+  addDealerEntrance,
+  setDealerEntranceMode,
+  deleteDealerEntrance,
+  deleteDealer,
+  createStopGroup,
+  listStopGroupIds,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -244,19 +258,25 @@ function registerRouteTimetableHandlers(): void {
       _e,
       routeId: number,
       dayType: DayType,
+      direction: RouteTimetableDirection,
       timeBands: TimeBand[],
       timingPoints: TimingPoint[],
       arrivalOffsetsSeconds: number[],
       departureOffsetsSeconds: number[],
+      excludedDepartureMinutes: number[],
+      customDepartureMinutes: number[],
     ) =>
       upsertRouteTimetable(
         save,
         routeId,
         dayType,
+        direction,
         timeBands,
         timingPoints,
         arrivalOffsetsSeconds,
         departureOffsetsSeconds,
+        excludedDepartureMinutes,
+        customDepartureMinutes,
       ),
   );
   ipcMain.handle("routeTimetables:listForRoute", (_e, routeId: number) =>
@@ -282,14 +302,8 @@ function registerPlayerStopHandlers(): void {
 function registerDepotHandlers(): void {
   ipcMain.handle(
     "depots:create",
-    (
-      _e,
-      depotGroupId: number,
-      name: string,
-      lon: number,
-      lat: number,
-      entrances: { lon: number; lat: number; mode: DepotEntranceMode }[],
-    ) => createDepot(save, depotGroupId, name, lon, lat, entrances),
+    (_e, depotGroupId: number, name: string, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DepotEntranceMode }[]) =>
+      createDepot(save, depotGroupId, name, lon, lat, entrances),
   );
   ipcMain.handle("depots:list", () => listDepots(save));
   ipcMain.handle("depots:listAllEntrances", () => listAllDepotEntrances(save));
@@ -300,6 +314,34 @@ function registerDepotHandlers(): void {
   ipcMain.handle("depots:setEntranceMode", (_e, id: number, mode: DepotEntranceMode) => setDepotEntranceMode(save, id, mode));
   ipcMain.handle("depots:deleteEntrance", (_e, id: number) => deleteDepotEntrance(save, id));
   ipcMain.handle("depots:delete", (_e, id: number) => deleteDepot(save, id));
+}
+
+// Dealers (T62, OPEN-ITEMS.md) — exact mirror of registerDepotHandlers
+// above, except a dealer has no owning depot group.
+function registerDealerHandlers(): void {
+  ipcMain.handle(
+    "dealers:create",
+    (_e, name: string, manufacturer: DealerManufacturer, lon: number, lat: number, entrances: { lon: number; lat: number; mode: DealerEntranceMode }[]) =>
+      createDealer(save, name, manufacturer, lon, lat, entrances),
+  );
+  ipcMain.handle("dealers:list", () => listDealers(save));
+  ipcMain.handle("dealers:listAllEntrances", () => listAllDealerEntrances(save));
+  ipcMain.handle("dealers:rename", (_e, id: number, name: string) => renameDealer(save, id, name));
+  ipcMain.handle("dealers:setManufacturer", (_e, id: number, manufacturer: DealerManufacturer) => setDealerManufacturer(save, id, manufacturer));
+  ipcMain.handle("dealers:addEntrance", (_e, dealerId: number, lon: number, lat: number, mode: DealerEntranceMode) =>
+    addDealerEntrance(save, dealerId, lon, lat, mode),
+  );
+  ipcMain.handle("dealers:setEntranceMode", (_e, id: number, mode: DealerEntranceMode) => setDealerEntranceMode(save, id, mode));
+  ipcMain.handle("dealers:deleteEntrance", (_e, id: number) => deleteDealerEntrance(save, id));
+  ipcMain.handle("dealers:delete", (_e, id: number) => deleteDealer(save, id));
+}
+
+// Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
+// own comment in db.mts for why this only mints an id; name and
+// membership both go through the existing override handlers above.
+function registerStopGroupHandlers(): void {
+  ipcMain.handle("stopGroups:create", () => createStopGroup(save));
+  ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
 }
 
 app.whenReady().then(() => {
@@ -313,6 +355,8 @@ app.whenReady().then(() => {
   registerRouteTimetableHandlers();
   registerPlayerStopHandlers();
   registerDepotHandlers();
+  registerDealerHandlers();
+  registerStopGroupHandlers();
   startMapDataServer();
   createWindow();
 });

@@ -15,11 +15,9 @@ import type { Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
+import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
 
 export const placeDepotState = { isPlacing: false };
-
-const ENTRANCE_MODE_LABELS: Record<DepotEntranceMode, string> = { entry: "Entry only", exit: "Exit only", both: "Entry and exit" };
-const ENTRANCE_MODE_COLORS: Record<DepotEntranceMode, string> = { entry: "#22c55e", exit: "#ef4444", both: "#f59e0b" };
 
 const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -33,6 +31,12 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   let depotGroups = await window.depotGroups.list();
   let depots = await window.depots.list();
   let entrancesByDepot = new Map<number, DepotEntrance[]>();
+  // Set while "Add entrance" is armed on an already-existing depot (as
+  // opposed to placeDepotState, which is for placing a brand-new depot) —
+  // the next map click snaps and adds an entrance to this depot rather
+  // than starting a new one. A real gap the user caught live: entrances
+  // could be removed from an existing depot but never added to one.
+  let addEntranceForDepot: Depot | null = null;
 
   const refreshEntranceIndex = async (): Promise<void> => {
     const all = await window.depots.listAllEntrances();
@@ -67,22 +71,40 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
     paint: { "text-color": "#ffffff", "text-halo-color": "#000000", "text-halo-width": 1 },
   });
 
+  // Entrances/exits are plain dots, coloured by mode (see
+  // entrance-marker.ts's own doc comment) — and only shown for whichever
+  // depot's own popup is currently open, not as a permanent map layer
+  // (a live user request: "the dots should only be visible when the
+  // depot is clicked on"). `showEntrancesForDepot`/`hideEntrances` below
+  // own this source exclusively; nothing else writes to it.
   map.addSource("depot-entrances", { type: "geojson", data: emptyGeojson });
   map.addLayer({
     id: "depot-entrances-points",
     type: "circle",
     source: "depot-entrances",
-    minzoom: 13,
     paint: {
-      "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 3, 17, 6],
+      "circle-radius": 6,
       "circle-color": ["match", ["get", "mode"], "entry", ENTRANCE_MODE_COLORS.entry, "exit", ENTRANCE_MODE_COLORS.exit, ENTRANCE_MODE_COLORS.both],
       "circle-stroke-color": "#ffffff",
-      "circle-stroke-width": 1,
+      "circle-stroke-width": 1.5,
     },
   });
+  const showEntrancesForDepot = (depot: Depot): void => {
+    const entrances = entrancesByDepot.get(depot.id) ?? [];
+    (map.getSource("depot-entrances") as maplibregl.GeoJSONSource).setData({
+      type: "FeatureCollection",
+      features: entrances.map((e) => ({ type: "Feature", properties: { mode: e.mode }, geometry: { type: "Point", coordinates: [e.lon, e.lat] } })),
+    });
+  };
+  const hideEntrances = (): void => {
+    (map.getSource("depot-entrances") as maplibregl.GeoJSONSource).setData(emptyGeojson);
+  };
 
   // The in-progress placement (site + entrances not yet saved), separate
-  // sources so nothing touches the real depots/entrances data until Save.
+  // sources so nothing touches the real depots/entrances data until Save
+  // — shown throughout active placement (a different context from a
+  // saved depot's own entrances above: the player is actively building
+  // this one, not just looking at the map).
   map.addSource("depot-draft-site", { type: "geojson", data: emptyGeojson });
   map.addLayer({
     id: "depot-draft-site",
@@ -108,13 +130,6 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
       type: "FeatureCollection",
       features: depots.map((d) => ({ type: "Feature", properties: { depotId: d.id, name: d.name }, geometry: { type: "Point", coordinates: [d.lon, d.lat] } })),
     });
-    const entranceFeatures: GeoJSON.Feature[] = [];
-    for (const list of entrancesByDepot.values()) {
-      for (const e of list) {
-        entranceFeatures.push({ type: "Feature", properties: { mode: e.mode }, geometry: { type: "Point", coordinates: [e.lon, e.lat] } });
-      }
-    }
-    (map.getSource("depot-entrances") as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: entranceFeatures });
   };
   refreshDepotsSource();
 
@@ -313,17 +328,51 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   map.on("click", (e) => {
     if (!placeDepotState.isPlacing || routeDrawState.isDrawing || placeStopState.isPlacing) return;
     if (!draftSite) {
-      draftSite = { lon: e.lngLat.lng, lat: e.lngLat.lat };
+      // A depot's own site sat at the raw click point until now, which
+      // could land anywhere at all (mid-building, open field), not the
+      // "space with road access" OPERATIONS.md §2 describes.
+      // `snap_to_any_road`, not `snap_to_road` — a depot's own access road
+      // is very often a private/restricted one, exactly the kind
+      // `snap_to_road`'s bus-legal-only search would skip over in favour
+      // of the nearest public street (a live user report: "it won't snap
+      // to the correct road" near a real depot).
+      const snappedSite = router.snap_to_any_road(e.lngLat.lng, e.lngLat.lat);
+      draftSite = snappedSite.length === 2 ? { lon: snappedSite[0], lat: snappedSite[1] } : { lon: e.lngLat.lng, lat: e.lngLat.lat };
       draftDepotGroupId = depotGroups[0]?.id ?? null;
       refreshDraftSources();
       renderDraftPanel();
       return;
     }
-    const snapped = router.snap_to_road(e.lngLat.lng, e.lngLat.lat);
+    // `snap_entrance_to_junction`, not `snap_to_any_road` — a click on a
+    // depot's own private access road is asking for the entrance to sit
+    // where that road actually meets the wider network, not wherever
+    // along the access road the click happened to land. Falls back to
+    // the plain nearest point on an ordinary through-road. Junction
+    // snapping is routing-only now, not a visual aid (a live user
+    // instruction removed the candidate hint dots this used to show
+    // before a click) — the player just clicks a road near the depot.
+    const snapped = router.snap_entrance_to_junction(e.lngLat.lng, e.lngLat.lat);
     if (snapped.length !== 2) return;
     draftEntrances.push({ lon: snapped[0], lat: snapped[1], mode: "both" });
     refreshDraftSources();
     renderDraftPanel();
+  });
+
+  // "Add entrance" on an already-existing depot — same road-junction snap
+  // as a brand-new depot's own draft entrances, just landing straight in
+  // the database instead of a draft list first, since there's no second
+  // "Save" step for an existing depot the way there is for a fresh one.
+  map.on("click", (e) => {
+    if (!addEntranceForDepot || placeDepotState.isPlacing || routeDrawState.isDrawing || placeStopState.isPlacing) return;
+    const depot = addEntranceForDepot;
+    addEntranceForDepot = null;
+    map.getCanvas().style.cursor = "";
+    const snapped = router.snap_entrance_to_junction(e.lngLat.lng, e.lngLat.lat);
+    if (snapped.length !== 2) return;
+    void window.depots.addEntrance(depot.id, snapped[0], snapped[1], "both").then(async () => {
+      await refreshEntranceIndex();
+      openDepotPopup(depot);
+    });
   });
 
   // --- Existing-depot popup: rename, manage entrances, delete ---
@@ -331,6 +380,7 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
 
   const openDepotPopup = (depot: Depot): void => {
     depotPopup?.remove();
+    showEntrancesForDepot(depot);
     const container = document.createElement("div");
     container.style.minWidth = "220px";
 
@@ -361,7 +411,7 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
         const mode = (Object.entries(ENTRANCE_MODE_LABELS).find(([, l]) => l === chosenLabel)?.[0] ?? "both") as DepotEntranceMode;
         void window.depots.setEntranceMode(entrance.id, mode).then(async () => {
           await refreshEntranceIndex();
-          refreshDepotsSource();
+          showEntrancesForDepot(depot);
         });
       });
       dropdown.el.style.flex = "1";
@@ -373,13 +423,24 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
       removeButton.addEventListener("click", () => {
         void window.depots.deleteEntrance(entrance.id).then(async () => {
           await refreshEntranceIndex();
-          refreshDepotsSource();
           openDepotPopup(depot);
         });
       });
       row.appendChild(removeButton);
       container.appendChild(row);
     }
+
+    const addEntranceButton = document.createElement("button");
+    addEntranceButton.className = "btn";
+    addEntranceButton.style.marginTop = "6px";
+    addEntranceButton.textContent = "+ Add entrance";
+    addEntranceButton.title = "Click a road near this depot to add an entrance";
+    addEntranceButton.addEventListener("click", () => {
+      addEntranceForDepot = depot;
+      map.getCanvas().style.cursor = "crosshair";
+      depotPopup?.remove();
+    });
+    container.appendChild(addEntranceButton);
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "btn btn-danger";
@@ -401,11 +462,12 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
       .addTo(map);
     depotPopup.on("close", () => {
       depotPopup = null;
+      hideEntrances();
     });
   };
 
   map.on("click", "depots-points", (e) => {
-    if (placeDepotState.isPlacing || routeDrawState.isDrawing || placeStopState.isPlacing) return;
+    if (placeDepotState.isPlacing || routeDrawState.isDrawing || placeStopState.isPlacing || addEntranceForDepot) return;
     const feature = e.features?.[0];
     const depotId = feature?.properties?.depotId as number | undefined;
     const depot = depots.find((d) => d.id === depotId);
