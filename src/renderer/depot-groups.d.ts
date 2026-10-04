@@ -201,6 +201,29 @@ interface StopGroupsApi {
   list(): Promise<number[]>;
 }
 
+interface Livery {
+  id: number;
+  name: string;
+  primaryColour: string;
+  secondaryColour: string;
+}
+
+type SupportIconKey = "spanner" | "person" | "recovery" | "parcel";
+type IconColour = "black" | "white";
+
+interface LiveryIconOverride {
+  liveryId: number;
+  icon: SupportIconKey;
+  colour: IconColour;
+}
+
+interface LiveriesApi {
+  list(): Promise<Livery[]>;
+  create(name: string, primaryColour: string, secondaryColour: string): Promise<Livery>;
+  listIconOverrides(liveryId: number): Promise<LiveryIconOverride[]>;
+  setIconOverride(liveryId: number, icon: SupportIconKey, colour: IconColour | null): Promise<void>;
+}
+
 interface Window {
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
@@ -209,4 +232,5 @@ interface Window {
   depots: DepotsApi;
   dealers: DealersApi;
   stopGroups: StopGroupsApi;
+  liveries: LiveriesApi;
 }

@@ -1,4 +1,6 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { autoUpdater } from "electron-updater";
+import { ensureMapData, mapDataDir } from "./map-data";
 import path from "node:path";
 import http from "node:http";
 import fs from "node:fs";
@@ -55,6 +57,12 @@ import {
   deleteDealer,
   createStopGroup,
   listStopGroupIds,
+  type IconColour,
+  type SupportIconKey,
+  createLivery,
+  listLiveries,
+  setLiverySupportIconOverride,
+  listLiverySupportIconOverrides,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -72,21 +80,20 @@ let save: SaveDb;
 // from OSM extract to rendered map actually works. Fixed port, no auth: do
 // not ship this as-is.
 //
-// In dev, pipeline-data sits next to the repo root. In a packaged build
-// (npm run package) it's copied to resources/pipeline-data by electron-
-// builder's extraResources config in package.json, so it has to be found
-// via process.resourcesPath instead — __dirname points inside the packaged
-// app's own files, not the resources folder alongside it.
-const MAP_DATA_DIR = app.isPackaged
-  ? path.join(process.resourcesPath, "pipeline-data")
-  : path.resolve(__dirname, "../pipeline-data");
+// In dev, pipeline-data sits next to the repo root. In a packaged build the
+// map data is downloaded on first run into userData (see map-data.ts), so
+// the installer never carries it.
+function mapDataRoot(): string {
+  return app.isPackaged ? mapDataDir() : path.resolve(__dirname, "../pipeline-data");
+}
 const MAP_DATA_PORT = 38271;
 
 function startMapDataServer(): void {
   const server = http.createServer((req, res) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    const filePath = path.join(MAP_DATA_DIR, requestPath);
-    if (!filePath.startsWith(MAP_DATA_DIR)) {
+    const root = mapDataRoot();
+    const filePath = path.join(root, requestPath);
+    if (!filePath.startsWith(root)) {
       res.writeHead(403).end();
       return;
     }
@@ -339,12 +346,97 @@ function registerDealerHandlers(): void {
 // Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
 // own comment in db.mts for why this only mints an id; name and
 // membership both go through the existing override handlers above.
+function registerLiveryHandlers(): void {
+  ipcMain.handle("liveries:list", () => listLiveries(save));
+  ipcMain.handle("liveries:create", (_e, name: string, primaryColour: string, secondaryColour: string) =>
+    createLivery(save, name, primaryColour, secondaryColour),
+  );
+  ipcMain.handle("liveries:listIconOverrides", (_e, liveryId: number) =>
+    listLiverySupportIconOverrides(save, liveryId),
+  );
+  ipcMain.handle(
+    "liveries:setIconOverride",
+    (_e, liveryId: number, icon: SupportIconKey, colour: IconColour | null) =>
+      setLiverySupportIconOverride(save, liveryId, icon, colour),
+  );
+}
+
 function registerStopGroupHandlers(): void {
   ipcMain.handle("stopGroups:create", () => createStopGroup(save));
   ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
 }
 
-app.whenReady().then(() => {
+// Checks GitHub Releases on launch and downloads in the background; the
+// player is only interrupted once an update is ready to install
+// (CLAUDE.md "Installation and distribution"). Packaged builds only, so dev
+// runs never try to replace themselves.
+function startAutoUpdate(): void {
+  if (!app.isPackaged) return;
+  autoUpdater.on("error", (err) => console.error("[updater]", err));
+  autoUpdater.on("update-downloaded", async () => {
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      message: "An update has been downloaded.",
+      detail: "Restart Bus Game to install it.",
+    });
+    if (response === 0) autoUpdater.quitAndInstall();
+  });
+  autoUpdater.checkForUpdates().catch((err) => console.error("[updater]", err));
+}
+
+const DOWNLOAD_SPLASH_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;background:#18181b;color:#f0f0f2;font:14px/1.4 -apple-system,"Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+.bar{width:300px;height:6px;border-radius:3px;background:#3f3f46;overflow:hidden}
+.fill{width:0;height:100%;background:#60a5fa;transition:width .2s}
+</style></head><body><div id="label">Preparing map data…</div><div class="bar"><div class="fill" id="fill"></div></div>
+<script>window.setProgress=function(f,l){document.getElementById('fill').style.width=Math.round(f*100)+'%';document.getElementById('label').textContent=l;};</script></body></html>`;
+
+// Returns false if the player quits instead of retrying a failed download.
+async function downloadMapDataFirst(): Promise<boolean> {
+  const splash = new BrowserWindow({
+    width: 440,
+    height: 170,
+    frame: false,
+    resizable: false,
+    show: true,
+  });
+  await splash.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(DOWNLOAD_SPLASH_HTML));
+  let lastFraction = -1;
+  let lastLabel = "";
+  for (;;) {
+    try {
+      await ensureMapData((label, fraction) => {
+        if (fraction - lastFraction < 0.002 && label === lastLabel) return;
+        lastFraction = fraction;
+        lastLabel = label;
+        splash.webContents
+          .executeJavaScript(`window.setProgress(${fraction}, ${JSON.stringify(label)})`)
+          .catch(() => {});
+      });
+      splash.destroy();
+      return true;
+    } catch (err) {
+      console.error("[map-data]", err);
+      const { response } = await dialog.showMessageBox(splash, {
+        type: "error",
+        buttons: ["Retry", "Quit"],
+        defaultId: 0,
+        cancelId: 1,
+        message: "The map data could not be downloaded.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      if (response === 1) {
+        splash.destroy();
+        return false;
+      }
+    }
+  }
+}
+
+app.whenReady().then(async () => {
   const savePath = path.join(app.getPath("userData"), "save.sqlite");
   save = openSave(savePath);
   console.log(`Save opened: ${savePath}`);
@@ -357,8 +449,14 @@ app.whenReady().then(() => {
   registerDepotHandlers();
   registerDealerHandlers();
   registerStopGroupHandlers();
+  registerLiveryHandlers();
+  if (app.isPackaged && !(await downloadMapDataFirst())) {
+    app.quit();
+    return;
+  }
   startMapDataServer();
   createWindow();
+  startAutoUpdate();
 });
 
 app.on("window-all-closed", () => {

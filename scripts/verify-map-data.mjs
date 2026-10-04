@@ -34,7 +34,7 @@ for (const artefact of manifest.artefacts) {
   }
   const ok = total === artefact.size && assembled.digest("hex") === artefact.sha256;
   if (!ok) failures++;
-  console.log(`${ok ? "ok  " : "FAIL"} ${artefact.name} (${artefact.parts.length} part(s), ${total} bytes)`);
+  console.log(`${ok ? "ok  " : "FAIL"} ${artefact.path} (${artefact.parts.length} part(s), ${total} bytes)`);
 }
 if (failures > 0) {
   console.log(`${failures} failure(s)`);

@@ -11,7 +11,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "prepackage": "npm run build",
-    "package": "electron-builder --dir --win"
+    "package": "electron-builder --dir --win",
+    "installer": "electron-builder --win nsis --publish never --config electron-builder.installer.json"
   },
   "repository": {
     "type": "git",
@@ -47,7 +48,18 @@
       }
     ],
     "win": {
-      "target": "dir"
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Steel-Horse-Simulations",
+      "repo": "bus-game",
+      "releaseType": "release"
     }
   },
   "devDependencies": {
@@ -60,6 +72,7 @@
     "vite-plugin-electron-renderer": "^1.0.0"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "maplibre-gl": "^6.7.0",
     "pmtiles": "^4.5.0"
   }

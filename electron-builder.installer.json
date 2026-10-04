@@ -1,0 +1,27 @@
+{
+  "appId": "com.steelhorsesimulations.busgame",
+  "productName": "Bus Game",
+  "asar": false,
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**",
+    "dist-electron/**"
+  ],
+  "extraResources": [],
+  "win": {
+    "target": "nsis"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": true,
+    "allowToChangeInstallationDirectory": true
+  },
+  "publish": {
+    "provider": "github",
+    "owner": "Steel-Horse-Simulations",
+    "repo": "bus-game",
+    "releaseType": "release"
+  }
+}

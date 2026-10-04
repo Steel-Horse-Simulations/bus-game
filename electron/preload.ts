@@ -17,6 +17,10 @@ import type {
   DealerEntrance,
   DealerEntranceMode,
   DealerManufacturer,
+  Livery,
+  LiverySupportIconOverride,
+  SupportIconKey,
+  IconColour,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -194,4 +198,16 @@ contextBridge.exposeInMainWorld("dealers", {
 contextBridge.exposeInMainWorld("stopGroups", {
   create: () => ipcRenderer.invoke("stopGroups:create") as Promise<{ id: number }>,
   list: () => ipcRenderer.invoke("stopGroups:list") as Promise<number[]>,
+});
+
+// Liveries (OPERATIONS.md §4, minimal) — name and colours, plus each
+// support icon's manual black/white override for that livery.
+contextBridge.exposeInMainWorld("liveries", {
+  list: () => ipcRenderer.invoke("liveries:list") as Promise<Livery[]>,
+  create: (name: string, primaryColour: string, secondaryColour: string) =>
+    ipcRenderer.invoke("liveries:create", name, primaryColour, secondaryColour) as Promise<Livery>,
+  listIconOverrides: (liveryId: number) =>
+    ipcRenderer.invoke("liveries:listIconOverrides", liveryId) as Promise<LiverySupportIconOverride[]>,
+  setIconOverride: (liveryId: number, icon: SupportIconKey, colour: IconColour | null) =>
+    ipcRenderer.invoke("liveries:setIconOverride", liveryId, icon, colour) as Promise<void>,
 });

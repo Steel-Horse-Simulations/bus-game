@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 24;
+const SCHEMA_VERSION = 25;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -273,6 +273,24 @@ CREATE TABLE IF NOT EXISTS dealer_entrances (
   lat REAL NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
 );
+
+-- A minimal livery: its name and the two colours taken from its badge
+-- (OPERATIONS.md §4). The badge artwork and branding masks come later.
+CREATE TABLE IF NOT EXISTS liveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  primary_colour TEXT NOT NULL,
+  secondary_colour TEXT NOT NULL
+);
+
+-- A livery's manual black/white override for one support vehicle icon.
+-- No row means the automatic contrast pick (icon-contrast.ts) is used.
+CREATE TABLE IF NOT EXISTS livery_support_icon_overrides (
+  livery_id INTEGER NOT NULL REFERENCES liveries(id) ON DELETE CASCADE,
+  icon TEXT NOT NULL CHECK (icon IN ('spanner', 'person', 'recovery', 'parcel')),
+  colour TEXT NOT NULL CHECK (colour IN ('black', 'white')),
+  PRIMARY KEY (livery_id, icon)
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -508,6 +526,11 @@ export function openSave(path: string): SaveDb {
     // — brand new tables, `CREATE TABLE IF NOT EXISTS` in SCHEMA above
     // already creates them on this very `db.exec(SCHEMA)` call, so this
     // branch only needs to advance the version number.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 24) {
+    // v24 -> v25: the liveries and livery_support_icon_overrides tables —
+    // brand new, `CREATE TABLE IF NOT EXISTS` in SCHEMA above creates them,
+    // so this branch only advances the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 23) {
     // v23 -> v24: entrances/exits are shown as plain dots, not an
@@ -1337,4 +1360,68 @@ export function resetOverride(db: SaveDb, entityType: string, osmId: number, fie
     osmId,
     field,
   );
+}
+
+export type SupportIconKey = "spanner" | "person" | "recovery" | "parcel";
+export type IconColour = "black" | "white";
+
+export interface Livery {
+  id: number;
+  name: string;
+  primaryColour: string;
+  secondaryColour: string;
+}
+
+export interface LiverySupportIconOverride {
+  liveryId: number;
+  icon: SupportIconKey;
+  colour: IconColour;
+}
+
+const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/;
+
+export function createLivery(db: SaveDb, name: string, primaryColour: string, secondaryColour: string): Livery {
+  if (!HEX_COLOUR.test(primaryColour) || !HEX_COLOUR.test(secondaryColour)) {
+    throw new Error("livery colours must be #rrggbb");
+  }
+  const result = db
+    .prepare("INSERT INTO liveries (name, primary_colour, secondary_colour) VALUES (?, ?, ?)")
+    .run(name, primaryColour, secondaryColour);
+  return { id: Number(result.lastInsertRowid), name, primaryColour, secondaryColour };
+}
+
+export function listLiveries(db: SaveDb): Livery[] {
+  const rows = db
+    .prepare("SELECT id, name, primary_colour, secondary_colour FROM liveries ORDER BY id")
+    .all() as { id: number; name: string; primary_colour: string; secondary_colour: string }[];
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    primaryColour: r.primary_colour,
+    secondaryColour: r.secondary_colour,
+  }));
+}
+
+// Passing null clears the override, so the icon goes back to the automatic pick.
+export function setLiverySupportIconOverride(
+  db: SaveDb,
+  liveryId: number,
+  icon: SupportIconKey,
+  colour: IconColour | null,
+): void {
+  if (colour === null) {
+    db.prepare("DELETE FROM livery_support_icon_overrides WHERE livery_id = ? AND icon = ?").run(liveryId, icon);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO livery_support_icon_overrides (livery_id, icon, colour) VALUES (?, ?, ?)
+     ON CONFLICT(livery_id, icon) DO UPDATE SET colour = excluded.colour`,
+  ).run(liveryId, icon, colour);
+}
+
+export function listLiverySupportIconOverrides(db: SaveDb, liveryId: number): LiverySupportIconOverride[] {
+  const rows = db
+    .prepare("SELECT livery_id, icon, colour FROM livery_support_icon_overrides WHERE livery_id = ?")
+    .all(liveryId) as { livery_id: number; icon: SupportIconKey; colour: IconColour }[];
+  return rows.map((r) => ({ liveryId: r.livery_id, icon: r.icon, colour: r.colour }));
 }

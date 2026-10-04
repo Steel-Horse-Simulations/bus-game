@@ -11,6 +11,7 @@ import { mountDepotGroupsPanel } from "./depot-groups-panel";
 import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
 import { mountVehicleCataloguePanel } from "./vehicle-catalogue-panel";
+import { mountLiveryPanel } from "./livery-panel";
 import { mountDepotPlacement } from "./depot-placement";
 import { mountDealerPlacement } from "./dealer-placement";
 import { mountDealerReferencePins, seedRealDealers } from "./dealer-reference-pins";
@@ -65,6 +66,7 @@ map.addControl(
 registerMapIcons(map);
 mountDepotGroupsPanel();
 mountVehicleCataloguePanel();
+mountLiveryPanel();
 (window as unknown as { __map: maplibregl.Map }).__map = map;
 
 // The style (fetched from the local pmtiles/tile server, see
