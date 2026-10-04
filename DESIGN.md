@@ -205,6 +205,13 @@ be placed on a road buses cannot use, with a warning.
   holds a bus running early, and can carry separate arrival and departure times.
 - **Connection stop** — any two services meeting here are connected (§7).
 - A three-letter reference code, stored but never drawn.
+- **Long stop (2026-09-28, not yet built).** Lets more than one bus stop here
+  at once, with a configurable capacity up to **3**. A bus behind can leave
+  even while the one ahead of it is still stopped — no ordered-departure
+  queueing, unlike a bus station stand (§5) or Portree Square's own stance
+  rules (UK-EXPANSION.md §13), which this is explicitly separate from. Plain
+  ordinary stops only; a bus station's own stand capacity is a different
+  mechanic (§5).
 
 **Per-route settings at a stop.**
 - **Drop-off only** and **Pick-up only**. Neither set means both, the default.
@@ -214,7 +221,37 @@ be placed on a road buses cannot use, with a warning.
 **Grouped stops.** Some places have several shelters serving one location, each
 used by different routes — Union Street in Aberdeen is the reference case. Stops
 can be grouped; a route selects the group as a single stop then picks the
-shelter. `public_transport=stop_area` relations seed the groups.
+shelter. **Grouping is manual, player-created only** (changed 2026-09-27) — not
+seeded from `public_transport=stop_area` relations. A real relation on Princes
+Street, Edinburgh grouped far more stops than made sense together, with no way
+to correct it; the same problem, and the same fix, as the railway/subway/tram
+stop link above (§4 "Station, airport and park-and-ride stop linking"): nothing
+groups until the player groups it, either from a stop's own popup (pick an
+existing group or create one) or a bulk "assign nearby stops within a radius"
+tool on the group's own marker, mirroring bus station stand assignment.
+
+**Facing direction (2026-09-28).** A live user concern: "each stop needs to
+know the direction it faces, otherwise if [a route change] uses a better stop
+it might be on the wrong side of the road." Every stop's facing direction
+(the compass bearing of the travel direction it serves) is now derivable on
+demand from its own real position — a new `Router::stop_facing_bearing`
+(game-wasm), which reads the road's own oneway direction where one exists,
+or for a two-way road, which side of the road the stop's own position
+already sits on (the identical side-determination `place_stop` uses against
+a fresh click, applied here to a stop's existing coordinates instead). No
+pipeline rebuild or new stored field needed — this works uniformly for a
+real imported OSM stop and a player-placed one. Shown as a read-only "Faces
+[N/NE/E/…]" line in a stop's own popup, and per-member in a group's popup's
+new "Members" list, so the direction mismatch the user is worried about is
+at least visible wherever a player might swap which group member a route
+uses. **Not yet wired into route-drawing itself** — DESIGN.md's own "a
+route selects the group as a single stop then picks the shelter" doesn't
+exist as a real interactive step yet (route-draw.ts has no group-aware
+placement logic), and there's no automated group-member swap either (that's
+the "operations manager" optimiser, Phase 7+, CLAUDE.md's own hard part on
+respecting real-world constraints) — informational only for now, same
+"store/surface the data now, wire up the behaviour once the mechanism
+exists" precedent as Connection stop and Long stop.
 
 **Ownership and cost.** Stops are owned by the local council. The player pays a
 monthly fee per stop plus a fee per route serving it. Variations count as one
@@ -330,6 +367,18 @@ If a stand is busy, a bus may use **an adjacent stand on either side**. This
 only avoids annoying passengers if the departure screens update *and* a PA
 announcement is made — which requires those upgrades and a competent enough
 controller.
+
+**Per-stance override rules (2026-09-28, not yet built).** Portree Square
+(UK-EXPANSION.md §13) is the first concrete real-world case needing rules
+scoped to one specific stance rather than the whole station: which vehicle
+category may use it (long-distance only; local only; tour only), a
+queue-of-N-with-ordered-departure behaviour distinct from the plain "use an
+adjacent stand" rule above, a cap on how many buses may be scheduled across a
+named group of stances at once, a maximum dwell time, and a dedicated
+break-parking location for one vehicle category once it can't use the stance
+itself. Recorded here as a flag that station/stance design should stay
+general enough to support this, not because Portree Square's own numbers
+belong in this general spec — see UK-EXPANSION.md §13 for those.
 
 ### Rental
 At stations the player does not own, renewed or updated monthly:
@@ -472,6 +521,30 @@ established — unless the variation doesn't run interleaved with its parent
 in which case every timing point after the split is freely adjustable, since
 there's no interleaving relationship left to preserve. Timetabling in full
 in §7.
+
+**Combining variations (2026-09-28).** A route can have more than one
+independent split/rejoin section along its length — this generalises the
+single split/rejoin "Editing workflow" above to **multiple** split points per
+variation, and each one can diverge from **either the trunk or any other
+variation's own path** at that point, not only the parent route. Two related
+capabilities, both confirmed by the user:
+- **Composing from existing siblings.** Worked example the user gave: route 1
+  has 1A (splits from 1 at point X, rejoins at point Y) and 1B (splits from 1
+  at a later point P, rejoins at Q) — a new variation 1C can be built that
+  takes 1A's own diversion at X–Y **and** 1B's own diversion at P–Q, splicing
+  both onto the shared trunk, rather than being redrawn from scratch.
+- **Freely drawing new splits.** A variation isn't limited to reusing an
+  existing sibling's own diversion — the player can draw a genuinely new
+  divergent section at each of its (up to at least two, per the user)
+  split points, and each one can branch off **either the main route or
+  another variation** at that point, the same way 1C above branches off 1B
+  partway along what is otherwise 1's own trunk.
+
+Not yet built. Interacts with the variation-padding model (§7, CLAUDE.md
+"Known hard parts") — padding today targets one outer terminus; a variation
+with multiple split points needs the model to reason about padding at each of
+them, not just the end. Design this properly, with tests, before building the
+UI — same precedent as padding itself.
 
 ### Express services
 An express is **a variation with a list of skipped stops**, plus its own
@@ -763,6 +836,17 @@ journey.
   adjustable per band.
 - **Day types** — separate timetables per day of the week, each reusable across
   several days (Monday–Friday, Saturday, Sunday being the common case).
+  **Underlying data model (2026-09-28, schema v19→v20):** a day type is a
+  weekday bitmask (any combination, not just the 3 common presets) crossed
+  with a term-time facet (any / term-time only / school holidays only) —
+  real Skye timetable data (UK-EXPANSION.md §13) needs both: 608's
+  Tuesday/Thursday footnote, 607's own separate Friday-differs pattern, and
+  Portree High School/Portree Square's school-day split. **No UI lets a
+  player actually create a custom weekday+term-time pattern yet** — this
+  increment only made the schema capable of storing one; every existing
+  call site still only ever uses the original 3 presets. Building the
+  actual picker (how a player sets "Tuesdays and Thursdays only," or
+  "term-time only") is a separate, later increment.
 - **Event services** sit **on top of** the normal timetable rather than
   replacing it, so an event day runs the normal service plus the event workings.
   This means services need a calendar as well as day types.
