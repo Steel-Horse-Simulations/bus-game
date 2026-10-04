@@ -44,10 +44,13 @@ function timetable(
     id,
     routeId,
     dayType,
+    direction: "both",
     timeBands: [{ startMinutes, endMinutes, intervalMinutes }],
     timingPoints: [],
     arrivalOffsetsSeconds: departureOffsetsSeconds,
     departureOffsetsSeconds,
+    excludedDepartureMinutes: [],
+    customDepartureMinutes: [],
   };
 }
 

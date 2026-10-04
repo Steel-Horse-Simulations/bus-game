@@ -18,6 +18,7 @@ import { stopsPanelState, busStationsState } from "./stops-layer";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
 import { startTerminusColour } from "./start-terminus-colours";
+import { composeVariation, type DiversionSource } from "./route-combine-variations.mts";
 
 // Shared with stops-layer.ts: while drawing, a click on a stop or station
 // builds the route instead of opening its usual assignment popup. A plain
@@ -160,6 +161,11 @@ export async function mountRouteDrawTool(
   // editingRouteId: a variation always creates a new route on save, even
   // though its starting draft is a copy of the parent's own points.
   let variationParentRoute: Route | null = null;
+  // This parent's OTHER existing variations (DESIGN.md §6 "Combining
+  // variations") — loaded alongside variationParentRoute by startVariation,
+  // used only to offer "Build from existing variations" below. Never
+  // includes the draft currently being built (it has no id yet).
+  let parentSiblingRoutes: Route[] = [];
 
   const addLayers = () => {
     map.addSource("route-draft-line", { type: "geojson", data: emptyFeatureCollection });
@@ -332,6 +338,7 @@ export async function mountRouteDrawTool(
     startIndex = null;
     editingRouteId = null;
     variationParentRoute = null;
+    parentSiblingRoutes = [];
     numberInput.value = "";
     nameInput.value = "";
     colourInput.value = DEFAULT_ROUTE_COLOUR;
@@ -754,6 +761,70 @@ export async function mountRouteDrawTool(
     renderStopList();
   };
 
+  // "Build from existing variations" (DESIGN.md §6 "Combining variations")
+  // — the user's own worked example: route 1C reuses 1A's and 1B's own
+  // already-drawn diversions instead of redrawing them by hand. A one-shot
+  // action (composeVariation splices every checked sibling's own diversion
+  // onto the parent's trunk in one call) rather than an incremental step
+  // threaded through "Diverge from here"/"Rejoin at" — much simpler and
+  // safer than trying to match an already-in-progress draft's own position
+  // back to the parent's own index space, and the tested algorithm's own
+  // shape (multiple siblings in one call) fits this directly. The result
+  // REPLACES the current draft outright; the existing manual diverge/
+  // rejoin tools still work normally on top of it afterward for any
+  // further tweaks (they already support being used more than once in one
+  // session — nothing about them assumes a single split).
+  const buildFromSiblingsHeading = document.createElement("div");
+  buildFromSiblingsHeading.className = "label-muted";
+  buildFromSiblingsHeading.textContent = "Build from existing variations:";
+  const buildFromSiblingsList = document.createElement("div");
+  buildFromSiblingsList.style.display = "flex";
+  buildFromSiblingsList.style.flexDirection = "column";
+  buildFromSiblingsList.style.gap = "2px";
+  const buildFromSiblingsStatus = document.createElement("div");
+  buildFromSiblingsStatus.style.fontSize = "11px";
+  buildFromSiblingsStatus.style.color = "var(--text-muted)";
+  const buildFromSiblingsButton = document.createElement("button");
+  buildFromSiblingsButton.type = "button";
+  buildFromSiblingsButton.className = "btn";
+  buildFromSiblingsButton.textContent = "Apply";
+  buildFromSiblingsButton.title = "Replaces the current draft with the parent's own trunk plus each checked sibling's own diversion";
+  buildFromSiblingsButton.addEventListener("click", () => {
+    if (!variationParentRoute) return;
+    const checked = [...buildFromSiblingsList.querySelectorAll<HTMLInputElement>("input[type=checkbox]:checked")];
+    if (checked.length === 0) {
+      buildFromSiblingsStatus.textContent = "Check at least one variation to reuse first.";
+      return;
+    }
+    const sources: DiversionSource[] = checked.map((cb) => {
+      const sibling = parentSiblingRoutes.find((r) => String(r.id) === cb.value)!;
+      return { siblingId: sibling.number, points: sibling.points };
+    });
+    try {
+      const result = composeVariation(variationParentRoute.points, sources);
+      draftPoints = result.points.map((p) =>
+        p.kind === "stop" ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat } : { kind: "waypoint", lon: p.lon, lat: p.lat },
+      );
+      insertAfterIndex = null;
+      terminusIndex = null;
+      startIndex = null;
+      const missed = sources.filter((s) => !result.appliedSiblingIds.includes(s.siblingId));
+      buildFromSiblingsStatus.textContent =
+        missed.length === 0
+          ? `Built from ${result.appliedSiblingIds.join(", ")}.`
+          : `Built from ${result.appliedSiblingIds.join(", ") || "none"} — ${missed.map((m) => m.siblingId).join(", ")} shares no real diversion with the parent to reuse.`;
+      rebuildRoute();
+      refresh();
+      renderStopList();
+      updateStatus();
+    } catch (e) {
+      // An overlap between two checked siblings' own diversions — surfaced
+      // to the player rather than silently picking one, since there's no
+      // sensible way to splice both.
+      buildFromSiblingsStatus.textContent = e instanceof Error ? e.message : String(e);
+    }
+  });
+
   function renderVariationSection(): void {
     if (!variationParentRoute) {
       variationSection.style.display = "none";
@@ -762,6 +833,29 @@ export async function mountRouteDrawTool(
     variationSection.style.display = "flex";
     variationSection.innerHTML = "";
     variationSection.appendChild(variationLetterRow);
+
+    if (parentSiblingRoutes.length > 0) {
+      buildFromSiblingsList.innerHTML = "";
+      for (const sibling of parentSiblingRoutes) {
+        const label = document.createElement("label");
+        label.style.display = "flex";
+        label.style.alignItems = "center";
+        label.style.gap = "6px";
+        label.style.cursor = "pointer";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = String(sibling.id);
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(sibling.number));
+        buildFromSiblingsList.appendChild(label);
+      }
+      buildFromSiblingsStatus.textContent = "";
+      variationSection.appendChild(buildFromSiblingsHeading);
+      variationSection.appendChild(buildFromSiblingsList);
+      variationSection.appendChild(buildFromSiblingsButton);
+      variationSection.appendChild(buildFromSiblingsStatus);
+    }
+
     variationSection.appendChild(divergeButton);
     variationSection.appendChild(rejoinHeading);
     rejoinList.innerHTML = "";
@@ -1090,6 +1184,7 @@ export async function mountRouteDrawTool(
       startIndex = route.startIndex;
       editingRouteId = route.id;
       variationParentRoute = null;
+      parentSiblingRoutes = [];
       insertAfterIndex = null;
       warning = null;
       numberInput.value = route.number;
@@ -1125,9 +1220,8 @@ export async function mountRouteDrawTool(
       variationLetterInput.value = "";
       void (async () => {
         const siblings = await window.routes.list();
-        const usedLetters = new Set(
-          siblings.filter((r) => r.parentRouteId === parent.id && r.variationLetter).map((r) => r.variationLetter),
-        );
+        const existingVariations = siblings.filter((r) => r.parentRouteId === parent.id && r.variationLetter);
+        const usedLetters = new Set(existingVariations.map((r) => r.variationLetter));
         let letter = "A";
         for (let code = 65; code <= 90; code++) {
           const candidate = String.fromCharCode(code);
@@ -1138,6 +1232,8 @@ export async function mountRouteDrawTool(
         }
         numberInput.value = `${parent.number}${letter}`;
         variationLetterInput.value = letter;
+        parentSiblingRoutes = existingVariations;
+        renderVariationSection();
       })();
       rebuildRoute();
       refresh();

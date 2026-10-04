@@ -226,10 +226,18 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
 
   // The right-hand slot, occupied only in timetable mode — "the timetable
   // grid fills the rest of the screen to the right." Flush against the
-  // list slot and the top/bottom/right screen edges, same as the slot above.
+  // list slot and the bottom/right screen edges, same as the slot above —
+  // except the top, which is inset below vehicle-simulation.ts's own
+  // Mon-Fri/Sat/Sun day-type bar (fixed top-right, the "one free corner"
+  // at the time it was built). This panel's own header reaches the same
+  // corner and, at equal z-index, lost the DOM-order tiebreak to that bar
+  // — a real bug the user found live: its own close button sat directly
+  // under "Sun" and was unclickable, with no other way to exit timetable
+  // mode. 56px comfortably clears the day-type bar's own measured height
+  // (42px, from top:8px) rather than matching it exactly.
   const timetableSlot = document.createElement("div");
   timetableSlot.style.position = "absolute";
-  timetableSlot.style.top = "0";
+  timetableSlot.style.top = "56px";
   timetableSlot.style.left = "320px";
   timetableSlot.style.right = "0";
   timetableSlot.style.bottom = "0";

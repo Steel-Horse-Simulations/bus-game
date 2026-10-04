@@ -13,6 +13,8 @@ import {
   validateTimeBands,
   generateDepartureMinutesForBands,
   DEFAULT_TIME_BANDS,
+  applyExcludedDepartures,
+  mergeCustomDepartures,
   type TimeBand,
 } from "./route-timetable.mts";
 
@@ -258,6 +260,47 @@ assert(
       `the default bands should be contiguous with no gap between band ${i - 1} and ${i}`,
     );
   }
+}
+
+// applyExcludedDepartures — a variation taking over one of the base
+// route's own generated slots (user request: 398A running at 398's own
+// 0100, without splitting 398's own bands).
+{
+  const minutes = generateDepartureMinutesForBands([{ startMinutes: 0, endMinutes: 120, intervalMinutes: 60 }]);
+  assert(JSON.stringify(minutes) === JSON.stringify([0, 60, 120]), "sanity: three departures generated");
+  const filtered = applyExcludedDepartures(minutes, [60]);
+  assert(JSON.stringify(filtered) === JSON.stringify([0, 120]), `excluding one minute should drop only that one, got ${JSON.stringify(filtered)}`);
+}
+{
+  // An exclusion for a minute the bands don't currently generate has no
+  // effect — quietly inert, not an error, so reshaping bands later can't
+  // accidentally "resurrect" a stale exclusion onto the wrong minute.
+  const minutes = [0, 30, 60];
+  const filtered = applyExcludedDepartures(minutes, [999]);
+  assert(JSON.stringify(filtered) === JSON.stringify(minutes), "an exclusion for a minute not in the list has no effect");
+}
+{
+  const filtered = applyExcludedDepartures([0, 30, 60], []);
+  assert(JSON.stringify(filtered) === JSON.stringify([0, 30, 60]), "no exclusions leaves every minute untouched");
+}
+
+// mergeCustomDepartures — one-off departures entered directly rather than
+// produced by any band's own interval (user request: "an option to put
+// in custom times for departures instead of everything being on an
+// interval").
+{
+  const merged = mergeCustomDepartures([0, 30, 60], [47]);
+  assert(JSON.stringify(merged) === JSON.stringify([0, 30, 47, 60]), `a custom time should be inserted in sorted order, got ${JSON.stringify(merged)}`);
+}
+{
+  // A custom time that coincides with an already-generated one is a
+  // no-op, not a second identical journey.
+  const merged = mergeCustomDepartures([0, 30, 60], [30]);
+  assert(JSON.stringify(merged) === JSON.stringify([0, 30, 60]), `a duplicate custom time should not double up, got ${JSON.stringify(merged)}`);
+}
+{
+  const merged = mergeCustomDepartures([], [15, 5]);
+  assert(JSON.stringify(merged) === JSON.stringify([5, 15]), `custom times alone should still sort, got ${JSON.stringify(merged)}`);
 }
 
 console.log("\nAll checks passed.");

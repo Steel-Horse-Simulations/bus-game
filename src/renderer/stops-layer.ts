@@ -20,8 +20,15 @@ import {
   DAY_TYPE_SHORT_LABELS,
   type StopCallingService,
 } from "./stop-calling-services.mts";
-import { buildRouteTimetableGrid } from "./route-timetable-grid.mts";
+import {
+  buildRouteTimetableGrid,
+  routeDirectionRanges,
+  sliceGridToPointRange,
+  buildMergedFamilyGrid,
+  type MergedGridMember,
+} from "./route-timetable-grid.mts";
 import { pickContrastColorForHex } from "./icon-contrast";
+import { buildMergedGridTable } from "./merged-grid-table";
 
 interface DecodedStop {
   lon: number;
@@ -42,6 +49,19 @@ interface DecodedStopArea {
 // layer doesn't need revisiting once routes land and can report real usage.
 function isUsedByService(_osmId: number): boolean {
   return false;
+}
+
+// A live user request against stop groups (DESIGN.md §4): "each stop needs
+// to know the direction it faces, otherwise if [a route change] uses a
+// better stop it might be on the wrong side of the road." The router's own
+// stop_facing_bearing(lon, lat) derives this on demand from any stop's real
+// position (no pipeline change needed, same logic place_stop already uses
+// at placement time) — this just turns that compass bearing into a short
+// readable label for the popup/member list below.
+const COMPASS_LABELS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+function compassLabel(bearingDegrees: number): string {
+  const index = Math.round(bearingDegrees / 45) % 8;
+  return COMPASS_LABELS[(index + 8) % 8];
 }
 
 // Lets other modules (the route-draw panel's per-stop "Edit" button) open
@@ -264,38 +284,44 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
   const alwaysShow = new Map(alwaysShowEntries.map(({ osmId, value }) => [osmId, value]));
 
   // Grouped stops (DESIGN.md §4: "several shelters serving one location...
-  // Union Street in Aberdeen is the reference case") — a stop_area
-  // relation with no bus_station member at all still groups its own
-  // members for decluttering, the identical reveal-on-click pattern as a
-  // bus station, just under its own colour and entity type since it isn't
-  // one. This is the overwhelming majority of real stop_area relations
-  // (19,396 of 19,398 in the current extract have no bus_station member),
-  // previously silently skipped entirely — only a relation that *does*
-  // name a bus_station member goes through the path above instead, so a
-  // stop is never claimed by both. A relation with fewer than two real
-  // (non-bus_station) members isn't worth grouping — nothing to declutter.
-  // No manual membership editing yet (unlike bus stations' explicit
-  // reassignment) — DESIGN.md only describes this as OSM-seeded.
+  // Union Street in Aberdeen is the reference case") — player-created only
+  // (2026-09-27), no longer seeded from OSM stop_area relations. A real
+  // relation on Princes Street, Edinburgh grouped far more stops than made
+  // sense together, with no way to correct it — the same problem, and the
+  // same fix, as the railway/subway/tram stop link below: nothing groups
+  // until the player groups it, either from a stop's own popup (pick an
+  // existing group or create a new one) or a group's own bulk "assign
+  // nearby stops" tool, mirroring bus station stand assignment exactly.
+  // `stop_groups` (electron/db.mts) only mints an id; membership lives in
+  // the override layer just like bus station membership does
+  // ("stop"/osmId/"group_id"), and a group's own map position is always
+  // the live centroid of its current members, recomputed here whenever
+  // membership changes — a group has no position of its own the way a real
+  // bus station does.
   interface StopGroup {
     osmId: number;
-    name: string | null;
     lon: number;
     lat: number;
   }
+  const stopGroupIds = await window.stopGroups.list();
   const groupOfStop = new Map<number, number>();
+  for (const { osmId, value } of await window.overrides.list<number | null>("stop", "group_id")) {
+    if (value === null) groupOfStop.delete(osmId);
+    else groupOfStop.set(osmId, value);
+  }
   const stopGroupsById = new Map<number, StopGroup>();
-  for (const area of stopAreas) {
-    if (area.memberOsmIds.some((id) => stationOsmIds.has(id))) continue;
-    const members = area.memberOsmIds
-      .map((id) => stopsById.get(id))
-      .filter((s): s is DecodedStop => s !== undefined && s.kind !== "bus_station");
-    if (members.length < 2) continue;
+  const recomputeGroupCentroid = (groupId: number): void => {
+    const memberIds = [...groupOfStop.entries()].filter(([, g]) => g === groupId).map(([id]) => id);
+    const members = memberIds.map((id) => stopsById.get(id)).filter((s): s is DecodedStop => s !== undefined);
+    if (members.length === 0) {
+      stopGroupsById.delete(groupId);
+      return;
+    }
     const lon = members.reduce((sum, s) => sum + s.lon, 0) / members.length;
     const lat = members.reduce((sum, s) => sum + s.lat, 0) / members.length;
-    stopGroupsById.set(area.osmId, { osmId: area.osmId, name: area.name, lon, lat });
-    for (const s of members) groupOfStop.set(s.osmId, area.osmId);
-  }
-  const stopGroups = [...stopGroupsById.values()];
+    stopGroupsById.set(groupId, { osmId: groupId, lon, lat });
+  };
+  for (const groupId of stopGroupIds) recomputeGroupCentroid(groupId);
 
   const alwaysShowGroupEntries = await window.overrides.list<boolean>("stop_group", "always_show_members");
   const alwaysShowGroup = new Map(alwaysShowGroupEntries.map(({ osmId, value }) => [osmId, value]));
@@ -323,7 +349,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
 
   const displayName = (s: DecodedStop): string =>
     nameOverrides.get(s.osmId) ?? s.name ?? (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
-  const groupDisplayName = (g: StopGroup): string => nameOverrides.get(g.osmId) ?? g.name ?? "Grouped stop";
+  const groupDisplayName = (g: StopGroup): string => nameOverrides.get(g.osmId) ?? "Grouped stop";
 
   busStationsState.length = 0;
   for (const s of stations) {
@@ -375,7 +401,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     });
 
   const visibleStations = () => stations.filter((s) => !hidden.has(s.osmId));
-  const visibleGroups = () => stopGroups.filter((g) => !hidden.has(g.osmId));
+  const visibleGroups = () => [...stopGroupsById.values()].filter((g) => !hidden.has(g.osmId));
 
   let openStationOsmId: number | null = null;
   let openGroupOsmId: number | null = null;
@@ -684,9 +710,11 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     // (DESIGN.md §7 "The grid" — "stops down and journeys across"), scrolling
     // right for more journeys rather than wrapping to a new line, the same
     // way a real printed timetable spreads across a wide sheet.
-    const showRouteTimetableModal = (route: Route, timetable: RouteTimetable): void => {
-      const grid = buildRouteTimetableGrid(route, timetable);
-
+    const showRouteTimetableModal = (
+      route: Route,
+      allRoutes: readonly Route[],
+      allTimetables: readonly RouteTimetable[],
+    ): void => {
       const overlay = document.createElement("div");
       overlay.style.position = "fixed";
       overlay.style.inset = "0";
@@ -707,109 +735,247 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       panel.style.flexDirection = "column";
       panel.style.padding = "0";
       panel.style.overflow = "hidden";
-
-      // Styled after a real printed operator timetable (reference supplied
-      // by the user: Stagecoach Service 28/28A) — a dark masthead carrying
-      // the route number and, underneath, a solid day-type band, rather
-      // than a plain title bar. The route's own colour stands in for a
-      // specific operator's livery colour, since this is a generic style,
-      // not a Stagecoach reproduction.
-      const masthead = document.createElement("div");
-      masthead.style.backgroundColor = "#12131a";
-      masthead.style.color = "#ffffff";
-      masthead.style.display = "flex";
-      masthead.style.alignItems = "center";
-      masthead.style.gap = "12px";
-      masthead.style.padding = "14px 16px";
-      masthead.style.flexShrink = "0";
-      const numberBadge = document.createElement("div");
-      numberBadge.textContent = route.number;
-      numberBadge.style.backgroundColor = route.colour;
-      numberBadge.style.color = pickContrastColorForHex(route.colour);
-      numberBadge.style.fontWeight = "800";
-      numberBadge.style.fontSize = "22px";
-      numberBadge.style.padding = "4px 14px";
-      numberBadge.style.borderRadius = "4px";
-      masthead.appendChild(numberBadge);
-      if (route.name) {
-        const nameEl = document.createElement("div");
-        nameEl.style.fontSize = "14px";
-        nameEl.textContent = route.name;
-        masthead.appendChild(nameEl);
-      }
-      const closeButton = document.createElement("button");
-      closeButton.className = "btn btn-icon";
-      closeButton.textContent = "×";
-      closeButton.style.marginLeft = "auto";
-      closeButton.style.color = "#ffffff";
-      closeButton.addEventListener("click", () => overlay.remove());
-      masthead.appendChild(closeButton);
-      panel.appendChild(masthead);
-
-      const dayTypeBand = document.createElement("div");
-      dayTypeBand.style.backgroundColor = "#1677ff";
-      dayTypeBand.style.color = "#ffffff";
-      dayTypeBand.style.fontWeight = "700";
-      dayTypeBand.style.fontSize = "13px";
-      dayTypeBand.style.letterSpacing = "0.05em";
-      dayTypeBand.style.padding = "8px 16px";
-      dayTypeBand.style.flexShrink = "0";
-      dayTypeBand.textContent = DAY_TYPE_SHORT_LABELS[timetable.dayType].toUpperCase();
-      panel.appendChild(dayTypeBand);
-
-      const scrollWrap = document.createElement("div");
-      scrollWrap.style.overflow = "auto";
-      scrollWrap.style.flex = "1";
-      scrollWrap.style.padding = "12px 16px";
-
-      const table = document.createElement("table");
-      table.style.borderCollapse = "collapse";
-      table.style.whiteSpace = "nowrap";
-      table.style.fontSize = "12px";
-
-      const tbody = document.createElement("tbody");
-      grid.rows.forEach((row, rowIndex) => {
-        const tr = document.createElement("tr");
-        // Alternating row shading, same reason a printed timetable does
-        // it — a long stop list is hard to track across a wide row of
-        // columns without a visual anchor per line.
-        if (rowIndex % 2 === 1) tr.style.backgroundColor = "var(--bg-accent)";
-        const th = document.createElement("th");
-        const rowStop = stopsById.get(row.osmId);
-        th.textContent = rowStop ? displayName(rowStop) : `Stop ${row.osmId}`;
-        th.style.position = "sticky";
-        th.style.left = "0";
-        th.style.backgroundColor = "inherit";
-        th.style.textAlign = "left";
-        th.style.padding = "4px 10px 4px 4px";
-        tr.appendChild(th);
-        for (const journey of grid.journeys) {
-          const td = document.createElement("td");
-          const value = journey[rowIndex];
-          // HHMM with no colon and a plain hyphen for a gap — matching the
-          // reference timetable's own convention exactly, not the HH:MM/
-          // em-dash style used elsewhere in this game's own UI (the
-          // calling-services list, the family comparison) where a colon
-          // reads more easily in a short comma-separated run.
-          td.textContent = value === null ? "-" : formatClockMinutes(value).replace(":", "");
-          td.style.padding = "4px 10px";
-          td.style.textAlign = "center";
-          tr.appendChild(td);
-        }
-        tbody.appendChild(tr);
-      });
-      table.appendChild(tbody);
-      scrollWrap.appendChild(table);
-      panel.appendChild(scrollWrap);
-
-      if (grid.journeys.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "label-muted";
-        empty.textContent = "This day type generates no journeys.";
-        panel.appendChild(empty);
-      }
-
       overlay.appendChild(panel);
+
+      // A route's variation family, same definition and reasoning as the
+      // side-panel timetable editor's own family tabs
+      // (route-timetable-panel.ts's loadRouteFamily) — the root (this
+      // route if it has no parent, else its parent) plus every route
+      // whose parentRouteId points at that same root. User feedback: the
+      // full-screen grid only ever showed whichever single route you
+      // clicked into, with no way to see a variation's own full grid
+      // without leaving and re-clicking a different stop's own expand
+      // button.
+      const rootId = route.parentRouteId ?? route.id;
+      const family = allRoutes
+        .filter((r) => r.id === rootId || r.parentRouteId === rootId)
+        .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+
+      // "Show excluded services" (user request) — off by default (today's
+      // only past behaviour: an excluded departure just isn't there), on
+      // shows it anyway as a struck-through column, so an exclusion's real
+      // effect is visible rather than just inferred from its absence.
+      // Whole-modal state, not per day-type/page, since it's one toggle
+      // for the whole grid.
+      let showExcludedServices = false;
+
+      // Rebuilds the whole panel body for `currentRoute` — re-invoked from
+      // a family tab's click handler so switching variations updates this
+      // same modal in place rather than closing and reopening it.
+      const renderForRoute = (currentRoute: Route): void => {
+        panel.innerHTML = "";
+
+        // Styled after a real printed operator timetable (reference
+        // supplied by the user: Stagecoach Service 28/28A) — a dark
+        // masthead carrying the route number and, underneath, a solid
+        // day-type band, rather than a plain title bar. The route's own
+        // colour stands in for a specific operator's livery colour, since
+        // this is a generic style, not a Stagecoach reproduction.
+        const masthead = document.createElement("div");
+        masthead.style.backgroundColor = "#12131a";
+        masthead.style.color = "#ffffff";
+        masthead.style.display = "flex";
+        masthead.style.alignItems = "center";
+        masthead.style.gap = "12px";
+        masthead.style.padding = "14px 16px";
+        masthead.style.flexShrink = "0";
+        // Every family member gets its own badge, not just the route the
+        // stop popup happened to be opened from — the grid below already
+        // merges every member's own journeys onto one page, so the
+        // masthead should name all of them too (user feedback: "could it
+        // show the route number for all routes being shown please").
+        const badgeRow = document.createElement("div");
+        badgeRow.style.display = "flex";
+        badgeRow.style.gap = "6px";
+        for (const member of family) {
+          const numberBadge = document.createElement("div");
+          numberBadge.textContent = member.number;
+          numberBadge.style.backgroundColor = member.colour;
+          numberBadge.style.color = pickContrastColorForHex(member.colour);
+          numberBadge.style.fontWeight = "800";
+          numberBadge.style.fontSize = "22px";
+          numberBadge.style.padding = "4px 14px";
+          numberBadge.style.borderRadius = "4px";
+          badgeRow.appendChild(numberBadge);
+        }
+        masthead.appendChild(badgeRow);
+        if (currentRoute.name) {
+          const nameEl = document.createElement("div");
+          nameEl.style.fontSize = "14px";
+          nameEl.textContent = currentRoute.name;
+          masthead.appendChild(nameEl);
+        }
+
+        const showExcludedLabel = document.createElement("label");
+        showExcludedLabel.style.display = "flex";
+        showExcludedLabel.style.alignItems = "center";
+        showExcludedLabel.style.gap = "6px";
+        showExcludedLabel.style.marginLeft = "auto";
+        showExcludedLabel.style.cursor = "pointer";
+        showExcludedLabel.style.fontSize = "13px";
+        const showExcludedCheckbox = document.createElement("input");
+        showExcludedCheckbox.type = "checkbox";
+        showExcludedCheckbox.checked = showExcludedServices;
+        showExcludedCheckbox.addEventListener("change", () => {
+          showExcludedServices = showExcludedCheckbox.checked;
+          renderForRoute(currentRoute);
+        });
+        showExcludedLabel.appendChild(showExcludedCheckbox);
+        showExcludedLabel.appendChild(document.createTextNode("Show excluded services"));
+        masthead.appendChild(showExcludedLabel);
+
+        const closeButton = document.createElement("button");
+        closeButton.className = "btn btn-icon";
+        closeButton.textContent = "×";
+        closeButton.style.color = "#ffffff";
+        closeButton.addEventListener("click", () => overlay.remove());
+        masthead.appendChild(closeButton);
+        panel.appendChild(masthead);
+
+        const dayTypeOrder = Object.keys(DAY_TYPE_SHORT_LABELS) as DayType[];
+
+        // Every family member's own direction segment(s), tagged with
+        // which route they belong to — a simple route (no terminus loop,
+        // routeDirectionRanges' own single null-labelled segment) counts
+        // as belonging to whichever direction its own stored orientation
+        // already says, so two variations that simply run opposite ways
+        // (like this save's own 398/398A) still land on separate pages
+        // without needing a terminus loop each. DESIGN.md §7: "Inbound and
+        // outbound share one grid with a direction toggle" — now spanning
+        // every related service on the page (the user's own Stagecoach
+        // reference shows 28/28A/27A together), not just one route's own
+        // two legs.
+        interface TaggedSegment {
+          routeId: number;
+          label: "outbound" | "inbound";
+          fromPointIndex: number;
+          toPointIndex: number;
+        }
+        const allSegments: TaggedSegment[] = family.flatMap((member) =>
+          routeDirectionRanges(member).map((r) => ({
+            routeId: member.id,
+            label: r.label ?? (member.orientation === "outbound" ? "outbound" : "inbound"),
+            fromPointIndex: r.fromPointIndex,
+            toPointIndex: r.toPointIndex,
+          })),
+        );
+        // "outbound" before "inbound" whenever both exist — matches the
+        // toggle's own previous fixed order.
+        const pageLabels = [...new Set(allSegments.map((s) => s.label))].sort((a) =>
+          a === "outbound" ? -1 : 1,
+        );
+
+        const directionPages: HTMLElement[] = [];
+        const directionToggleButtons: HTMLButtonElement[] = [];
+
+        const showDirectionPage = (index: number): void => {
+          directionPages.forEach((el, i) => (el.style.display = i === index ? "flex" : "none"));
+          directionToggleButtons.forEach((btn, i) => btn.classList.toggle("is-active", i === index));
+        };
+
+        if (pageLabels.length > 1) {
+          const directionToggleRow = document.createElement("div");
+          directionToggleRow.style.display = "flex";
+          directionToggleRow.style.gap = "4px";
+          directionToggleRow.style.padding = "8px 16px";
+          directionToggleRow.style.backgroundColor = "var(--bg-surface-1)";
+          directionToggleRow.style.flexShrink = "0";
+          pageLabels.forEach((label, i) => {
+            const btn = document.createElement("button");
+            btn.className = "btn";
+            btn.textContent = label.toUpperCase();
+            btn.addEventListener("click", () => showDirectionPage(i));
+            directionToggleButtons.push(btn);
+            directionToggleRow.appendChild(btn);
+          });
+          panel.appendChild(directionToggleRow);
+        }
+
+        for (const [pageIndex, pageLabel] of pageLabels.entries()) {
+          // Every day type in one scrollable view (user feedback: having to
+          // reopen the modal per day type was the wrong shape) — Mon-Fri/
+          // Sat/Sun in that fixed order (DAY_TYPE_SHORT_LABELS' own key
+          // order), not whichever order the timetables happened to be
+          // fetched in.
+          const scrollWrap = document.createElement("div");
+          scrollWrap.style.overflow = "auto";
+          scrollWrap.style.flex = "1";
+          scrollWrap.style.display = pageIndex === 0 ? "flex" : "none";
+          scrollWrap.style.flexDirection = "column";
+          scrollWrap.style.alignItems = "stretch";
+          directionPages.push(scrollWrap);
+
+          const segmentsForThisPage = allSegments.filter((s) => s.label === pageLabel);
+
+          for (const dayType of dayTypeOrder) {
+            // Every contributing family member's own grid for this exact
+            // (direction, day type) — only members that actually have a
+            // timetable for this day type at all take part; a family
+            // member with no Saturday timetable simply contributes no
+            // columns to Saturday's own merged grid.
+            const members: MergedGridMember[] = [];
+            for (const seg of segmentsForThisPage) {
+              const memberRoute = family.find((m) => m.id === seg.routeId);
+              // Prefer a component saved specifically for this leg (a
+              // terminus-loop route's own independent outbound/inbound
+              // timetable, DESIGN.md §6) over the route's shared 'both'
+              // one, falling back to 'both' where no leg-specific
+              // component exists.
+              const memberTimetable =
+                allTimetables.find((t) => t.routeId === seg.routeId && t.dayType === dayType && t.direction === seg.label) ??
+                allTimetables.find((t) => t.routeId === seg.routeId && t.dayType === dayType && t.direction === "both");
+              if (!memberRoute || !memberTimetable) continue;
+              const fullGrid = buildRouteTimetableGrid(memberRoute, memberTimetable, { includeExcluded: showExcludedServices });
+              const slicedGrid = sliceGridToPointRange(fullGrid, seg.fromPointIndex, seg.toPointIndex);
+              members.push({
+                routeId: memberRoute.id,
+                routeNumber: memberRoute.number,
+                routeColour: memberRoute.colour,
+                grid: slicedGrid,
+              });
+            }
+            if (members.length === 0) continue;
+            const grid = buildMergedFamilyGrid(members);
+
+            const dayTypeBand = document.createElement("div");
+            // Theme's own accent tokens (theme.css — the same pairing used
+            // for an active button/selected dropdown item), not the bright
+            // #1677ff the reference PDF's own blue suggested — user feedback:
+            // it stood out against the rest of the game's dark chrome.
+            dayTypeBand.style.backgroundColor = "var(--bg-accent)";
+            dayTypeBand.style.color = "var(--text-accent)";
+            dayTypeBand.style.fontWeight = "700";
+            dayTypeBand.style.fontSize = "13px";
+            dayTypeBand.style.letterSpacing = "0.05em";
+            dayTypeBand.style.padding = "8px 16px";
+            // Sticky under the masthead so the day-type label stays visible
+            // while a long stop list scrolls past it, same reasoning as
+            // the stop-name column's own sticky behaviour below.
+            dayTypeBand.style.position = "sticky";
+            dayTypeBand.style.top = "0";
+            dayTypeBand.style.zIndex = "2";
+            dayTypeBand.textContent = DAY_TYPE_SHORT_LABELS[dayType].toUpperCase();
+            scrollWrap.appendChild(dayTypeBand);
+
+            // Shared with the side-panel family comparison
+            // (route-timetable-panel.ts) — merged-grid-table.ts, so the two
+            // stay visually identical rather than drifting into two
+            // differently-styled versions of the same idea.
+            scrollWrap.appendChild(
+              buildMergedGridTable(grid, (osmId) => {
+                const rowStop = stopsById.get(osmId);
+                return rowStop ? displayName(rowStop) : `Stop ${osmId}`;
+              }),
+            );
+          }
+
+          panel.appendChild(scrollWrap);
+        }
+
+        if (pageLabels.length > 1) showDirectionPage(0);
+      };
+
+      renderForRoute(route);
       document.body.appendChild(overlay);
     };
 
@@ -875,8 +1041,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         expandButton.style.marginLeft = "auto";
         expandButton.addEventListener("click", () => {
           const route = routes.find((r) => r.id === svc.routeId);
-          const timetable = timetables.find((t) => t.routeId === svc.routeId && t.dayType === svc.dayType);
-          if (route && timetable) showRouteTimetableModal(route, timetable);
+          if (route) showRouteTimetableModal(route, routes, timetables);
         });
         row.appendChild(expandButton);
 
@@ -1117,13 +1282,10 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       map.getCanvas().style.cursor = "";
     });
 
-    // Grouped stops (DESIGN.md §4) — deliberately lighter than a bus
-    // station's own popup: no bulk-assign (there's no manual membership
-    // editing for a group at all yet, OSM-seeded only) and no transit
-    // link for this first cut, just enough to declutter and to see who
-    // calls at any of its members. Real per-stop editing (rename, pick-
-    // up/set-down, its own bus-station/transit-link assignment) still
-    // happens on each individual member's own popup once revealed.
+    // Grouped stops (DESIGN.md §4) — player-created only (2026-09-27), so
+    // this popup now carries the same rename + bulk-radius-assign tools a
+    // bus station's own popup has, the actual fix for the over-eager
+    // Princes Street grouping the old OSM-seeded version couldn't correct.
     const closeGroupPopup = () => {
       groupPopup?.remove();
       groupPopup = null;
@@ -1140,11 +1302,68 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       const container = document.createElement("div");
       container.style.minWidth = "220px";
 
+      // Rename — the same pencil-icon inline-edit pattern as a stop or
+      // station, kept self-contained here since a StopGroup isn't a
+      // DecodedStop and can't reuse buildTitleRow directly.
       const titleRow = document.createElement("div");
-      titleRow.style.fontWeight = "600";
-      titleRow.style.fontSize = "13px";
+      titleRow.style.display = "flex";
+      titleRow.style.alignItems = "center";
+      titleRow.style.gap = "6px";
       titleRow.style.marginBottom = "8px";
-      titleRow.textContent = groupDisplayName(group);
+
+      const titleText = document.createElement("span");
+      titleText.style.fontWeight = "600";
+      titleText.style.fontSize = "13px";
+      titleText.style.flex = "1";
+      titleText.textContent = groupDisplayName(group);
+
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.className = "field";
+      titleInput.style.flex = "1";
+      titleInput.style.display = "none";
+
+      const exitEditMode = () => {
+        titleInput.style.display = "none";
+        titleText.style.display = "";
+      };
+      const commitRename = () => {
+        const value = titleInput.value.trim();
+        if (value === "") {
+          nameOverrides.delete(osmId);
+          void window.overrides.reset("stop_group", osmId, "name");
+        } else {
+          nameOverrides.set(osmId, value);
+          void window.overrides.set("stop_group", osmId, "name", value);
+        }
+        titleText.textContent = groupDisplayName(group);
+        exitEditMode();
+        refreshStopsSource();
+      };
+      const enterEditMode = () => {
+        titleInput.value = groupDisplayName(group);
+        titleText.style.display = "none";
+        titleInput.style.display = "";
+        titleInput.focus();
+        titleInput.select();
+      };
+      const pencilButton = document.createElement("button");
+      pencilButton.type = "button";
+      pencilButton.className = "btn btn-icon";
+      pencilButton.title = "Rename";
+      pencilButton.innerHTML = PENCIL_SVG;
+      pencilButton.addEventListener("click", () => {
+        if (titleInput.style.display === "none") enterEditMode();
+        else commitRename();
+      });
+      titleInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commitRename();
+        else if (e.key === "Escape") exitEditMode();
+      });
+
+      titleRow.appendChild(titleText);
+      titleRow.appendChild(titleInput);
+      titleRow.appendChild(pencilButton);
       container.appendChild(titleRow);
 
       const label = document.createElement("label");
@@ -1165,8 +1384,124 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       label.appendChild(document.createTextNode("Always show stops here"));
       container.appendChild(label);
 
+      // Bulk assignment — the same "sweep up everything within a radius"
+      // tool as a bus station's own popup. This is the actual fix for
+      // Princes Street: instead of one oversized automatic group with no
+      // way to split it, the player draws a tight radius around just the
+      // stops that really belong together.
+      const bulkSection = document.createElement("div");
+      bulkSection.style.marginTop = "10px";
+      bulkSection.style.paddingTop = "10px";
+      bulkSection.style.borderTop = "1px solid var(--border)";
+      bulkSection.style.display = "flex";
+      bulkSection.style.flexDirection = "column";
+      bulkSection.style.gap = "6px";
+
+      const bulkLabel = document.createElement("div");
+      bulkLabel.className = "label-muted";
+      bulkLabel.textContent = "Assign nearby stops";
+      bulkSection.appendChild(bulkLabel);
+
+      const radiusRow = document.createElement("div");
+      radiusRow.style.display = "flex";
+      radiusRow.style.alignItems = "center";
+      radiusRow.style.gap = "6px";
+      const radiusInput = document.createElement("input");
+      radiusInput.type = "number";
+      radiusInput.min = "1";
+      radiusInput.value = "50";
+      radiusInput.className = "field";
+      radiusInput.style.width = "60px";
+      radiusRow.appendChild(radiusInput);
+      radiusRow.appendChild(document.createTextNode("m"));
+      const assignButton = document.createElement("button");
+      assignButton.className = "btn";
+      assignButton.textContent = "Assign";
+      radiusRow.appendChild(assignButton);
+      bulkSection.appendChild(radiusRow);
+
+      const previewText = document.createElement("div");
+      previewText.style.color = "var(--text-muted)";
+      previewText.style.fontSize = "11px";
+      bulkSection.appendChild(previewText);
+
+      const candidatesWithinRadius = () => {
+        const radius = Number(radiusInput.value);
+        if (!Number.isFinite(radius) || radius <= 0) return [];
+        return stops.filter((s) => {
+          if (s.kind === "bus_station" || s.osmId === osmId) return false;
+          if (groupOfStop.get(s.osmId) === osmId) return false;
+          return approxDistanceM(coords, [s.lon, s.lat]) <= radius;
+        });
+      };
+
+      const updatePreview = () => {
+        const candidates = candidatesWithinRadius();
+        const elsewhere = candidates.filter((s) => groupOfStop.has(s.osmId)).length;
+        assignButton.disabled = candidates.length === 0;
+        previewText.textContent =
+          candidates.length === 0
+            ? "No unassigned stops in range"
+            : `${candidates.length} stop${candidates.length === 1 ? "" : "s"} in range` +
+              (elsewhere > 0 ? ` (${elsewhere} reassigned from another group)` : "");
+      };
+      radiusInput.addEventListener("input", updatePreview);
+      updatePreview();
+
+      assignButton.addEventListener("click", () => {
+        const candidates = candidatesWithinRadius();
+        for (const s of candidates) groupOfStop.set(s.osmId, osmId);
+        void Promise.all(candidates.map((s) => window.overrides.set("stop", s.osmId, "group_id", osmId)));
+        recomputeGroupCentroid(osmId);
+        refreshStopsSource();
+        refreshGroupMembersSource();
+        updatePreview();
+      });
+
+      container.appendChild(bulkSection);
+
       const memberIds = [...groupOfStop.entries()].filter(([, g]) => g === osmId).map(([id]) => id);
       const memberStops = memberIds.map((id) => stopsById.get(id)).filter((s): s is DecodedStop => s !== undefined);
+
+      // A live user request: "each stop needs to know the direction it
+      // faces, otherwise if [a route change] uses a better stop it might
+      // be on the wrong side of the road" — surfaced here since a group is
+      // exactly where a player (or, later, an automated operations
+      // manager — CLAUDE.md's optimiser hard part) would pick a different
+      // member to use. No route-drawing "pick the shelter" step exists yet
+      // to check this against automatically (DESIGN.md §4 describes it,
+      // but route-draw.ts doesn't implement a group-aware placement step),
+      // so this is informational only for now, same "surface it, wire up
+      // the behaviour later" precedent as Connection stop/Long stop above.
+      if (memberStops.length > 0) {
+        const membersSection = document.createElement("div");
+        membersSection.style.marginTop = "10px";
+        membersSection.style.paddingTop = "10px";
+        membersSection.style.borderTop = "1px solid var(--border)";
+        const membersLabel = document.createElement("div");
+        membersLabel.className = "label-muted";
+        membersLabel.textContent = "Members";
+        membersSection.appendChild(membersLabel);
+        for (const member of memberStops) {
+          const bearing = router.stop_facing_bearing(member.lon, member.lat);
+          const row = document.createElement("div");
+          row.style.display = "flex";
+          row.style.justifyContent = "space-between";
+          row.style.gap = "8px";
+          row.style.fontSize = "12px";
+          row.style.padding = "2px 0";
+          const nameSpan = document.createElement("span");
+          nameSpan.textContent = member.name ?? `Stop ${member.osmId}`;
+          const facesSpan = document.createElement("span");
+          facesSpan.style.color = "var(--text-muted)";
+          facesSpan.textContent = `Faces ${compassLabel(bearing)}`;
+          row.appendChild(nameSpan);
+          row.appendChild(facesSpan);
+          membersSection.appendChild(row);
+        }
+        container.appendChild(membersSection);
+      }
+
       container.appendChild(await buildGroupedCallingServicesSection(memberStops));
 
       groupPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
@@ -1241,6 +1576,16 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         container.appendChild(warning);
       }
 
+      if (stop.kind !== "bus_station") {
+        const facingBearing = router.stop_facing_bearing(stop.lon, stop.lat);
+        const facingRow = document.createElement("div");
+        facingRow.style.color = "var(--text-muted)";
+        facingRow.style.fontSize = "11px";
+        facingRow.style.marginBottom = "6px";
+        facingRow.textContent = `Faces ${compassLabel(facingBearing)} (buses here head roughly ${Math.round(facingBearing)}°)`;
+        container.appendChild(facingRow);
+      }
+
       // DESIGN.md §4 "Per-stop settings": "any two services meeting here
       // are connected (§7)" — just the flag for now. §7's actual
       // connection behaviour (one late service makes the other wait, up
@@ -1265,6 +1610,55 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       connectionLabel.appendChild(document.createTextNode("Connection stop"));
       container.appendChild(connectionLabel);
 
+      // Long stop (2026-09-28 batch): lets more than one bus stop here at
+      // once, capacity up to 3, with no ordered-departure queueing — a bus
+      // behind can leave even while the one ahead is still stopped. Same
+      // "store the flag now, wire up the behaviour once the underlying
+      // mechanism exists" precedent as Connection stop just above: there's
+      // no multi-vehicle stop-contention simulation yet (a genuine Phase 9
+      // "hard part," CLAUDE.md), so this is capacity storage only for now.
+      // Absent/1 = an ordinary stop, the default.
+      const longStopLabel = document.createElement("label");
+      longStopLabel.style.display = "flex";
+      longStopLabel.style.alignItems = "center";
+      longStopLabel.style.gap = "6px";
+      longStopLabel.style.cursor = "pointer";
+      longStopLabel.style.marginBottom = "6px";
+      const longStopCheckbox = document.createElement("input");
+      longStopCheckbox.type = "checkbox";
+      const existingLongStopCapacity = await window.overrides.get<number>("stop", osmId, "long_stop_capacity");
+      longStopCheckbox.checked = existingLongStopCapacity !== null && existingLongStopCapacity !== undefined;
+      longStopLabel.appendChild(longStopCheckbox);
+      longStopLabel.appendChild(document.createTextNode("Long stop (multiple buses at once)"));
+      container.appendChild(longStopLabel);
+
+      const LONG_STOP_CAPACITIES = ["2", "3"];
+      const longStopCapacityDropdown = createDropdown(
+        LONG_STOP_CAPACITIES,
+        String(existingLongStopCapacity ?? 2),
+        (chosen) => {
+          void window.overrides.set("stop", osmId, "long_stop_capacity", Number(chosen));
+        },
+      );
+      longStopCapacityDropdown.el.style.width = "100%";
+      longStopCapacityDropdown.el.style.marginBottom = "6px";
+      longStopCapacityDropdown.el.style.display = longStopCheckbox.checked ? "" : "none";
+      container.appendChild(longStopCapacityDropdown.el);
+
+      longStopCheckbox.addEventListener("change", () => {
+        if (longStopCheckbox.checked) {
+          longStopCapacityDropdown.el.style.display = "";
+          // Whatever the dropdown is currently showing, not a hardcoded
+          // 2 — unchecking then re-checking without touching the dropdown
+          // must not silently change a saved capacity of 3 down to 2 while
+          // the dropdown still visually shows 3.
+          void window.overrides.set("stop", osmId, "long_stop_capacity", Number(longStopCapacityDropdown.value));
+        } else {
+          longStopCapacityDropdown.el.style.display = "none";
+          void window.overrides.reset("stop", osmId, "long_stop_capacity");
+        }
+      });
+
       const NONE_LABEL = "(not part of a station)";
       const labelToStationId = new Map<string, number | null>([[NONE_LABEL, null]]);
       for (const { st, dist } of nearestStations) {
@@ -1284,6 +1678,108 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       });
       dropdown.el.style.width = "100%";
       container.appendChild(dropdown.el);
+
+      // Grouped stops (DESIGN.md §4) — player-created only (2026-09-27),
+      // same manual-only model as the transit link below: pick an existing
+      // nearby group, or create a new one right here. Groups exist for
+      // "several shelters serving one location" (Union Street, Aberdeen),
+      // so a tighter radius than the bus station picker above — that's a
+      // whole catchment, this is meant to be a handful of stops at the
+      // same junction or street.
+      const GROUP_PICKER_RADIUS_M = 300;
+      const CREATE_GROUP_LABEL = "+ Create new group here";
+      const NO_GROUP_LABEL = "(not grouped)";
+      const currentGroupId = groupOfStop.get(osmId) ?? null;
+      const nearbyGroups = [...stopGroupsById.values()]
+        .map((g) => ({ g, dist: approxDistanceM(coords, [g.lon, g.lat]) }))
+        .filter((c) => c.dist <= GROUP_PICKER_RADIUS_M || c.g.osmId === currentGroupId)
+        .sort((a, b) => a.dist - b.dist);
+
+      const labelToGroupId = new Map<string, number | null>([[NO_GROUP_LABEL, null]]);
+      const groupLabelOptions = [NO_GROUP_LABEL];
+      for (const { g, dist } of nearbyGroups) {
+        const label = `${groupDisplayName(g)} (${Math.round(dist)} m)`;
+        labelToGroupId.set(label, g.osmId);
+        groupLabelOptions.push(label);
+      }
+      groupLabelOptions.push(CREATE_GROUP_LABEL);
+      const currentGroupLabel =
+        [...labelToGroupId.entries()].find(([, id]) => id === currentGroupId)?.[0] ?? NO_GROUP_LABEL;
+
+      const groupLabel = document.createElement("div");
+      groupLabel.className = "label-muted";
+      groupLabel.style.marginTop = "6px";
+      groupLabel.textContent = "Grouped with";
+      container.appendChild(groupLabel);
+
+      const newGroupRow = document.createElement("div");
+      newGroupRow.style.display = "none";
+      newGroupRow.style.gap = "6px";
+      newGroupRow.style.marginTop = "4px";
+      const newGroupInput = document.createElement("input");
+      newGroupInput.type = "text";
+      newGroupInput.className = "field";
+      newGroupInput.style.flex = "1";
+      newGroupInput.placeholder = "Group name";
+      const newGroupButton = document.createElement("button");
+      newGroupButton.type = "button";
+      newGroupButton.className = "btn";
+      newGroupButton.textContent = "Create";
+      newGroupRow.appendChild(newGroupInput);
+      newGroupRow.appendChild(newGroupButton);
+
+      const applyGroupChoice = (value: number | null) => {
+        const previousGroupId = groupOfStop.get(osmId) ?? null;
+        if (value === null) groupOfStop.delete(osmId);
+        else groupOfStop.set(osmId, value);
+        void window.overrides.set("stop", osmId, "group_id", value);
+        if (previousGroupId !== null) recomputeGroupCentroid(previousGroupId);
+        if (value !== null) recomputeGroupCentroid(value);
+        refreshStopsSource();
+        refreshGroupMembersSource();
+      };
+
+      const groupDropdown = createDropdown(groupLabelOptions, currentGroupLabel, (chosenLabel) => {
+        if (chosenLabel === CREATE_GROUP_LABEL) {
+          newGroupRow.style.display = "flex";
+          newGroupInput.value = "";
+          newGroupInput.focus();
+          return;
+        }
+        newGroupRow.style.display = "none";
+        applyGroupChoice(labelToGroupId.get(chosenLabel) ?? null);
+      });
+      groupDropdown.el.style.width = "100%";
+      container.appendChild(groupDropdown.el);
+      container.appendChild(newGroupRow);
+
+      const commitNewGroup = () => {
+        const name = newGroupInput.value.trim();
+        if (name === "") return;
+        void (async () => {
+          const created = await window.stopGroups.create();
+          void window.overrides.set("stop_group", created.id, "name", name);
+          nameOverrides.set(created.id, name);
+          const label = `${name} (0 m)`;
+          labelToGroupId.set(label, created.id);
+          // Mutating the same array `createDropdown` already closed over —
+          // its menu re-renders from this array's live contents on every
+          // open(), so the new group is selectable without reopening the
+          // popup (see dropdown.ts's own renderMenu).
+          groupLabelOptions.splice(groupLabelOptions.length - 1, 0, label);
+          applyGroupChoice(created.id);
+          groupDropdown.value = label;
+          newGroupRow.style.display = "none";
+        })();
+      };
+      newGroupButton.addEventListener("click", commitNewGroup);
+      newGroupInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commitNewGroup();
+        else if (e.key === "Escape") {
+          newGroupRow.style.display = "none";
+          groupDropdown.value = currentGroupLabel;
+        }
+      });
 
       // Manual link to a nearby railway/subway station or tram stop — the
       // stop passengers actually use to transfer to/from it (see
@@ -1320,6 +1816,31 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       pickupDropoffDropdown.el.style.width = "100%";
       container.appendChild(pickupDropoffDropdown.el);
       container.appendChild(await buildCallingServicesSection(osmId));
+
+      // Only a player-placed stop can be deleted — a real OSM stop isn't
+      // the player's own to remove (DESIGN.md's own read-only-imported-
+      // data rule, CLAUDE.md's "OSM data quality" hard part). Same
+      // unguarded delete as depot-placement.ts's own "Delete depot" button
+      // (no confirm dialog, no check for routes still using it) — matches
+      // this game's existing convention rather than inventing a new one.
+      if (osmId < 0) {
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "btn btn-danger";
+        deleteButton.textContent = "Delete stop";
+        deleteButton.style.marginTop = "10px";
+        deleteButton.style.width = "100%";
+        deleteButton.addEventListener("click", () => {
+          void window.playerStops.delete(osmId).then(() => {
+            const index = stops.findIndex((s) => s.osmId === osmId);
+            if (index !== -1) stops.splice(index, 1);
+            stopsById.delete(osmId);
+            playerStopBusLegal.delete(osmId);
+            refreshStopsSource();
+            stopPopup?.remove();
+          });
+        });
+        container.appendChild(deleteButton);
+      }
 
       stopPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false })
         .setLngLat(coords)
