@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -291,6 +291,18 @@ CREATE TABLE IF NOT EXISTS livery_support_icon_overrides (
   colour TEXT NOT NULL CHECK (colour IN ('black', 'white')),
   PRIMARY KEY (livery_id, icon)
 );
+
+-- A repaint shop the player has placed (OPERATIONS.md §5 Ferrymill is the
+-- original). weekly_capacity is how many vehicles the shop can take each
+-- week; there is deliberately no default, since the real figure per shop
+-- comes from the user.
+CREATE TABLE IF NOT EXISTS repaint_shops (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  lon REAL NOT NULL,
+  lat REAL NOT NULL,
+  weekly_capacity INTEGER NOT NULL CHECK (weekly_capacity > 0)
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -526,6 +538,11 @@ export function openSave(path: string): SaveDb {
     // — brand new tables, `CREATE TABLE IF NOT EXISTS` in SCHEMA above
     // already creates them on this very `db.exec(SCHEMA)` call, so this
     // branch only needs to advance the version number.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 25) {
+    // v25 -> v26: the repaint_shops table — brand new, created by the
+    // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
+    // the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 24) {
     // v24 -> v25: the liveries and livery_support_icon_overrides tables —
@@ -1424,4 +1441,40 @@ export function listLiverySupportIconOverrides(db: SaveDb, liveryId: number): Li
     .prepare("SELECT livery_id, icon, colour FROM livery_support_icon_overrides WHERE livery_id = ?")
     .all(liveryId) as { livery_id: number; icon: SupportIconKey; colour: IconColour }[];
   return rows.map((r) => ({ liveryId: r.livery_id, icon: r.icon, colour: r.colour }));
+}
+
+export interface RepaintShop {
+  id: number;
+  name: string;
+  lon: number;
+  lat: number;
+  weeklyCapacity: number;
+}
+
+export function createRepaintShop(
+  db: SaveDb,
+  name: string,
+  lon: number,
+  lat: number,
+  weeklyCapacity: number,
+): RepaintShop {
+  const result = db
+    .prepare("INSERT INTO repaint_shops (name, lon, lat, weekly_capacity) VALUES (?, ?, ?, ?)")
+    .run(name, lon, lat, weeklyCapacity);
+  return { id: Number(result.lastInsertRowid), name, lon, lat, weeklyCapacity };
+}
+
+export function listRepaintShops(db: SaveDb): RepaintShop[] {
+  const rows = db
+    .prepare("SELECT id, name, lon, lat, weekly_capacity FROM repaint_shops ORDER BY id")
+    .all() as { id: number; name: string; lon: number; lat: number; weekly_capacity: number }[];
+  return rows.map((r) => ({ id: r.id, name: r.name, lon: r.lon, lat: r.lat, weeklyCapacity: r.weekly_capacity }));
+}
+
+export function setRepaintShopWeeklyCapacity(db: SaveDb, id: number, weeklyCapacity: number): void {
+  db.prepare("UPDATE repaint_shops SET weekly_capacity = ? WHERE id = ?").run(weeklyCapacity, id);
+}
+
+export function deleteRepaintShop(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM repaint_shops WHERE id = ?").run(id);
 }

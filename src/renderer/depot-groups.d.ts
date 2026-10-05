@@ -224,7 +224,23 @@ interface LiveriesApi {
   setIconOverride(liveryId: number, icon: SupportIconKey, colour: IconColour | null): Promise<void>;
 }
 
+interface RepaintShop {
+  id: number;
+  name: string;
+  lon: number;
+  lat: number;
+  weeklyCapacity: number;
+}
+
+interface RepaintShopsApi {
+  list(): Promise<RepaintShop[]>;
+  create(name: string, lon: number, lat: number, weeklyCapacity: number): Promise<RepaintShop>;
+  setWeeklyCapacity(id: number, weeklyCapacity: number): Promise<void>;
+  delete(id: number): Promise<void>;
+}
+
 interface Window {
+  repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   routeTimetables: RouteTimetablesApi;

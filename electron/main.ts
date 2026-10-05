@@ -63,6 +63,10 @@ import {
   listLiveries,
   setLiverySupportIconOverride,
   listLiverySupportIconOverrides,
+  createRepaintShop,
+  listRepaintShops,
+  setRepaintShopWeeklyCapacity,
+  deleteRepaintShop,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -346,6 +350,17 @@ function registerDealerHandlers(): void {
 // Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
 // own comment in db.mts for why this only mints an id; name and
 // membership both go through the existing override handlers above.
+function registerRepaintShopHandlers(): void {
+  ipcMain.handle("repaintShops:list", () => listRepaintShops(save));
+  ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, weeklyCapacity: number) =>
+    createRepaintShop(save, name, lon, lat, weeklyCapacity),
+  );
+  ipcMain.handle("repaintShops:setWeeklyCapacity", (_e, id: number, weeklyCapacity: number) =>
+    setRepaintShopWeeklyCapacity(save, id, weeklyCapacity),
+  );
+  ipcMain.handle("repaintShops:delete", (_e, id: number) => deleteRepaintShop(save, id));
+}
+
 function registerLiveryHandlers(): void {
   ipcMain.handle("liveries:list", () => listLiveries(save));
   ipcMain.handle("liveries:create", (_e, name: string, primaryColour: string, secondaryColour: string) =>
@@ -450,6 +465,7 @@ app.whenReady().then(async () => {
   registerDealerHandlers();
   registerStopGroupHandlers();
   registerLiveryHandlers();
+  registerRepaintShopHandlers();
   if (app.isPackaged && !(await downloadMapDataFirst())) {
     app.quit();
     return;

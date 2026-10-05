@@ -12,6 +12,7 @@ import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
 import { mountVehicleCataloguePanel } from "./vehicle-catalogue-panel";
 import { mountLiveryPanel } from "./livery-panel";
+import { mountRepaintShops } from "./repaint-shop-panel";
 import { mountDepotPlacement } from "./depot-placement";
 import { mountDealerPlacement } from "./dealer-placement";
 import { mountDealerReferencePins, seedRealDealers } from "./dealer-reference-pins";
@@ -114,6 +115,7 @@ init().then(async () => {
   await seedRealDealers();
   await mountDealerPlacement(map, router);
   await mountDealerReferencePins(map);
+  await mountRepaintShops(map);
   setLoadingProgress(1, "Ready");
   document.getElementById("loading-overlay")?.remove();
 });

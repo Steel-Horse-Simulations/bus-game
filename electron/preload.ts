@@ -21,6 +21,7 @@ import type {
   LiverySupportIconOverride,
   SupportIconKey,
   IconColour,
+  RepaintShop,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -210,4 +211,14 @@ contextBridge.exposeInMainWorld("liveries", {
     ipcRenderer.invoke("liveries:listIconOverrides", liveryId) as Promise<LiverySupportIconOverride[]>,
   setIconOverride: (liveryId: number, icon: SupportIconKey, colour: IconColour | null) =>
     ipcRenderer.invoke("liveries:setIconOverride", liveryId, icon, colour) as Promise<void>,
+});
+
+// Repaint shops (T63) — player-placed, each with its own weekly capacity.
+contextBridge.exposeInMainWorld("repaintShops", {
+  list: () => ipcRenderer.invoke("repaintShops:list") as Promise<RepaintShop[]>,
+  create: (name: string, lon: number, lat: number, weeklyCapacity: number) =>
+    ipcRenderer.invoke("repaintShops:create", name, lon, lat, weeklyCapacity) as Promise<RepaintShop>,
+  setWeeklyCapacity: (id: number, weeklyCapacity: number) =>
+    ipcRenderer.invoke("repaintShops:setWeeklyCapacity", id, weeklyCapacity) as Promise<void>,
+  delete: (id: number) => ipcRenderer.invoke("repaintShops:delete", id) as Promise<void>,
 });
