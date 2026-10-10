@@ -297,5 +297,13 @@ wins, being the more recent and more detailed source. Much of it depends on
 phases (4/5/6/7/9) not yet built — see `OPEN-ITEMS.md` for how each section
 maps onto the current build order.
 
+`TICKETING.md` (repo root) is ticket machines, the mobile app, AVL and station
+screens — machine tiers and their effects, tap-on tap-off, install rules and
+timing, company-wide one-off upgrades, bus station info screens, and the
+long-distance purchase rules. Companion to `DESIGN.md`/`OPERATIONS.md`/
+`VEHICLE-SPECS.md`/`UK-EXPANSION.md`/this file; where it conflicts with any of
+the four, it wins, being the more recent and more detailed source. Not yet
+built — see `OPEN-ITEMS.md`.
+
 There is no vehicle artwork to produce. Liveries are colour sets only
 (`OPERATIONS.md` §4).

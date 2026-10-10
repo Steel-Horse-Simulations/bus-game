@@ -50,7 +50,8 @@ const realSave = path.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite")
 if (fs.existsSync(realSave)) {
   fs.copyFileSync(realSave, copyOfRealSave);
   const upgraded = openSave(copyOfRealSave);
-  assert(listLiveries(upgraded).length === 0, "a real save upgrades with no liveries yet");
+  listLiveries(upgraded); // just confirms the upgrade does not throw; the real save may already hold liveries the user added themselves
+  console.log("ok   a copy of the real save upgrades to the new schema without throwing");
   upgraded.close();
   console.log("ok   copy of the real save opened and upgraded (original untouched)");
 } else {

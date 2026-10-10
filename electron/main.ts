@@ -22,6 +22,7 @@ import {
   createRoute,
   listRoutes,
   updateRoute,
+  refreshComposedRoutePoints,
   deleteRoute,
   setRoutePickupDropoffOverride,
   type DayType,
@@ -63,6 +64,14 @@ import {
   listLiveries,
   setLiverySupportIconOverride,
   listLiverySupportIconOverrides,
+  createDeadMileageRoute,
+  type DeadMileageDirection,
+  listDeadMileageRoutesForDepot,
+  setDeadMileageTrunkWaypoints,
+  addDeadMileageBranch,
+  setDeadMileageBranchWaypoints,
+  deleteDeadMileageBranch,
+  deleteDeadMileageRoute,
   createRepaintShop,
   listRepaintShops,
   setRepaintShopWeeklyCapacity,
@@ -131,19 +140,27 @@ function startMapDataServer(): void {
   server.listen(MAP_DATA_PORT, "127.0.0.1");
 }
 
+// Kept at module scope: a BrowserWindow with no live reference can be
+// closed by the JS garbage collector once createWindow() returns and its
+// own local variable goes out of scope (a documented Electron pitfall).
+let mainWindow: BrowserWindow | null = null;
+
 function createWindow(): void {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1600,
     height: 900,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
   if (process.env.VITE_DEV_SERVER_URL) {
-    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 }
 
@@ -203,6 +220,7 @@ function registerRouteHandlers(): void {
       name: string | null,
       parentRouteId: number | null,
       variationLetter: string | null,
+      composedFromRouteIds: number[],
     ) =>
       createRoute(
         save,
@@ -216,6 +234,7 @@ function registerRouteHandlers(): void {
         name,
         parentRouteId,
         variationLetter,
+        composedFromRouteIds,
       ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
@@ -234,6 +253,7 @@ function registerRouteHandlers(): void {
       name: string | null,
       parentRouteId: number | null,
       variationLetter: string | null,
+      composedFromRouteIds: number[],
     ) =>
       updateRoute(
         save,
@@ -248,7 +268,11 @@ function registerRouteHandlers(): void {
         name,
         parentRouteId,
         variationLetter,
+        composedFromRouteIds,
       ),
+  );
+  ipcMain.handle("routes:refreshComposedPoints", (_e, id: number, points: RoutePoint[]) =>
+    refreshComposedRoutePoints(save, id, points),
   );
   ipcMain.handle("routes:delete", (_e, id: number) => deleteRoute(save, id));
   ipcMain.handle(
@@ -350,6 +374,33 @@ function registerDealerHandlers(): void {
 // Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
 // own comment in db.mts for why this only mints an id; name and
 // membership both go through the existing override handlers above.
+function registerDeadMileageHandlers(): void {
+  ipcMain.handle("deadMileage:listForDepot", (_e, depotId: number) => listDeadMileageRoutesForDepot(save, depotId));
+  ipcMain.handle(
+    "deadMileage:createRoute",
+    (
+      _e,
+      dealerEntranceId: number,
+      depotId: number,
+      direction: DeadMileageDirection,
+      trunkWaypoints: { lon: number; lat: number }[],
+    ) => createDeadMileageRoute(save, dealerEntranceId, depotId, direction, trunkWaypoints),
+  );
+  ipcMain.handle("deadMileage:setTrunkWaypoints", (_e, routeId: number, waypoints: { lon: number; lat: number }[]) =>
+    setDeadMileageTrunkWaypoints(save, routeId, waypoints),
+  );
+  ipcMain.handle(
+    "deadMileage:addBranch",
+    (_e, routeId: number, depotEntranceId: number, waypoints: { lon: number; lat: number }[]) =>
+      addDeadMileageBranch(save, routeId, depotEntranceId, waypoints),
+  );
+  ipcMain.handle("deadMileage:setBranchWaypoints", (_e, branchId: number, waypoints: { lon: number; lat: number }[]) =>
+    setDeadMileageBranchWaypoints(save, branchId, waypoints),
+  );
+  ipcMain.handle("deadMileage:deleteBranch", (_e, branchId: number) => deleteDeadMileageBranch(save, branchId));
+  ipcMain.handle("deadMileage:deleteRoute", (_e, routeId: number) => deleteDeadMileageRoute(save, routeId));
+}
+
 function registerRepaintShopHandlers(): void {
   ipcMain.handle("repaintShops:list", () => listRepaintShops(save));
   ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, weeklyCapacity: number) =>
@@ -431,6 +482,13 @@ async function downloadMapDataFirst(): Promise<boolean> {
           .executeJavaScript(`window.setProgress(${fraction}, ${JSON.stringify(label)})`)
           .catch(() => {});
       });
+      // The main window is created before the splash is destroyed, so at
+      // least one window always exists — destroying the only open window
+      // first would fire window-all-closed and quit the app before the
+      // real window ever appeared (the actual cause of a silent exit right
+      // after a from-cache download, found 2026-10-09 by reading the whole
+      // boot sequence directly, not guessed).
+      createWindow();
       splash.destroy();
       return true;
     } catch (err) {
@@ -466,12 +524,16 @@ app.whenReady().then(async () => {
   registerStopGroupHandlers();
   registerLiveryHandlers();
   registerRepaintShopHandlers();
-  if (app.isPackaged && !(await downloadMapDataFirst())) {
-    app.quit();
-    return;
-  }
+  registerDeadMileageHandlers();
   startMapDataServer();
-  createWindow();
+  if (app.isPackaged) {
+    if (!(await downloadMapDataFirst())) {
+      app.quit();
+      return;
+    }
+  } else {
+    createWindow();
+  }
   startAutoUpdate();
 });
 

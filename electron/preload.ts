@@ -22,6 +22,10 @@ import type {
   SupportIconKey,
   IconColour,
   RepaintShop,
+  DeadMileageRoute,
+  DeadMileageDirection,
+  DeadMileageBranch,
+  DeadMileageWaypoint,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -66,6 +70,7 @@ contextBridge.exposeInMainWorld("routes", {
     name: string | null,
     parentRouteId: number | null,
     variationLetter: string | null,
+    composedFromRouteIds: number[],
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -79,6 +84,7 @@ contextBridge.exposeInMainWorld("routes", {
       name,
       parentRouteId,
       variationLetter,
+      composedFromRouteIds,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   update: (
@@ -93,6 +99,7 @@ contextBridge.exposeInMainWorld("routes", {
     name: string | null,
     parentRouteId: number | null,
     variationLetter: string | null,
+    composedFromRouteIds: number[],
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -107,7 +114,10 @@ contextBridge.exposeInMainWorld("routes", {
       name,
       parentRouteId,
       variationLetter,
+      composedFromRouteIds,
     ) as Promise<Route>,
+  refreshComposedPoints: (id: number, points: RoutePoint[]) =>
+    ipcRenderer.invoke("routes:refreshComposedPoints", id, points) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("routes:delete", id) as Promise<void>,
   setPickupDropoffOverride: (
     routeId: number,
@@ -221,4 +231,19 @@ contextBridge.exposeInMainWorld("repaintShops", {
   setWeeklyCapacity: (id: number, weeklyCapacity: number) =>
     ipcRenderer.invoke("repaintShops:setWeeklyCapacity", id, weeklyCapacity) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("repaintShops:delete", id) as Promise<void>,
+});
+
+// Dead mileage routes (DESIGN.md "Dead mileage routes") — saved per depot entrance pair, with waypoints the player added.
+contextBridge.exposeInMainWorld("deadMileage", {
+  listForDepot: (depotId: number) => ipcRenderer.invoke("deadMileage:listForDepot", depotId) as Promise<DeadMileageRoute[]>,
+  createRoute: (dealerEntranceId: number, depotId: number, direction: DeadMileageDirection, trunkWaypoints: DeadMileageWaypoint[]) =>
+    ipcRenderer.invoke("deadMileage:createRoute", dealerEntranceId, depotId, direction, trunkWaypoints) as Promise<DeadMileageRoute>,
+  setTrunkWaypoints: (routeId: number, waypoints: DeadMileageWaypoint[]) =>
+    ipcRenderer.invoke("deadMileage:setTrunkWaypoints", routeId, waypoints) as Promise<void>,
+  addBranch: (routeId: number, depotEntranceId: number, waypoints: DeadMileageWaypoint[]) =>
+    ipcRenderer.invoke("deadMileage:addBranch", routeId, depotEntranceId, waypoints) as Promise<DeadMileageBranch>,
+  setBranchWaypoints: (branchId: number, waypoints: DeadMileageWaypoint[]) =>
+    ipcRenderer.invoke("deadMileage:setBranchWaypoints", branchId, waypoints) as Promise<void>,
+  deleteBranch: (branchId: number) => ipcRenderer.invoke("deadMileage:deleteBranch", branchId) as Promise<void>,
+  deleteRoute: (routeId: number) => ipcRenderer.invoke("deadMileage:deleteRoute", routeId) as Promise<void>,
 });

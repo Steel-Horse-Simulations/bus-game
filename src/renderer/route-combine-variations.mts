@@ -136,3 +136,81 @@ export function composeVariation(
 
   return { points, appliedSiblingIds: diversions.map((d) => d.siblingId) };
 }
+
+// Minimal shape resolveRoutePoints needs from a real `Route` — kept
+// separate from the global `Route` type so this module stays usable from a
+// plain unit test without pulling in the whole app's ambient type set.
+export interface ComposableRoute {
+  id: number;
+  points: readonly CombinePoint[];
+  parentRouteId: number | null;
+  composedFromRouteIds: readonly number[];
+}
+
+// The live, current point list for a route — DESIGN.md §6 "Combining
+// variations," decided (2026-10-10): reusing a sibling's diversion is a
+// LIVE reference, not a one-off copy, so editing 1A's diversion later must
+// update 1C automatically. An ordinary route (composedFromRouteIds empty)
+// just returns its own stored points unchanged — this function only does
+// real work for a composed one. Recomputes via composeVariation from the
+// CURRENT parent + sibling points every time, rather than trusting
+// whatever composeVariation produced when the composition was last built
+// — the same "merge is a projection, not a copy" principle CLAUDE.md
+// already establishes for timetables. Recurses through parentRouteId,
+// since a composed variation's own parent can itself be composed (DESIGN.md:
+// "each one can branch off either the main route or another variation").
+// Falls back to the route's own stored (possibly stale) points rather than
+// throwing whenever live resolution isn't possible — a deleted parent/
+// sibling, a cycle, or an overlap introduced since the composition was last
+// valid are all real situations a save file can end up in, and showing the
+// last known-good shape is safer than the route vanishing from the map
+// entirely.
+export function resolveRoutePoints<T extends ComposableRoute>(route: T, allRoutes: readonly T[], seen: ReadonlySet<number> = new Set()): CombinePoint[] {
+  if (route.composedFromRouteIds.length === 0) return route.points as CombinePoint[];
+  if (seen.has(route.id)) return route.points as CombinePoint[];
+  const nextSeen = new Set(seen).add(route.id);
+
+  const parent = route.parentRouteId === null ? undefined : allRoutes.find((r) => r.id === route.parentRouteId);
+  if (!parent) return route.points as CombinePoint[];
+
+  const siblings = route.composedFromRouteIds.map((id) => allRoutes.find((r) => r.id === id));
+  if (siblings.some((s) => s === undefined)) return route.points as CombinePoint[];
+
+  const trunkPoints = resolveRoutePoints(parent, allRoutes, nextSeen);
+  const sources: DiversionSource[] = (siblings as T[]).map((s) => ({
+    siblingId: s.id,
+    points: resolveRoutePoints(s, allRoutes, nextSeen),
+  }));
+
+  try {
+    return composeVariation(trunkPoints, sources).points;
+  } catch {
+    return route.points as CombinePoint[];
+  }
+}
+
+// Every OTHER route that needs refreshing after `savedRouteId`'s own points
+// changed — either because it directly reuses one of its diversions, or
+// because it's a composed variation of it (its trunk). Transitive: if B
+// depends on A and C depends on B, saving A must also refresh C. Returns
+// ids only, in no particular order — the caller resolves and re-saves each
+// one (route-draw.ts, the only place a route is ever saved).
+export function findDependentRouteIds<T extends ComposableRoute>(savedRouteId: number, allRoutes: readonly T[]): number[] {
+  const dependents = new Set<number>();
+  let frontier = [savedRouteId];
+  while (frontier.length > 0) {
+    const next: number[] = [];
+    for (const id of frontier) {
+      for (const r of allRoutes) {
+        if (dependents.has(r.id) || r.id === savedRouteId) continue;
+        const dependsDirectly = r.composedFromRouteIds.includes(id) || (r.parentRouteId === id && r.composedFromRouteIds.length > 0);
+        if (dependsDirectly) {
+          dependents.add(r.id);
+          next.push(r.id);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return [...dependents];
+}

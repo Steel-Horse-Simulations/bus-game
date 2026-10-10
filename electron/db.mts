@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 29;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- express-only route, not a variation. Set together by whatever UI creates
 -- a variation; not validated against "number" itself matching at this
 -- layer.
+-- "composed_from_route_ids" (DESIGN.md §6 "Combining variations") is a JSON
+-- array of other route ids whose own diversions this variation reuses —
+-- empty for an ordinary route or a variation drawn entirely by hand. When
+-- non-empty, this route's own "points" column is a CACHE, not the source of
+-- truth: the real, current points are re-derived from the parent route (see
+-- parent_route_id) and these referenced siblings via composeVariation
+-- (src/renderer/route-combine-variations.mts) every time anything actually
+-- needs them, and the cache is refreshed by cascading from whichever save
+-- triggered it — the same "merge is a projection, not a copy" principle
+-- CLAUDE.md already establishes for timetables, so editing a reused
+-- diversion updates every variation built from it automatically, not just
+-- the one being edited. Decided by the user (2026-10-10): live reference,
+-- not an independent copy at creation time.
 CREATE TABLE IF NOT EXISTS routes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -81,7 +94,8 @@ CREATE TABLE IF NOT EXISTS routes (
   name TEXT,
   pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
   parent_route_id INTEGER REFERENCES routes(id),
-  variation_letter TEXT
+  variation_letter TEXT,
+  composed_from_route_ids TEXT NOT NULL DEFAULT '[]'
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -302,6 +316,44 @@ CREATE TABLE IF NOT EXISTS repaint_shops (
   lon REAL NOT NULL,
   lat REAL NOT NULL,
   weekly_capacity INTEGER NOT NULL CHECK (weekly_capacity > 0)
+);
+
+-- A dead mileage route between a dealer and a depot (DESIGN.md "Dead mileage
+-- routes"). trunk_waypoints is the shared path from the dealer entrance,
+-- as a JSON array of {lon, lat} the player added to the router's path.
+-- Near the depot the route forks into one or more branches (below), the
+-- same shape as a route variation splitting off a trunk but only over the
+-- last short stretch — one branch per depot entrance the player connects.
+-- A depot with a single combined entrance/exit point has just one branch,
+-- which is not a real fork.
+-- direction matters for real routing, not just labelling: one-way streets
+-- mean "dealer to depot" and "depot to dealer" are genuinely different
+-- paths, not the same path reversed (a real bug found live — the outbound
+-- path was computed dealer-to-entrance and just reused, which sent it the
+-- wrong way down one-way roads). inbound's trunk runs dealer -> fork,
+-- outbound's runs fork -> dealer; see dead-mileage-preview.ts for how each
+-- direction's own stop order is built so every router call matches the
+-- real direction of travel.
+CREATE TABLE IF NOT EXISTS dead_mileage_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dealer_entrance_id INTEGER NOT NULL REFERENCES dealer_entrances(id) ON DELETE CASCADE,
+  depot_id INTEGER NOT NULL REFERENCES depots(id) ON DELETE CASCADE,
+  direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+  trunk_waypoints TEXT NOT NULL DEFAULT '[]'
+);
+
+-- One branch of a dead mileage route's own fork, from the end of its
+-- trunk to one specific depot entrance. waypoints are added after the
+-- trunk, same shape as trunk_waypoints above. SQLite does not enforce
+-- ON DELETE CASCADE unless PRAGMA foreign_keys is on (it is not, here),
+-- so deleteDeadMileageRoute removes a route's own branches itself rather
+-- than relying on it.
+CREATE TABLE IF NOT EXISTS dead_mileage_branches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  route_id INTEGER NOT NULL REFERENCES dead_mileage_routes(id),
+  depot_entrance_id INTEGER NOT NULL REFERENCES depot_entrances(id),
+  waypoints TEXT NOT NULL DEFAULT '[]',
+  UNIQUE (route_id, depot_entrance_id)
 );
 `;
 
@@ -539,6 +591,27 @@ export function openSave(path: string): SaveDb {
     // already creates them on this very `db.exec(SCHEMA)` call, so this
     // branch only needs to advance the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 28) {
+    // v28 -> v29: routes gained composed_from_route_ids (DESIGN.md §6
+    // "Combining variations") — existing rows get '[]' (not composed), same
+    // as the column's own DEFAULT already means for a brand new row.
+    db.exec("ALTER TABLE routes ADD COLUMN composed_from_route_ids TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 27) {
+    // v27 -> v28: dead_mileage_routes gains a required `direction` column
+    // (a real one-way-street bug found this was needed — see the table's
+    // own SCHEMA comment). Nothing built on the old shape was ever
+    // functionally correct, so dropped rather than migrated; CREATE TABLE
+    // IF NOT EXISTS above recreates both tables fresh.
+    db.exec("DROP TABLE IF EXISTS dead_mileage_branches");
+    db.exec("DROP TABLE IF EXISTS dead_mileage_routes");
+    db.exec(SCHEMA);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 26) {
+    // v26 -> v27: the dead_mileage_routes table — brand new, created by the
+    // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances the
+    // version number.
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 25) {
     // v25 -> v26: the repaint_shops table — brand new, created by the
     // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
@@ -668,6 +741,7 @@ export interface Route {
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
   parentRouteId: number | null;
   variationLetter: string | null;
+  composedFromRouteIds: number[];
 }
 
 interface RouteRow {
@@ -683,6 +757,7 @@ interface RouteRow {
   pickup_dropoff_overrides: string;
   parent_route_id: number | null;
   variation_letter: string | null;
+  composed_from_route_ids: string;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -699,6 +774,7 @@ function routeFromRow(row: RouteRow): Route {
     pickupDropoffOverrides: JSON.parse(row.pickup_dropoff_overrides) as RoutePickupDropoffOverride[],
     parentRouteId: row.parent_route_id === null ? null : Number(row.parent_route_id),
     variationLetter: row.variation_letter,
+    composedFromRouteIds: JSON.parse(row.composed_from_route_ids) as number[],
   };
 }
 
@@ -714,10 +790,11 @@ export function createRoute(
   name: string | null,
   parentRouteId: number | null,
   variationLetter: string | null,
+  composedFromRouteIds: number[] = [],
 ): Route {
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       depotGroupId,
@@ -730,6 +807,7 @@ export function createRoute(
       name,
       parentRouteId,
       variationLetter,
+      JSON.stringify(composedFromRouteIds),
     );
   return {
     id: Number(result.lastInsertRowid),
@@ -744,6 +822,7 @@ export function createRoute(
     pickupDropoffOverrides: [],
     parentRouteId,
     variationLetter,
+    composedFromRouteIds,
   };
 }
 
@@ -769,9 +848,10 @@ export function updateRoute(
   name: string | null,
   parentRouteId: number | null,
   variationLetter: string | null,
+  composedFromRouteIds: number[] = [],
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?
      WHERE id = ?`,
   ).run(
     depotGroupId,
@@ -784,6 +864,7 @@ export function updateRoute(
     name,
     parentRouteId,
     variationLetter,
+    JSON.stringify(composedFromRouteIds),
     id,
   );
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
@@ -800,7 +881,25 @@ export function updateRoute(
     pickupDropoffOverrides: [],
     parentRouteId,
     variationLetter,
+    composedFromRouteIds,
   };
+}
+
+// Refreshes a composed route's own cached "points" to match what it should
+// currently resolve to (composeVariation, computed in the renderer where
+// every route's own data already lives) — called when something this route
+// depends on changes (its trunk, or a sibling diversion it reuses), NOT
+// when the player edits this route directly (updateRoute above is for
+// that). Deliberately narrower than updateRoute: only "points" and the
+// timetable cache change, since nothing else about this route (its colour,
+// name, pickup/dropoff overrides, composed_from_route_ids itself) was
+// actually touched — reusing updateRoute here would wrongly wipe the
+// player's own pickup/dropoff overrides on every cascade refresh, which is
+// exactly the kind of silent, unrelated data loss CLAUDE.md's safety
+// guidance warns against.
+export function refreshComposedRoutePoints(db: SaveDb, id: number, points: RoutePoint[]): void {
+  db.prepare("UPDATE routes SET points = ? WHERE id = ?").run(JSON.stringify(points), id);
+  db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
 }
 
 // A per-route override of a stop's pick-up/set-down restriction (see the
@@ -831,7 +930,7 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
@@ -1477,4 +1576,132 @@ export function setRepaintShopWeeklyCapacity(db: SaveDb, id: number, weeklyCapac
 
 export function deleteRepaintShop(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM repaint_shops WHERE id = ?").run(id);
+}
+
+export interface DeadMileageWaypoint {
+  lon: number;
+  lat: number;
+}
+
+export interface DeadMileageBranch {
+  id: number;
+  routeId: number;
+  depotEntranceId: number;
+  waypoints: DeadMileageWaypoint[];
+}
+
+export type DeadMileageDirection = "inbound" | "outbound";
+
+export interface DeadMileageRoute {
+  id: number;
+  dealerEntranceId: number;
+  depotId: number;
+  direction: DeadMileageDirection;
+  trunkWaypoints: DeadMileageWaypoint[];
+  branches: DeadMileageBranch[];
+}
+
+function validWaypoints(waypoints: readonly DeadMileageWaypoint[]): void {
+  for (const w of waypoints) {
+    if (!Number.isFinite(w.lon) || !Number.isFinite(w.lat)) throw new Error("waypoints must have finite lon and lat");
+  }
+}
+
+export function createDeadMileageRoute(
+  db: SaveDb,
+  dealerEntranceId: number,
+  depotId: number,
+  direction: DeadMileageDirection,
+  trunkWaypoints: readonly DeadMileageWaypoint[],
+): DeadMileageRoute {
+  validWaypoints(trunkWaypoints);
+  const result = db
+    .prepare("INSERT INTO dead_mileage_routes (dealer_entrance_id, depot_id, direction, trunk_waypoints) VALUES (?, ?, ?, ?)")
+    .run(dealerEntranceId, depotId, direction, JSON.stringify(trunkWaypoints));
+  return {
+    id: Number(result.lastInsertRowid),
+    dealerEntranceId,
+    depotId,
+    direction,
+    trunkWaypoints: [...trunkWaypoints],
+    branches: [],
+  };
+}
+
+export function setDeadMileageTrunkWaypoints(db: SaveDb, routeId: number, waypoints: readonly DeadMileageWaypoint[]): void {
+  validWaypoints(waypoints);
+  db.prepare("UPDATE dead_mileage_routes SET trunk_waypoints = ? WHERE id = ?").run(JSON.stringify(waypoints), routeId);
+}
+
+// A route may hold at most one branch per depot entrance (UNIQUE in SCHEMA) —
+// re-adding one updates its waypoints instead of creating a duplicate fork.
+export function addDeadMileageBranch(
+  db: SaveDb,
+  routeId: number,
+  depotEntranceId: number,
+  waypoints: readonly DeadMileageWaypoint[],
+): DeadMileageBranch {
+  validWaypoints(waypoints);
+  const result = db
+    .prepare(
+      `INSERT INTO dead_mileage_branches (route_id, depot_entrance_id, waypoints) VALUES (?, ?, ?)
+       ON CONFLICT(route_id, depot_entrance_id) DO UPDATE SET waypoints = excluded.waypoints`,
+    )
+    .run(routeId, depotEntranceId, JSON.stringify(waypoints));
+  const id =
+    result.lastInsertRowid > 0
+      ? Number(result.lastInsertRowid)
+      : (db
+          .prepare("SELECT id FROM dead_mileage_branches WHERE route_id = ? AND depot_entrance_id = ?")
+          .get(routeId, depotEntranceId) as { id: number }).id;
+  return { id, routeId, depotEntranceId, waypoints: [...waypoints] };
+}
+
+export function setDeadMileageBranchWaypoints(db: SaveDb, branchId: number, waypoints: readonly DeadMileageWaypoint[]): void {
+  validWaypoints(waypoints);
+  db.prepare("UPDATE dead_mileage_branches SET waypoints = ? WHERE id = ?").run(JSON.stringify(waypoints), branchId);
+}
+
+export function deleteDeadMileageBranch(db: SaveDb, branchId: number): void {
+  db.prepare("DELETE FROM dead_mileage_branches WHERE id = ?").run(branchId);
+}
+
+export function listDeadMileageRoutesForDepot(db: SaveDb, depotId: number): DeadMileageRoute[] {
+  const routeRows = db
+    .prepare("SELECT id, dealer_entrance_id, depot_id, direction, trunk_waypoints FROM dead_mileage_routes WHERE depot_id = ? ORDER BY id")
+    .all(depotId) as { id: number; dealer_entrance_id: number; depot_id: number; direction: DeadMileageDirection; trunk_waypoints: string }[];
+  const branchRows = db
+    .prepare(
+      `SELECT b.id, b.route_id, b.depot_entrance_id, b.waypoints
+       FROM dead_mileage_branches b
+       JOIN dead_mileage_routes r ON r.id = b.route_id
+       WHERE r.depot_id = ?
+       ORDER BY b.id`,
+    )
+    .all(depotId) as { id: number; route_id: number; depot_entrance_id: number; waypoints: string }[];
+  const branchesByRoute = new Map<number, DeadMileageBranch[]>();
+  for (const b of branchRows) {
+    const branch: DeadMileageBranch = {
+      id: b.id,
+      routeId: b.route_id,
+      depotEntranceId: b.depot_entrance_id,
+      waypoints: JSON.parse(b.waypoints) as DeadMileageWaypoint[],
+    };
+    const list = branchesByRoute.get(b.route_id) ?? [];
+    list.push(branch);
+    branchesByRoute.set(b.route_id, list);
+  }
+  return routeRows.map((r) => ({
+    id: r.id,
+    dealerEntranceId: r.dealer_entrance_id,
+    depotId: r.depot_id,
+    direction: r.direction,
+    trunkWaypoints: JSON.parse(r.trunk_waypoints) as DeadMileageWaypoint[],
+    branches: branchesByRoute.get(r.id) ?? [],
+  }));
+}
+
+export function deleteDeadMileageRoute(db: SaveDb, routeId: number): void {
+  db.prepare("DELETE FROM dead_mileage_branches WHERE route_id = ?").run(routeId);
+  db.prepare("DELETE FROM dead_mileage_routes WHERE id = ?").run(routeId);
 }

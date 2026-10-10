@@ -458,9 +458,66 @@ Auto-routing takes the **fastest route, not the shortest** — accounting for
 speed limits, not just distance, the same way a real driver would choose.
 
 Waypoints force a specific path where the router picks something silly.
-Current waypoint behaviour is unreliable — worth trying: place a waypoint on
-a road and make the route follow the closest graph nodes on either side of
-it, rather than whatever it currently does.
+
+**Fixed (2026-10-09), found via a live dead-mileage bug report** ("it's taking
+lots of weird turns instead of going along the main road"): the router's
+time-cost model had nothing discouraging it from leaving a major road to
+weave through a residential grid, if the model judged the shortcut even
+marginally faster — confirmed directly by replaying the real reported route
+against the real road graph (a clear sawtooth path cutting through streets
+near Ravelston Dykes, Edinburgh, instead of staying on the A90). Fixed with a
+genuine turn penalty in `game-wasm`'s Dijkstra cost function: a flat 5-second
+cost at any junction where the bearing changes by more than 30°, based on the
+real geometry (the node-to-node bearing either side of the junction), not on
+OSM way id — a single real road is routinely split into many separate OSM
+ways with no actual turn involved, so a way-id-based penalty would have
+wrongly punished driving straight down an ordinary road. Stacks with the
+existing give-way delay rather than replacing it, since they model different
+things (give-way: waiting to merge onto a busier road; turn penalty: the
+general friction of any real turn at all). Verified two ways: a new
+synthetic test proves the router now prefers a straight road over a
+measurably shorter shortcut that needs one sharp turn, and the exact real
+route from the bug report was replayed again post-fix — the sawtooth is
+gone, replaced by smooth monotonic progress along the same stretch.
+
+**Fixed (2026-10-10), a second, separate router issue found via the same
+live-testing thread**: an interior waypoint (one with a leg both arriving at
+it and leaving from it, as on a dead mileage route with multiple stops) was
+snapped onto the road network **independently for each leg** — once as the
+arriving leg's goal, once as the departing leg's start. At a junction with
+one-way restrictions those two independent snaps could resolve to different
+edges a street apart, so the spliced route arrived one way and had to leave a
+different way, looping back through already-driven streets just to
+reconnect — found as a real, visible spiral loop through a one-way gyratory
+near Shandwick Place, Edinburgh. Fixed in `game-wasm`: a new
+`Router::find_route_through(stops)` routes a whole multi-stop journey in one
+call, snapping every interior stop exactly once (preferring a node reachable
+both arriving and leaving, not just whichever is closer) rather than
+splicing independently-snapped legs together in TypeScript. Two new tests
+prove the mechanism on a synthetic one-way junction. **Important, checked
+honestly rather than assumed fixed**: replaying the exact real Shandwick
+Place route through the fix showed the waypoint already resolved to the same
+node either way, so this specific loop wasn't actually caused by the splice
+mismatch — routing from that exact point to the entrance, entirely alone,
+still loops, which is Dijkstra's genuine shortest *legal* path given the
+real one-way streets there — **wrongly concluded "not a bug" at the time**.
+The splice fix itself is real and worth keeping, but the actual cause of
+this loop (and a second one found the same way, a detour into Melville
+Crescent) was a genuine data bug, found only once the user independently
+checked the real road on Google Street View and pushed back directly rather
+than accepting "this is correct, real road geometry" at face value: Princes
+Street and Queensferry Street are tagged `access=no` + `psv=designated` in
+the real OSM data (general traffic banned, buses specifically allowed — a
+standard, *stronger* convention than `psv=yes`, not a different one), but
+the pipeline's tag parser only matched the literal string `"yes"`, so the
+whole street was wrongly excluded from the bus-routable graph. Fixed in
+`rust/pipeline/src/road_graph.rs` and the real road graph rebuilt from the
+actual `.osm.pbf` extract — see OPEN-ITEMS.md T69. **The lesson, recorded as
+its own memory**: a router reproducing the identical path on an isolated
+re-query proves the algorithm is deterministic, not that its input data is
+correct — a tag-parsing bug makes a wrongly-excluded road "consistently"
+avoided too. Don't stop at "self-consistent" when a human disputes the
+result; check the real tags.
 
 ### Start and terminus stops
 A route's **first stop is always a start and its last is always a terminus**,
@@ -540,11 +597,29 @@ capabilities, both confirmed by the user:
   another variation** at that point, the same way 1C above branches off 1B
   partway along what is otherwise 1's own trunk.
 
-Not yet built. Interacts with the variation-padding model (§7, CLAUDE.md
-"Known hard parts") — padding today targets one outer terminus; a variation
-with multiple split points needs the model to reason about padding at each of
-them, not just the end. Design this properly, with tests, before building the
-UI — same precedent as padding itself.
+**Built (2026-10-10).** Decided first, since it changes the shape of the whole
+feature: a split/rejoin mid-route needs **no padding at all** — times simply
+diverge per variation from that point on, even if several variations later
+share the same terminus. Padding (§7) is untouched and still only ever
+happens at a variation's own final outer terminus, exactly as before; the
+"multiple split points" capability turned out to be purely about how a
+route's **points** are composed, not a timetabling change.
+
+"Build from existing variations" in the route-drawing panel reuses a checked
+sibling's own diversion by comparing stop lists directly — no separate
+"diversion" record is stored; a diversion is just whatever stops a sibling's
+full point list doesn't share with the trunk's longest common prefix and
+suffix (`route-combine-variations.mts`'s `findDiversion`/`composeVariation`,
+tested against the exact 1A/1B/1C worked example above). Decided
+(2026-10-10): reusing a sibling's diversion is a **live reference**, not a
+one-off copy — editing 1A's diversion later must update 1C automatically,
+without reopening or resaving it. `routes` carries `composed_from_route_ids`
+(which siblings a variation reuses); its own `points` column becomes a
+cache, kept fresh by refreshing every dependent (transitively) immediately
+after any save, since route-drawing is the only place a route is ever saved.
+A route a player hand-edits after composing it loses the live link from that
+point on — a hand-edited result is no longer a pure composition of its
+sources. See OPEN-ITEMS.md T55 for the full build notes.
 
 ### Express services
 An express is **a variation with a list of skipped stops**, plus its own
@@ -769,6 +844,19 @@ numbered**.
 The player can define a fixed path between two places, such as a depot and a bus
 station, which every bus running dead between those points follows. Contract
 mileage is nonetheless paid on **actual miles driven**.
+
+Decided by the user (2026-10-05): the router picks the path first, and the player
+then adjusts it. A depot with **separate entrance-only and exit-only points** needs
+the route split, one path in and one path out. A depot with combined entrance/exit
+points does not need the split. The player adjusts the path by adding waypoints only (decided 2026-10-05).
+Decided by the user (2026-10-05): clicking a depot lists its dead mileage routes in the depot menu, and the player opens one to adjust. The player picks the dealer for each new route from the depot menu; the router picks the path and the player adds waypoints before saving.
+
+Corrected by the user (2026-10-09): the entrance/exit split is not two separate
+routes. One route runs from the dealer and forks near the depot — a shared trunk
+path, then a short branch to the entrance-only point and another to the
+exit-only point, the same shape as a route variation splitting off a trunk but
+only over the last short stretch. A depot with a single combined entrance/exit
+point has just one branch.
 
 ---
 

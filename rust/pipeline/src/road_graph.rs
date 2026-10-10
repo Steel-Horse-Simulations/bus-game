@@ -598,8 +598,18 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                         }
                         "junction" => junction_tag = Some(v),
                         "access" if matches!(v, "no" | "private") => access_restricted = true,
-                        "psv" if v == "yes" => psv_yes = true,
-                        "bus" if v == "yes" => bus_yes = true,
+                        // "designated" is a real, common OSM tagging for a
+                        // bus-priority street (access=no + psv=designated —
+                        // "general traffic banned, buses specifically
+                        // intended here," a *stronger* grant than "yes", not
+                        // a different one) — found live: Edinburgh's
+                        // Princes Street/Queensferry Street area, access=no
+                        // + psv=designated, matched only "yes" before and
+                        // was wrongly treated as closed to buses entirely,
+                        // sending dead mileage routes on long detours around
+                        // streets they were always allowed to use.
+                        "psv" if matches!(v, "yes" | "designated") => psv_yes = true,
+                        "bus" if matches!(v, "yes" | "designated") => bus_yes = true,
                         "maxspeed" => maxspeed_mph = parse_maxspeed_mph(v),
                         "width" => width_tag_m = parse_width_metres(v),
                         "lanes" => lanes = v.parse::<u8>().ok(),

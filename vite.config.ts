@@ -8,6 +8,12 @@ export default defineConfig({
   root,
   build: {
     outDir: path.resolve(__dirname, "dist"),
+    // outDir sits outside `root` (src/renderer), so Vite's default safety
+    // check refuses to auto-clear it before each build — every rebuild's
+    // content-hashed JS/WASM chunks piled up on top of the last instead of
+    // replacing them (198 orphaned JS files, 42 orphaned WASM files, 210MB,
+    // found sitting unused in the installed app's dist/assets).
+    emptyOutDir: true,
   },
   // maplibre-gl constructs its own Web Worker internally (maplibre-gl-worker),
   // which Vite's esbuild-based dep pre-bundler mishandles — dev mode logs

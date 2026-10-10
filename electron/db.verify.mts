@@ -36,8 +36,9 @@ import {
   createStopGroup,
   listStopGroupIds,
 } from "./db.mts";
-import { unlinkSync, existsSync } from "node:fs";
+import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import * as path2 from "node:path";
 
 const path = "./electron/.verify-save.sqlite";
 if (existsSync(path)) unlinkSync(path);
@@ -602,6 +603,32 @@ db.close();
   );
   migrated.close();
   unlinkSync(migrationPath);
+}
+
+// composed_from_route_ids (v28->v29, DESIGN.md §6 "Combining variations"),
+// against a copy of the player's own real save — their routes are real,
+// valuable data, not a synthetic fixture, so the migration must be proven
+// against the real shape before trusting it.
+{
+  const realSave = path2.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite");
+  if (existsSync(realSave)) {
+    const copy = "./electron/.verify-real-save-copy.sqlite";
+    if (existsSync(copy)) unlinkSync(copy);
+    copyFileSync(realSave, copy);
+    const upgraded = openSave(copy);
+    const realRoutes = listRoutes(upgraded);
+    assert(
+      realRoutes.every((r) => Array.isArray(r.composedFromRouteIds) && r.composedFromRouteIds.length === 0),
+      `every real route should migrate with composedFromRouteIds: [] (none are composed yet), got a route with ${JSON.stringify(realRoutes.find((r) => r.composedFromRouteIds.length !== 0)?.composedFromRouteIds)}`,
+    );
+    const created = createRoute(upgraded, realRoutes[0]?.depotGroupId ?? 1, "TEST-COMPOSED", [], "outbound", null, null, "#000000", null, null, null, [1, 2]);
+    assert(JSON.stringify(created.composedFromRouteIds) === JSON.stringify([1, 2]), "composedFromRouteIds round-trips through createRoute on the real save");
+    deleteRoute(upgraded, created.id);
+    upgraded.close();
+    unlinkSync(copy);
+  } else {
+    console.log("skip real save upgrade check: no save at", realSave);
+  }
 }
 
 unlinkSync(path);

@@ -40,6 +40,7 @@ interface Route {
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
   parentRouteId: number | null;
   variationLetter: string | null;
+  composedFromRouteIds: number[];
 }
 
 interface RoutesApi {
@@ -54,6 +55,7 @@ interface RoutesApi {
     name: string | null,
     parentRouteId: number | null,
     variationLetter: string | null,
+    composedFromRouteIds: number[],
   ): Promise<Route>;
   list(): Promise<Route[]>;
   update(
@@ -68,7 +70,9 @@ interface RoutesApi {
     name: string | null,
     parentRouteId: number | null,
     variationLetter: string | null,
+    composedFromRouteIds: number[],
   ): Promise<Route>;
+  refreshComposedPoints(id: number, points: RoutePoint[]): Promise<void>;
   delete(id: number): Promise<void>;
   setPickupDropoffOverride(
     routeId: number,
@@ -239,7 +243,36 @@ interface RepaintShopsApi {
   delete(id: number): Promise<void>;
 }
 
+interface DeadMileageBranch {
+  id: number;
+  routeId: number;
+  depotEntranceId: number;
+  waypoints: { lon: number; lat: number }[];
+}
+
+type DeadMileageDirection = "inbound" | "outbound";
+
+interface DeadMileageRoute {
+  id: number;
+  dealerEntranceId: number;
+  depotId: number;
+  direction: DeadMileageDirection;
+  trunkWaypoints: { lon: number; lat: number }[];
+  branches: DeadMileageBranch[];
+}
+
+interface DeadMileageApi {
+  listForDepot(depotId: number): Promise<DeadMileageRoute[]>;
+  createRoute(dealerEntranceId: number, depotId: number, direction: DeadMileageDirection, trunkWaypoints: { lon: number; lat: number }[]): Promise<DeadMileageRoute>;
+  setTrunkWaypoints(routeId: number, waypoints: { lon: number; lat: number }[]): Promise<void>;
+  addBranch(routeId: number, depotEntranceId: number, waypoints: { lon: number; lat: number }[]): Promise<DeadMileageBranch>;
+  setBranchWaypoints(branchId: number, waypoints: { lon: number; lat: number }[]): Promise<void>;
+  deleteBranch(branchId: number): Promise<void>;
+  deleteRoute(routeId: number): Promise<void>;
+}
+
 interface Window {
+  deadMileage: DeadMileageApi;
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

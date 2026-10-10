@@ -18,7 +18,13 @@ import { stopsPanelState, busStationsState } from "./stops-layer";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
 import { startTerminusColour } from "./start-terminus-colours";
-import { composeVariation, type DiversionSource } from "./route-combine-variations.mts";
+import {
+  composeVariation,
+  resolveRoutePoints,
+  findDependentRouteIds,
+  type DiversionSource,
+  type CombinePoint,
+} from "./route-combine-variations.mts";
 
 // Shared with stops-layer.ts: while drawing, a click on a stop or station
 // builds the route instead of opening its usual assignment popup. A plain
@@ -111,7 +117,7 @@ export interface RouteDrawController {
   // and depot group back into the draft state for editing. Saving while in
   // this mode updates the route in place (and clears its own timetables,
   // db.mts's updateRoute) rather than creating a duplicate.
-  startEditing(route: Route): void;
+  startEditing(route: Route): Promise<void>;
   // Loads `parent`'s points as a starting draft for a new lettered
   // variation (DESIGN.md §6 "Variations" — "the player chooses the last
   // shared stop, draws the divergent section... then chooses the first
@@ -133,6 +139,16 @@ export async function mountRouteDrawTool(
   const settlements = decode_settlements(settlementsBytes) as DecodedSettlement[];
 
   let draftPoints: DraftPoint[] = [];
+  // Which other routes' own diversions the current draft was built from via
+  // "Build from existing variations" (DESIGN.md §6 "Combining variations") —
+  // empty for a route drawn entirely by hand. Cleared by any manual edit to
+  // draftPoints after composing (addPoint, removing a point, cutting at a
+  // rejoin), since a hand-edited draft is no longer a pure composition of
+  // its sources and shouldn't silently claim to live-update from them —
+  // decided (2026-10-10): combining variations should update automatically
+  // when a reused diversion changes, which only makes sense while nothing
+  // else has touched the result since.
+  let draftComposedFromRouteIds: number[] = [];
   let routeCoords: [number, number][] = [];
   let edgeChunks: EdgeChunk[] = [];
   let edgeUseCount = new Map<number, number>();
@@ -304,6 +320,7 @@ export async function mountRouteDrawTool(
     if (last && last.kind === "stop" && point.kind === "stop" && last.osmId === point.osmId) return;
 
     warning = null;
+    draftComposedFromRouteIds = [];
 
     if (insertAfterIndex !== null) {
       const insertedAt = insertAfterIndex + 1;
@@ -329,6 +346,7 @@ export async function mountRouteDrawTool(
 
   const clear = () => {
     draftPoints = [];
+    draftComposedFromRouteIds = [];
     routeCoords = [];
     edgeChunks = [];
     edgeUseCount = new Map();
@@ -617,6 +635,7 @@ export async function mountRouteDrawTool(
       ? ` — no bus station set, direction used the nearest settlement instead (${usedFallbackSettlement.name ?? "unnamed"})`
       : "";
 
+    let savedRouteId: number;
     if (editingRouteId !== null) {
       // Updates in place (and clears the route's own timetables — db.mts's
       // updateRoute — since they're indexed against the point list this
@@ -633,7 +652,9 @@ export async function mountRouteDrawTool(
         name,
         parentRouteId,
         variationLetter,
+        draftComposedFromRouteIds,
       );
+      savedRouteId = editingRouteId;
       saveStatusEl.style.color = "var(--text-secondary)";
       saveStatusEl.textContent = `Updated route ${number} in "${group.name}" (drawn direction is ${orientation})${directionNote}.`;
     } else {
@@ -648,13 +669,33 @@ export async function mountRouteDrawTool(
         name,
         parentRouteId,
         variationLetter,
+        draftComposedFromRouteIds,
       );
+      savedRouteId = created.id;
       // A second Save click without leaving drawing mode now updates this
       // same route instead of creating a duplicate with the same number.
       editingRouteId = created.id;
       updateHeader();
       saveStatusEl.style.color = "var(--text-secondary)";
       saveStatusEl.textContent = `Saved route ${number} to "${group.name}" (drawn direction is ${orientation})${directionNote}.`;
+    }
+
+    // Combining variations (DESIGN.md §6): this save may have changed a
+    // diversion other variations reuse, or (if this route IS a trunk) the
+    // shared points a composed variation builds on — refresh every one of
+    // them so they keep showing the live, current shape rather than going
+    // stale until someone happens to reopen and resave them individually.
+    // Transitive (see findDependentRouteIds): refreshing in dependency
+    // order isn't needed since resolveRoutePoints recomputes from the
+    // CURRENT allRoutes list fresh for every dependent, not from each
+    // other's just-refreshed cache.
+    const allRoutesAfterSave = await window.routes.list();
+    const dependentIds = findDependentRouteIds(savedRouteId, allRoutesAfterSave);
+    for (const depId of dependentIds) {
+      const dep = allRoutesAfterSave.find((r) => r.id === depId);
+      if (!dep) continue;
+      const freshPoints = resolveRoutePoints(dep, allRoutesAfterSave) as readonly RoutePoint[];
+      await window.routes.refreshComposedPoints(depId, [...freshPoints]);
     }
   });
 
@@ -725,6 +766,7 @@ export async function mountRouteDrawTool(
     const cutFrom = insertAfterIndex + 1;
     if (cutFrom >= draftPoints.length) return;
     draftPoints.splice(cutFrom);
+    draftComposedFromRouteIds = [];
     if (terminusIndex !== null && terminusIndex >= cutFrom) terminusIndex = null;
     if (startIndex !== null && startIndex >= cutFrom) startIndex = null;
     rebuildRoute();
@@ -796,15 +838,20 @@ export async function mountRouteDrawTool(
       buildFromSiblingsStatus.textContent = "Check at least one variation to reuse first.";
       return;
     }
-    const sources: DiversionSource[] = checked.map((cb) => {
-      const sibling = parentSiblingRoutes.find((r) => String(r.id) === cb.value)!;
-      return { siblingId: sibling.number, points: sibling.points };
-    });
+    const checkedSiblings = checked.map((cb) => parentSiblingRoutes.find((r) => String(r.id) === cb.value)!);
+    const sources: DiversionSource[] = checkedSiblings.map((sibling) => ({ siblingId: sibling.number, points: sibling.points }));
     try {
       const result = composeVariation(variationParentRoute.points, sources);
       draftPoints = result.points.map((p) =>
         p.kind === "stop" ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat } : { kind: "waypoint", lon: p.lon, lat: p.lat },
       );
+      // Only siblings that actually contributed a real diversion count as a
+      // live dependency — one that shared nothing with the trunk was a
+      // no-op (see composeVariation's own doc comment), so there's nothing
+      // to stay in sync with.
+      draftComposedFromRouteIds = checkedSiblings
+        .filter((s) => result.appliedSiblingIds.includes(s.number))
+        .map((s) => s.id);
       insertAfterIndex = null;
       terminusIndex = null;
       startIndex = null;
@@ -949,6 +996,7 @@ export async function mountRouteDrawTool(
 
   const removePoint = (index: number) => {
     draftPoints.splice(index, 1);
+    draftComposedFromRouteIds = [];
     if (insertAfterIndex !== null) {
       if (insertAfterIndex === index) insertAfterIndex = null;
       else if (insertAfterIndex > index) insertAfterIndex -= 1;
@@ -1174,12 +1222,21 @@ export async function mountRouteDrawTool(
       if (editingRouteId !== null || variationParentRoute !== null) clear();
       setDrawing(true);
     },
-    startEditing: (route: Route) => {
-      draftPoints = route.points.map((p): DraftPoint =>
+    startEditing: async (route: Route) => {
+      // Resolved fresh rather than trusting route.points directly — if this
+      // route is composed (composedFromRouteIds non-empty), its own stored
+      // points are only a cache, and the cascade-refresh-on-save below is
+      // the normal way that cache stays current, not a guarantee against
+      // every possible staleness. Editing it should always start from the
+      // true current shape.
+      const allRoutes = await window.routes.list();
+      const livePoints = resolveRoutePoints(route, allRoutes) as readonly RoutePoint[];
+      draftPoints = livePoints.map((p): DraftPoint =>
         p.kind === "stop"
           ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat }
           : { kind: "waypoint", lon: p.lon, lat: p.lat },
       );
+      draftComposedFromRouteIds = [...route.composedFromRouteIds];
       terminusIndex = route.terminusIndex;
       startIndex = route.startIndex;
       editingRouteId = route.id;
@@ -1207,6 +1264,7 @@ export async function mountRouteDrawTool(
       startIndex = parent.startIndex;
       editingRouteId = null;
       variationParentRoute = parent;
+      draftComposedFromRouteIds = [];
       insertAfterIndex = null;
       warning = null;
       nameInput.value = "";

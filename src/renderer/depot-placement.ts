@@ -442,6 +442,15 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
     });
     container.appendChild(addEntranceButton);
 
+    const deadMileageButton = document.createElement("button");
+    deadMileageButton.className = "btn";
+    deadMileageButton.style.marginTop = "8px";
+    deadMileageButton.textContent = "Dead mileage routes";
+    deadMileageButton.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("open-dead-mileage", { detail: { depotId: depot.id } }));
+    });
+    container.appendChild(deadMileageButton);
+
     const deleteButton = document.createElement("button");
     deleteButton.className = "btn btn-danger";
     deleteButton.textContent = "Delete depot";

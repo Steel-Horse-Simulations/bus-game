@@ -1,7 +1,14 @@
 // Manual verification script for route-combine-variations.mts, run directly
 // with `npx tsx src/renderer/route-combine-variations.verify.mts` — same
 // pattern as variation-padding.verify.mts.
-import { findDiversion, composeVariation, type CombinePoint } from "./route-combine-variations.mts";
+import {
+  findDiversion,
+  composeVariation,
+  resolveRoutePoints,
+  findDependentRouteIds,
+  type CombinePoint,
+  type ComposableRoute,
+} from "./route-combine-variations.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -115,6 +122,101 @@ function osmIds(points: readonly CombinePoint[]): (number | "wp")[] {
     diversion!.trunkRejoinIndex === 4,
     `should rejoin at stop 4 (trunk index 4), got ${diversion!.trunkRejoinIndex}`,
   );
+}
+
+function route(id: number, points: CombinePoint[], parentRouteId: number | null, composedFromRouteIds: number[]): ComposableRoute {
+  return { id, points, parentRouteId, composedFromRouteIds };
+}
+
+// resolveRoutePoints: an ordinary route (nothing reused) just returns its
+// own stored points — no composition to resolve.
+{
+  const trunk = route(1, [stop(1), stop(2), stop(3)], null, []);
+  const resolved = resolveRoutePoints(trunk, [trunk]);
+  assert(JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, 3]), "an ordinary route resolves to its own stored points");
+}
+
+// resolveRoutePoints: the live-reference behaviour itself — a composed
+// route must reflect the CURRENT state of the sibling it reused, not
+// whatever was true when it was composed. Simulates 1A's diversion
+// changing after 1C was built from it: 1C's own stale cached points still
+// say "30", but resolving fresh against 1A's updated points must say "99".
+{
+  const trunk = route(1, [stop(1), stop(2), stop(3), stop(4), stop(5)], null, []);
+  const oneAOld = [stop(1), stop(2), waypoint(1), stop(4), stop(5)];
+  const oneANew = [stop(1), stop(2), waypoint(1), stop(99), stop(4), stop(5)];
+  const oneA = route(2, oneANew, 1, []); // 1A's diversion has since been edited
+  const staleCache = composeVariation(trunk.points, [{ siblingId: oneA.id, points: oneAOld }]).points;
+  const oneC = route(3, staleCache, 1, [2]); // 1C's own cache still reflects the OLD 1A
+
+  const resolved = resolveRoutePoints(oneC, [trunk, oneA, oneC]);
+  assert(
+    JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, "wp", 99, 4, 5]),
+    `1C should resolve to 1A's CURRENT diversion (with 99), not its stale cache, got ${JSON.stringify(osmIds(resolved))}`,
+  );
+}
+
+// resolveRoutePoints: falls back to the stored cache, not an error, when
+// the parent route no longer exists (deleted) — a real situation a save
+// file can be in, not something that should make the route vanish.
+{
+  const cachedPoints = [stop(1), stop(2), stop(3)];
+  const orphan = route(5, cachedPoints, 999, [888]); // parent 999, sibling 888 — neither exists
+  const resolved = resolveRoutePoints(orphan, [orphan]);
+  assert(JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, 3]), "a composed route with a deleted parent falls back to its own cache");
+}
+
+// resolveRoutePoints: falls back to the cache when a reused sibling no
+// longer exists, same reasoning.
+{
+  const trunk = route(1, [stop(1), stop(2), stop(3)], null, []);
+  const cachedPoints = [stop(1), stop(2), stop(3)];
+  const orphan = route(2, cachedPoints, 1, [777]); // sibling 777 doesn't exist
+  const resolved = resolveRoutePoints(orphan, [trunk, orphan]);
+  assert(JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, 3]), "a composed route with a deleted sibling falls back to its own cache");
+}
+
+// resolveRoutePoints: a cycle (shouldn't happen via the real UI, but a
+// save file could end up corrupted) must not infinite-loop — falls back to
+// the cache for whichever route closes the cycle.
+{
+  const a = route(1, [stop(1)], 2, [2]);
+  const b = route(2, [stop(2)], 1, [1]);
+  const resolved = resolveRoutePoints(a, [a, b]);
+  assert(Array.isArray(resolved), "a cyclic composed-from chain terminates instead of looping forever");
+}
+
+// findDependentRouteIds: a route that directly reuses a diversion from the
+// saved route is a dependent.
+{
+  const trunk = route(1, [], null, []);
+  const oneA = route(2, [], 1, []);
+  const oneC = route(3, [], 1, [2]); // reuses 1A (id 2)
+  const unrelated = route(4, [], null, []);
+  const deps = findDependentRouteIds(2, [trunk, oneA, oneC, unrelated]);
+  assert(JSON.stringify(deps.sort()) === JSON.stringify([3]), `only 1C should depend on 1A, got ${JSON.stringify(deps)}`);
+}
+
+// findDependentRouteIds: a composed variation also depends on its own
+// trunk — editing route 1 itself must refresh 1C too, not just siblings
+// 1C explicitly reuses.
+{
+  const trunk = route(1, [], null, []);
+  const oneC = route(3, [], 1, [2]); // trunk is 1
+  const plainVariation = route(4, [], 1, []); // also a child of 1, but NOT composed — shouldn't be a dependent
+  const deps = findDependentRouteIds(1, [trunk, oneC, plainVariation]);
+  assert(JSON.stringify(deps) === JSON.stringify([3]), `only the composed variation should depend on its trunk, got ${JSON.stringify(deps)}`);
+}
+
+// findDependentRouteIds: transitive — if 1D reuses 1C's own diversion, and
+// 1C reuses 1A's, saving 1A must also refresh 1D.
+{
+  const trunk = route(1, [], null, []);
+  const oneA = route(2, [], 1, []);
+  const oneC = route(3, [], 1, [2]);
+  const oneD = route(4, [], 1, [3]);
+  const deps = findDependentRouteIds(2, [trunk, oneA, oneC, oneD]);
+  assert(JSON.stringify(deps.sort()) === JSON.stringify([3, 4]), `both 1C and transitively 1D should depend on 1A, got ${JSON.stringify(deps)}`);
 }
 
 console.log("\nAll route-combine-variations checks passed.");

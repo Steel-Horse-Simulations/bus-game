@@ -235,6 +235,41 @@ fn junction_delay_s(
     }
 }
 
+// Placeholder magnitude, not a sourced figure — same caveat as the junction
+// delay constants above. Makes the router stick to one road rather than
+// hopping between several to shave a few seconds off the pure time-cost sum
+// (a live bug report: a dead-mileage route left the A90 to weave through a
+// residential grid, because nothing in the old cost model discouraged
+// leaving a major road for a geometrically shorter but genuinely worse
+// path). Unlike `junction_delay_s`'s give-way delay, this fires on *any*
+// real turn regardless of road class, and is based on the actual bearing
+// change at the junction — not on OSM way id, since a single real road is
+// routinely split into many separate ways with no actual turn involved.
+const TURN_PENALTY_S: f64 = 5.0;
+const TURN_ANGLE_THRESHOLD_DEG: f64 = 30.0;
+
+/// `incoming_bearing` is the compass bearing travelled to *arrive* at the
+/// junction (`None` only at a route's own start, same convention as
+/// `junction_delay_s`); `outgoing_bearing` is the bearing about to be
+/// travelled next. A genuine turn (more than `TURN_ANGLE_THRESHOLD_DEG` off
+/// continuing straight) costs a flat delay; a gentle curve or two OSM ways
+/// that happen to meet at this node while really being the same road costs
+/// nothing.
+fn turn_penalty_s(incoming_bearing: Option<f64>, outgoing_bearing: f64) -> f64 {
+    let Some(incoming_bearing) = incoming_bearing else {
+        return 0.0;
+    };
+    let mut diff = (outgoing_bearing - incoming_bearing).abs() % 360.0;
+    if diff > 180.0 {
+        diff = 360.0 - diff;
+    }
+    if diff > TURN_ANGLE_THRESHOLD_DEG {
+        TURN_PENALTY_S
+    } else {
+        0.0
+    }
+}
+
 /// Equirectangular approximation, adequate for comparing distances to find
 /// the nearest node — not for the route length itself, which uses the
 /// graph's own precomputed haversine edge lengths.
@@ -636,7 +671,36 @@ impl Router {
                                 best_dist = d;
                                 let d_from = approx_distance_m(lon_e7, lat_e7, from.lon_e7, from.lat_e7);
                                 let d_to = approx_distance_m(lon_e7, lat_e7, to.lon_e7, to.lat_e7);
-                                let node = if needs_outgoing {
+                                let node = if needs_outgoing && needs_incoming {
+                                    // An interior stop on a multi-stop route (a
+                                    // waypoint neither the journey's start nor its
+                                    // end): the node used to arrive must be the
+                                    // same node used to leave again, or two legs
+                                    // snapped independently can land on different
+                                    // ends of a one-way edge — arriving one way,
+                                    // departing a street away, and looping back
+                                    // through already-driven roads just to
+                                    // reconnect. A real bug found on a live dead
+                                    // mileage route (a loop through a one-way
+                                    // gyratory near Shandwick Place, Edinburgh).
+                                    // Prefer an endpoint that can do both; only
+                                    // fall back to "can do something" if neither
+                                    // can.
+                                    let from_has_out = !self.node_adjacency(edge.from).is_empty();
+                                    let to_has_out = !self.node_adjacency(edge.to).is_empty();
+                                    let from_both = from_has_out && self.has_incoming[edge.from as usize];
+                                    let to_both = to_has_out && self.has_incoming[edge.to as usize];
+                                    match (from_both, to_both) {
+                                        (true, false) => edge.from,
+                                        (false, true) => edge.to,
+                                        (true, true) => if d_from <= d_to { edge.from } else { edge.to },
+                                        (false, false) => match (from_has_out, to_has_out) {
+                                            (true, false) => edge.from,
+                                            (false, true) => edge.to,
+                                            _ => if d_from <= d_to { edge.from } else { edge.to },
+                                        },
+                                    }
+                                } else if needs_outgoing {
                                     // Prefer whichever endpoint can actually go
                                     // somewhere; distance only breaks the tie between
                                     // two that both can (or both can't).
@@ -1191,13 +1255,111 @@ impl Router {
         coords
     }
 
+    /// Routes through an ordered list of stops as ONE continuous journey
+    /// (`[lon0, lat0, lon1, lat1, ...]`), returning the whole concatenated
+    /// path the same shape `find_route` returns. Unlike calling
+    /// `find_route` once per leg and splicing the results in JS, every
+    /// *interior* stop (not the first, not the last) is snapped exactly
+    /// once, as a point the route can both arrive at and leave from — not
+    /// independently re-snapped for the leg ending there and the leg
+    /// starting there. At a junction with one-way restrictions those two
+    /// independent snaps can land on different edges a street apart, so
+    /// the spliced route arrives one way and leaves another, looping back
+    /// through already-driven streets just to reconnect. A real bug found
+    /// on a live dead mileage route: a loop through a one-way gyratory
+    /// near Shandwick Place, Edinburgh, where the two legs' endpoints
+    /// were 2.4m apart as coordinates but reached by paths that had
+    /// already diverged by several streets.
+    pub fn find_route_through(&self, stops_lonlat: Vec<f64>) -> Vec<f64> {
+        let n = stops_lonlat.len() / 2;
+        if n < 2 {
+            return Vec::new();
+        }
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+
+        let mut resolved: Vec<(u32, i32, i32, u32)> = Vec::with_capacity(n);
+        for i in 0..n {
+            let lon = stops_lonlat[i * 2];
+            let lat = stops_lonlat[i * 2 + 1];
+            let needs_outgoing = i != n - 1;
+            let needs_incoming = i != 0;
+            let Some(snap) = self.nearest_node(to_e7(lon), to_e7(lat), needs_outgoing, needs_incoming) else {
+                return Vec::new();
+            };
+            resolved.push(snap);
+        }
+
+        let push_e7 = |coords: &mut Vec<f64>, lon_e7: i32, lat_e7: i32| {
+            coords.push(lon_e7 as f64 * 1e-7);
+            coords.push(lat_e7 as f64 * 1e-7);
+        };
+
+        let mut coords: Vec<f64> = Vec::new();
+        for i in 0..n - 1 {
+            let (start, start_snap_lon_e7, start_snap_lat_e7, start_snap_edge) = resolved[i];
+            let (_goal, goal_snap_lon_e7, goal_snap_lat_e7, goal_snap_edge) = resolved[i + 1];
+
+            let Some((steps, _)) = self.dijkstra(start, resolved[i + 1].0) else {
+                return Vec::new();
+            };
+
+            let leg_first_idx = coords.len();
+            let start_edge_matches = steps.first().is_some_and(|&(edge_idx, _)| edge_idx == start_snap_edge);
+            if steps.is_empty() || start_edge_matches {
+                push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+            } else {
+                let node = &self.graph.nodes[start as usize];
+                push_e7(&mut coords, node.lon_e7, node.lat_e7);
+            }
+
+            let mut current = start;
+            for (edge_idx, next_node) in &steps {
+                let edge = &self.graph.edges[*edge_idx as usize];
+                if edge.from == current {
+                    for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge) {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                } else {
+                    for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge).iter().rev() {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                }
+                let node = &self.graph.nodes[*next_node as usize];
+                push_e7(&mut coords, node.lon_e7, node.lat_e7);
+                current = *next_node;
+            }
+
+            let goal_edge_matches = steps.last().is_some_and(|&(edge_idx, _)| edge_idx == goal_snap_edge);
+            if goal_edge_matches {
+                let len = coords.len();
+                coords[len - 2] = goal_snap_lon_e7 as f64 * 1e-7;
+                coords[len - 1] = goal_snap_lat_e7 as f64 * 1e-7;
+            }
+
+            // Drop this leg's own first point when it duplicates the
+            // previous leg's last point — the normal case now that
+            // interior stops resolve to one shared snap used by both
+            // legs, rather than two independent ones that could differ.
+            if leg_first_idx >= 2 {
+                let prev_point = (coords[leg_first_idx - 2], coords[leg_first_idx - 1]);
+                let this_point = (coords[leg_first_idx], coords[leg_first_idx + 1]);
+                if prev_point == this_point {
+                    coords.drain(leg_first_idx..leg_first_idx + 2);
+                }
+            }
+        }
+
+        coords
+    }
+
     /// Returns the path as a list of `(edge, node arrived at)` steps in
     /// order, plus the total travel time (seconds) Dijkstra minimised to
     /// find it, or `None` if unreachable. Minimises `edge_time_cost_s` plus
-    /// `junction_delay_s` at every node crossed, not distance — see those
-    /// functions' doc comments. The junction delay at `node` depends on
-    /// which edge was used to *arrive* there (`prev[node]`, `None` only for
-    /// `start` itself) versus the edge about to be taken next (`hop.edge`).
+    /// `junction_delay_s` plus `turn_penalty_s` at every node crossed, not
+    /// distance — see those functions' doc comments. Both delays at `node`
+    /// depend on which edge was used to *arrive* there (`prev[node]`,
+    /// `None` only for `start` itself) versus the edge about to be taken
+    /// next (`hop.edge`).
     fn dijkstra(&self, start: u32, goal: u32) -> Option<(Vec<(u32, u32)>, f64)> {
         let n = self.graph.nodes.len();
         let mut best_cost_s = vec![f64::INFINITY; n];
@@ -1218,12 +1380,27 @@ impl Router {
             }
 
             let incoming_class = prev[node as usize].map(|(_, edge_idx)| self.graph.edges[edge_idx as usize].class);
+            let incoming_bearing = prev[node as usize].map(|(prev_node, _)| {
+                bearing_degrees(
+                    self.graph.nodes[prev_node as usize].lon_e7,
+                    self.graph.nodes[prev_node as usize].lat_e7,
+                    self.graph.nodes[node as usize].lon_e7,
+                    self.graph.nodes[node as usize].lat_e7,
+                )
+            });
             let junction_control = self.graph.nodes[node as usize].junction_control;
 
             for hop in self.node_adjacency(node) {
                 let edge = &self.graph.edges[hop.edge as usize];
                 let delay_s = junction_delay_s(junction_control, incoming_class, edge.class);
-                let next_cost = cost_s + edge_time_cost_s(edge) + delay_s;
+                let outgoing_bearing = bearing_degrees(
+                    self.graph.nodes[node as usize].lon_e7,
+                    self.graph.nodes[node as usize].lat_e7,
+                    self.graph.nodes[hop.to_node as usize].lon_e7,
+                    self.graph.nodes[hop.to_node as usize].lat_e7,
+                );
+                let turn_s = turn_penalty_s(incoming_bearing, outgoing_bearing);
+                let next_cost = cost_s + edge_time_cost_s(edge) + delay_s + turn_s;
                 if next_cost < best_cost_s[hop.to_node as usize] {
                     best_cost_s[hop.to_node as usize] = next_cost;
                     prev[hop.to_node as usize] = Some((node, hop.edge));
@@ -1660,6 +1837,99 @@ mod tests {
         );
     }
 
+    /// An *interior* stop (neither a route's start nor its end) sits right
+    /// next to a one-way edge whose two ends have asymmetric access: node
+    /// 1 (A) has both incoming (from the start) and outgoing (on to both B
+    /// and D); node 2 (B) only ever has incoming, nothing leaves it.
+    /// Resolving an arrival-only snap and a departure-only snap
+    /// *independently* for the same coordinate — what splicing two
+    /// `find_route` legs in JS used to do — picks B for "arriving" (it's
+    /// physically closer, and it does have incoming) and is forced to A
+    /// for "leaving" (B is disqualified outright, having no outgoing at
+    /// all): two different physical points for what should be one
+    /// waypoint. A real bug, found on a live dead mileage route as a loop
+    /// through a one-way gyratory near Shandwick Place, Edinburgh.
+    /// Querying both directions at once must settle on the one node that
+    /// can do both, not the one that's merely closer.
+    #[test]
+    fn nearest_node_needing_both_directions_prefers_a_node_that_can_do_both() {
+        let nodes = vec![
+            graph_node(1, 0, 0),               // 0: start (F)
+            graph_node(2, 0, 1_000_000),        // 1: A — reachable from F, goes on to both B and D
+            graph_node(3, 100_000, 1_000_000),  // 2: B — only ever arrived at, never left
+            graph_node(4, 0, 2_000_000),        // 3: D — the route's real end
+        ];
+        let mut start_to_a = edge(0, 1, 900, 11, 100.0);
+        start_to_a.oneway = OnewayDirection::Forward; // F -> A
+        let mut a_to_b = edge(1, 2, 901, 11, 100.0);
+        a_to_b.oneway = OnewayDirection::Forward; // A -> B only: B has no outgoing of its own
+        let mut a_to_d = edge(1, 3, 902, 11, 100.0);
+        a_to_d.oneway = OnewayDirection::Forward; // A -> D
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![start_to_a, a_to_b, a_to_d],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        // Right on the A->B edge, close to B's end (lon 90_000, near B's
+        // 100_000) — nearer to B than to A, so a distance-only tiebreak
+        // would pick B, same as the old needs_incoming-only call did.
+        let snap = router.nearest_node(90_000, 1_000_000, true, true);
+        let (node, ..) = snap.expect("should resolve to a node");
+        assert_eq!(
+            node, 1,
+            "should resolve to A (node 1), the only one that can both arrive and leave, even though B (node 2) is physically closer"
+        );
+    }
+
+    /// End-to-end version of the same bug, through `find_route_through`:
+    /// routing F -> waypoint -> D, where the waypoint sits next to the
+    /// same asymmetric one-way edge as above. Splicing two independently
+    /// snapped legs (the old per-leg approach) would arrive at B and then
+    /// have to leave from A — doubling back along the very edge it just
+    /// arrived on. The fixed route must never revisit a point it has
+    /// already been to.
+    #[test]
+    fn find_route_through_does_not_double_back_at_an_asymmetric_interior_waypoint() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 100_000, 1_000_000),
+            graph_node(4, 0, 2_000_000),
+        ];
+        let mut start_to_a = edge(0, 1, 900, 11, 100.0);
+        start_to_a.oneway = OnewayDirection::Forward;
+        let mut a_to_b = edge(1, 2, 901, 11, 100.0);
+        a_to_b.oneway = OnewayDirection::Forward;
+        let mut a_to_d = edge(1, 3, 902, 11, 100.0);
+        a_to_d.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![start_to_a, a_to_b, a_to_d],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route_through(vec![0.0, 0.0, 0.009, 0.1, 0.0, 0.2]);
+        assert!(!coords.is_empty(), "a route should exist through the waypoint to the end");
+
+        let mut seen = std::collections::HashSet::new();
+        let mut i = 0;
+        while i < coords.len() {
+            let point = (coords[i].to_bits(), coords[i + 1].to_bits());
+            assert!(
+                seen.insert(point),
+                "route revisited ({}, {}) at index {i} — it doubled back instead of passing straight through",
+                coords[i],
+                coords[i + 1]
+            );
+            i += 2;
+        }
+    }
+
     // --- junction_delay_s (pure function) ---
 
     #[test]
@@ -1782,6 +2052,69 @@ mod tests {
             (time_s - plain_time_s).abs() < 0.01,
             "expected plain travel time only ({plain_time_s}s), no give-way delay, got {time_s}s"
         );
+    }
+
+    // --- turn penalty (every real turn, not just joining a major road) ---
+
+    #[test]
+    fn turn_penalty_s_only_fires_past_the_angle_threshold() {
+        assert_eq!(turn_penalty_s(None, 90.0), 0.0, "a route's own start has nothing to turn away from yet");
+        assert_eq!(turn_penalty_s(Some(90.0), 90.0), 0.0, "continuing dead straight costs nothing");
+        assert_eq!(turn_penalty_s(Some(90.0), 105.0), 0.0, "a gentle 15 degree curve, under the threshold, costs nothing");
+        assert_eq!(
+            turn_penalty_s(Some(90.0), 10.0),
+            TURN_PENALTY_S,
+            "an 80 degree turn, well past the threshold, costs the flat penalty"
+        );
+        assert_eq!(turn_penalty_s(Some(350.0), 10.0), 0.0, "a 20 degree turn across the 0/360 wraparound still counts as gentle");
+        assert_eq!(turn_penalty_s(Some(10.0), 190.0), TURN_PENALTY_S, "a 180 degree U-turn costs the flat penalty");
+    }
+
+    /// Two routes between the same start and goal: a perfectly straight one
+    /// and a slightly shorter one that bends sharply through a third point.
+    /// The shortcut is deliberately built to save less raw travel time than
+    /// one turn penalty costs, so the only way the router can prefer the
+    /// straight route is if the turn penalty is actually being charged —
+    /// proving it reaches `find_route`, not just the pure function in
+    /// isolation (same shape as `find_route_charges_a_give_way_delay_...`).
+    #[test]
+    fn find_route_prefers_a_straight_road_over_a_marginally_shorter_shortcut_with_a_sharp_turn() {
+        let nodes = vec![
+            graph_node(1, 0, 0),               // 0: start
+            graph_node(2, 0, 1_000_000),        // 1: straight path's own midpoint, due north
+            graph_node(3, 0, 2_000_000),        // 2: goal, due north of node 1 too
+            graph_node(4, 600_000, 1_000_000),  // 3: shortcut's own midpoint, well off to the east
+        ];
+        let straight_a = edge(0, 1, 900, 4 /* Primary */, 1000.0);
+        let straight_b = edge(1, 2, 901, 4, 1000.0);
+        // Shorter in total (1900m vs 2000m, ~4.47s less travel time at
+        // Primary's default 50mph) but bends roughly 62 degrees at node 3 —
+        // one turn penalty (5.0s) outweighs that saving.
+        let shortcut_a = edge(0, 3, 902, 4, 950.0);
+        let shortcut_b = edge(3, 2, 903, 4, 950.0);
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![straight_a, straight_b, shortcut_a, shortcut_b],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.2);
+        assert!(!coords.is_empty(), "expected a route to be found");
+
+        let straight_time_s = 2000.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[4] as f64 * MPH_TO_MPS);
+        let shortcut_time_s = 1900.0 / (game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[4] as f64 * MPH_TO_MPS);
+        assert!(straight_time_s < shortcut_time_s + TURN_PENALTY_S, "test is only meaningful if the penalty flips the comparison");
+
+        let time_s = router.last_route_time_seconds();
+        assert!(
+            (time_s - straight_time_s).abs() < 0.01,
+            "expected the straight route's own time ({straight_time_s}s), got {time_s}s — the shortcut was taken despite its sharp turn"
+        );
+        // Confirm it actually went via node 1 (the straight path), not node 3.
+        let visited_node_1 = coords.chunks(2).any(|p| (p[0] - 0.0).abs() < 1e-9 && (p[1] - 0.1).abs() < 1e-9);
+        assert!(visited_node_1, "expected the route to pass through the straight path's own midpoint");
     }
 
     // --- place_stop (kerb snapping for player-placed stops, DESIGN.md §4) ---

@@ -28,6 +28,7 @@ function route(
     pickupDropoffOverrides,
     parentRouteId: null,
     variationLetter: null,
+    composedFromRouteIds: [],
   };
 }
 

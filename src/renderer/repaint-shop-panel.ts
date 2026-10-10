@@ -41,8 +41,8 @@ export async function mountRepaintShops(map: maplibregl.Map): Promise<void> {
   toggle.className = "btn";
   toggle.textContent = "Repaint shops";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "44px";
-  toggle.style.left = "1000px";
+  toggle.style.bottom = "8px";
+  toggle.style.left = "1150px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);
 
