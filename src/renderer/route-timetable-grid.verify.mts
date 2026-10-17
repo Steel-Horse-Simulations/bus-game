@@ -34,6 +34,7 @@ function route(
     parentRouteId: null,
     variationLetter: null,
     composedFromRouteIds: [],
+    hailAndRideSections: [],
   };
 }
 

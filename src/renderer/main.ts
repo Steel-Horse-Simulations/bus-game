@@ -65,6 +65,18 @@ map.addControl(
     customAttribution: "© OpenMapTiles © OpenStreetMap contributors",
   }),
 );
+// A live user request: "I've also just found out I can rotate the map,
+// can there be a button to snap the map to facing North again please" —
+// MapLibre's own compass control does exactly this already (click resets
+// bearing to 0), so no custom button needed. Zoom buttons omitted
+// (showZoom: false) since scroll/pinch already covers zoom and the ask
+// was specifically about rotation. top-right is already the Mon-Fri/Sat/
+// Sun day-type bar's own corner (vehicle-simulation.ts, top:8px, ~42px
+// tall) — same clash route-panel.ts already had to clear once for this
+// exact corner, so the control container gets the same kind of offset.
+const navControl = new maplibregl.NavigationControl({ showZoom: false, showCompass: true });
+map.addControl(navControl, "top-right");
+(navControl as unknown as { _container: HTMLElement })._container.style.marginTop = "56px";
 registerMapIcons(map);
 mountDepotGroupsPanel();
 mountVehicleCataloguePanel();

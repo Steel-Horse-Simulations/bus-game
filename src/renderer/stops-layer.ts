@@ -44,11 +44,36 @@ interface DecodedStopArea {
   memberOsmIds: number[];
 }
 
-// No routes exist yet (Phase 2 route drawing hasn't been built), so every
-// stop is "not used" for now — colouring is wired up ahead of that so this
-// layer doesn't need revisiting once routes land and can report real usage.
-function isUsedByService(_osmId: number): boolean {
-  return false;
+// Which stops are actually called at by at least one saved route, kept as
+// a module-level set so `isUsedByService` (called synchronously while
+// building every stop feature) doesn't need to re-fetch routes itself.
+// Populated once before `drawStops`'s first render and refreshed by
+// `stopsPanelState.refreshUsedByService` — wired up to every place a route
+// is created, updated or deleted (route-draw.ts's save/create, route-
+// panel.ts's delete) so a stop's blue "in service" colour and bigger
+// render radius track the real route list live. Left stale (all false)
+// for a long time after routes actually started existing — the colouring
+// was wired up ahead of routes landing, per this function's own original
+// comment, but the live update side was never actually connected, so
+// every stop rendered in the dim "unused" grey regardless of real usage —
+// a real, live-reported bug ("stops are not showing on the map anymore"),
+// not a new regression: the stops were always there, just hard to see at
+// a 2–5px radius in a colour close to the basemap's own greys.
+let usedStopIds = new Set<number>();
+
+async function computeUsedStopIds(): Promise<Set<number>> {
+  const routes = await window.routes.list();
+  const ids = new Set<number>();
+  for (const route of routes) {
+    for (const point of route.points) {
+      if (point.kind === "stop" && point.osmId !== undefined) ids.add(point.osmId);
+    }
+  }
+  return ids;
+}
+
+function isUsedByService(osmId: number): boolean {
+  return usedStopIds.has(osmId);
 }
 
 // A live user request against stop groups (DESIGN.md §4): "each stop needs
@@ -70,9 +95,17 @@ function compassLabel(bearingDegrees: number): string {
 export const stopsPanelState: {
   openPopupFor: ((osmId: number) => void) | null;
   displayNameFor: ((osmId: number) => string) | null;
+  // Re-fetches the real route list and refreshes every stop's own
+  // `usedByService` colouring against it (blue vs. the dim "unused" grey,
+  // `stopColorExpression`) — called by route-draw.ts after a route is
+  // created/updated and by route-panel.ts after one is deleted, so a
+  // stop's colour tracks the real route list live rather than only
+  // updating on the next full reload.
+  refreshUsedByService: (() => void) | null;
 } = {
   openPopupFor: null,
   displayNameFor: null,
+  refreshUsedByService: null,
 };
 
 // Mirrors routeDrawState's own shape: true while the "Place stop" tool is
@@ -346,6 +379,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       if (value) hidden.add(osmId);
     }
   }
+  usedStopIds = await computeUsedStopIds();
 
   const displayName = (s: DecodedStop): string =>
     nameOverrides.get(s.osmId) ?? s.name ?? (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
@@ -529,6 +563,13 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         type: "FeatureCollection",
         features: visibleGroups().map(groupToFeature),
       });
+    };
+
+    stopsPanelState.refreshUsedByService = () => {
+      void (async () => {
+        usedStopIds = await computeUsedStopIds();
+        refreshStopsSource();
+      })();
     };
 
     const refreshStandsSource = () => {

@@ -783,6 +783,19 @@ OSM supplies much of this already through `junction=roundabout` and
 `highway=turning_circle`, and turning circles at rural termini are exactly where a
 bus turns in practice.
 
+**The router itself should enforce this automatically**, not just rely on the
+player drawing around it: when the cheapest path between two consecutive points
+would otherwise require reversing direction on an ordinary road, the router
+should detour via the nearest roundabout, junction or turning circle actually
+capable of turning a bus around, rather than finding a technically-legal
+graph path that implies a physical U-turn. **Not yet implemented** — confirmed
+2026-10-17 by reading the router's own cost function: a reversal currently
+costs the same flat sharp-turn penalty as any other turn over 30°, not a
+prohibition, so the cheapest graph path can still imply a literal U-turn.
+Until this exists, the player must force the loop manually with a waypoint
+placed on the turning point itself (DESIGN.md §6 "waypoints"), the same way
+any other "the router picks something silly" case is worked around.
+
 Where a terminus genuinely has no turning point nearby, **reversing at the
 terminus is allowed**. Reversing is otherwise confined to the player's own land —
 off a stand or into a parking space — which mirrors how operators treat it in
@@ -1898,9 +1911,13 @@ expected to split evenly between map and management screens, so both are
 first-class.
 
 ### Route display
-- **While building a route** — drawn over the road, filled to the road's width,
-  at about 75% transparency so the road shows beneath, with small chevrons
-  indicating one-directional running.
+- **While building a route, and while a saved route is shown on its own** —
+  drawn over the road, filled to the road's width, at about 75% transparency
+  so the road shows beneath. No directional chevrons: tried and dropped
+  (2026-10-17) — a stretch a route genuinely travels both ways rendered
+  arrows pointing both directions over the same short run, which read as
+  cluttered and ambiguous in practice, worse than carrying no direction
+  marking at all. Plain 75% opacity is used for both views instead.
 - **In normal view** — every route on a road is drawn as an even band filling
   the road at 100% opacity. Bands are ordered so they **do not cross at
   junctions**, which is a global constraint rather than a per-road choice; where

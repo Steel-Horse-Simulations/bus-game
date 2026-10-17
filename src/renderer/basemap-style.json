@@ -76,7 +76,7 @@
       "source": "openmaptiles",
       "source-layer": "landuse",
       "filter": ["in", ["get", "class"], ["literal", ["school", "university", "college"]]],
-      "paint": { "fill-color": "#ffffe5", "fill-opacity": 1 }
+      "paint": { "fill-color": "#f2ecb0", "fill-opacity": 1 }
     },
     {
       "id": "landuse-construction",

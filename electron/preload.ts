@@ -4,6 +4,7 @@ import type {
   DepotGroup,
   Route,
   RoutePoint,
+  RouteHailAndRideSection,
   DayType,
   TimingPoint,
   TimeBand,
@@ -71,6 +72,7 @@ contextBridge.exposeInMainWorld("routes", {
     parentRouteId: number | null,
     variationLetter: string | null,
     composedFromRouteIds: number[],
+    hailAndRideSections: RouteHailAndRideSection[],
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -85,6 +87,7 @@ contextBridge.exposeInMainWorld("routes", {
       parentRouteId,
       variationLetter,
       composedFromRouteIds,
+      hailAndRideSections,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   update: (
@@ -100,6 +103,7 @@ contextBridge.exposeInMainWorld("routes", {
     parentRouteId: number | null,
     variationLetter: string | null,
     composedFromRouteIds: number[],
+    hailAndRideSections: RouteHailAndRideSection[],
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -115,6 +119,7 @@ contextBridge.exposeInMainWorld("routes", {
       parentRouteId,
       variationLetter,
       composedFromRouteIds,
+      hailAndRideSections,
     ) as Promise<Route>,
   refreshComposedPoints: (id: number, points: RoutePoint[]) =>
     ipcRenderer.invoke("routes:refreshComposedPoints", id, points) as Promise<void>,

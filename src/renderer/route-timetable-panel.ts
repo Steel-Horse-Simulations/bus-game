@@ -88,6 +88,12 @@ function normalizeTimeInput(input: HTMLInputElement): void {
 // One leg per consecutive pair of the route's own points — stops and
 // waypoints alike, since a waypoint still takes real time to pass even
 // though it's never itself a timing point.
+// NOTE (2026-10-11): briefly migrated to `find_route_through` for the whole
+// sequence in one call (same fix shape as route-draw.ts's own
+// `rebuildRoute`). Reverted the same day after a live install hung
+// indefinitely on boot — not yet root-caused; see `vehicle-simulation.ts`'s
+// own `buildLegs` for the fuller note and OPEN-ITEMS.md for the real fix to
+// retry, properly verified against the live packaged app first.
 function computeLegTimesSeconds(router: Router, points: readonly { lon: number; lat: number }[]): number[] {
   const legs: number[] = [];
   for (let i = 0; i < points.length - 1; i++) {

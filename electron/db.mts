@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 29;
+const SCHEMA_VERSION = 30;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -82,6 +82,18 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- diversion updates every variation built from it automatically, not just
 -- the one being edited. Decided by the user (2026-10-10): live reference,
 -- not an independent copy at creation time.
+-- "hail_and_ride_sections" (DESIGN.md §6 "Hail and ride") is a JSON array of
+-- {fromIndex, toIndex} — both indexes into this route's own "points" column
+-- and both always a "stop" point, never a waypoint, per the spec's "two
+-- stops nominated on that route." Threaded through create/update like
+-- terminus_index/start_index (built up during the same click-to-draw
+-- session and persisted as-is), not reset-on-save like
+-- pickup_dropoff_overrides. This is deliberately only the player-facing
+-- half of the real feature: the spec's own invisible-boarding-points-every-
+-- couple-hundred-metres and journey-planner integration need the RAPTOR
+-- planner (Phase 4, not built yet) and are a separate increment — "store
+-- the flag now, wire up the behaviour once the underlying mechanism
+-- exists," the same precedent as Connection stop/long stop capacity.
 CREATE TABLE IF NOT EXISTS routes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -95,7 +107,8 @@ CREATE TABLE IF NOT EXISTS routes (
   pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
   parent_route_id INTEGER REFERENCES routes(id),
   variation_letter TEXT,
-  composed_from_route_ids TEXT NOT NULL DEFAULT '[]'
+  composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
+  hail_and_ride_sections TEXT NOT NULL DEFAULT '[]'
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -634,6 +647,12 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 29) {
+    // v29 -> v30: routes gained hail_and_ride_sections (DESIGN.md §6 "Hail
+    // and ride") — existing rows get '[]' (no hail-and-ride stretches),
+    // same as the column's own DEFAULT already means for a brand new row.
+    db.exec("ALTER TABLE routes ADD COLUMN hail_and_ride_sections TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
       `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
@@ -728,6 +747,14 @@ export interface RoutePickupDropoffOverride {
   value: "pickup_only" | "setdown_only" | "skip";
 }
 
+// A hail-and-ride stretch (DESIGN.md §6 "Hail and ride") — "two stops
+// nominated on that route," both indexes always a "stop" point, never a
+// waypoint.
+export interface RouteHailAndRideSection {
+  fromIndex: number;
+  toIndex: number;
+}
+
 export interface Route {
   id: number;
   depotGroupId: number;
@@ -742,6 +769,7 @@ export interface Route {
   parentRouteId: number | null;
   variationLetter: string | null;
   composedFromRouteIds: number[];
+  hailAndRideSections: RouteHailAndRideSection[];
 }
 
 interface RouteRow {
@@ -758,6 +786,7 @@ interface RouteRow {
   parent_route_id: number | null;
   variation_letter: string | null;
   composed_from_route_ids: string;
+  hail_and_ride_sections: string;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -775,6 +804,7 @@ function routeFromRow(row: RouteRow): Route {
     parentRouteId: row.parent_route_id === null ? null : Number(row.parent_route_id),
     variationLetter: row.variation_letter,
     composedFromRouteIds: JSON.parse(row.composed_from_route_ids) as number[],
+    hailAndRideSections: JSON.parse(row.hail_and_ride_sections) as RouteHailAndRideSection[],
   };
 }
 
@@ -791,10 +821,11 @@ export function createRoute(
   parentRouteId: number | null,
   variationLetter: string | null,
   composedFromRouteIds: number[] = [],
+  hailAndRideSections: RouteHailAndRideSection[] = [],
 ): Route {
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       depotGroupId,
@@ -808,6 +839,7 @@ export function createRoute(
       parentRouteId,
       variationLetter,
       JSON.stringify(composedFromRouteIds),
+      JSON.stringify(hailAndRideSections),
     );
   return {
     id: Number(result.lastInsertRowid),
@@ -823,6 +855,7 @@ export function createRoute(
     parentRouteId,
     variationLetter,
     composedFromRouteIds,
+    hailAndRideSections,
   };
 }
 
@@ -849,9 +882,10 @@ export function updateRoute(
   parentRouteId: number | null,
   variationLetter: string | null,
   composedFromRouteIds: number[] = [],
+  hailAndRideSections: RouteHailAndRideSection[] = [],
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?
      WHERE id = ?`,
   ).run(
     depotGroupId,
@@ -865,6 +899,7 @@ export function updateRoute(
     parentRouteId,
     variationLetter,
     JSON.stringify(composedFromRouteIds),
+    JSON.stringify(hailAndRideSections),
     id,
   );
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
@@ -882,6 +917,7 @@ export function updateRoute(
     parentRouteId,
     variationLetter,
     composedFromRouteIds,
+    hailAndRideSections,
   };
 }
 
@@ -930,7 +966,7 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);

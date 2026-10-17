@@ -27,6 +27,11 @@ interface RoutePickupDropoffOverride {
   value: "pickup_only" | "setdown_only" | "skip";
 }
 
+interface RouteHailAndRideSection {
+  fromIndex: number;
+  toIndex: number;
+}
+
 interface Route {
   id: number;
   depotGroupId: number;
@@ -41,6 +46,7 @@ interface Route {
   parentRouteId: number | null;
   variationLetter: string | null;
   composedFromRouteIds: number[];
+  hailAndRideSections: RouteHailAndRideSection[];
 }
 
 interface RoutesApi {
@@ -56,6 +62,7 @@ interface RoutesApi {
     parentRouteId: number | null,
     variationLetter: string | null,
     composedFromRouteIds: number[],
+    hailAndRideSections: RouteHailAndRideSection[],
   ): Promise<Route>;
   list(): Promise<Route[]>;
   update(
@@ -71,6 +78,7 @@ interface RoutesApi {
     parentRouteId: number | null,
     variationLetter: string | null,
     composedFromRouteIds: number[],
+    hailAndRideSections: RouteHailAndRideSection[],
   ): Promise<Route>;
   refreshComposedPoints(id: number, points: RoutePoint[]): Promise<void>;
   delete(id: number): Promise<void>;

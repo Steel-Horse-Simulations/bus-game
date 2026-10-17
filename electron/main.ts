@@ -8,6 +8,7 @@ import {
   openSave,
   type SaveDb,
   type RoutePoint,
+  type RouteHailAndRideSection,
   setOverride,
   getOverride,
   hasOverride,
@@ -221,6 +222,7 @@ function registerRouteHandlers(): void {
       parentRouteId: number | null,
       variationLetter: string | null,
       composedFromRouteIds: number[],
+      hailAndRideSections: RouteHailAndRideSection[],
     ) =>
       createRoute(
         save,
@@ -235,6 +237,7 @@ function registerRouteHandlers(): void {
         parentRouteId,
         variationLetter,
         composedFromRouteIds,
+        hailAndRideSections,
       ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
@@ -254,6 +257,7 @@ function registerRouteHandlers(): void {
       parentRouteId: number | null,
       variationLetter: string | null,
       composedFromRouteIds: number[],
+      hailAndRideSections: RouteHailAndRideSection[],
     ) =>
       updateRoute(
         save,
@@ -269,6 +273,7 @@ function registerRouteHandlers(): void {
         parentRouteId,
         variationLetter,
         composedFromRouteIds,
+        hailAndRideSections,
       ),
   );
   ipcMain.handle("routes:refreshComposedPoints", (_e, id: number, points: RoutePoint[]) =>

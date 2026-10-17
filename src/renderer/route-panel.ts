@@ -20,23 +20,12 @@ import { Router } from "./wasm/game_wasm.js";
 import { mountRouteDrawTool, type RouteDrawController } from "./route-draw";
 import { createRouteTimetableEditor } from "./route-timetable-panel";
 import { stopsPanelState, busStationsState } from "./stops-layer";
-import { pickContrastColorForHex } from "./icon-contrast";
-import { onewayArrowImageId } from "./map-icons";
 import { createDropdown } from "./dropdown";
 import { PICKUP_DROPOFF_LABELS, pickupDropoffBadge, effectivePickupDropoff, type PickupDropoff, type PickupDropoffOrBoth } from "./pickup-dropoff";
 import { timetableEditorState } from "./timetable-editor-state";
 import { startTerminusColour } from "./start-terminus-colours";
 
 const emptyFeatureCollection: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
-
-// One traversed edge's own stretch of a previewed route, kept separate from
-// the merged line so the chevron layer can tell, per edge, whether it's used
-// in both directions (a there-and-back stretch shouldn't get chevrons —
-// route-draw.ts's own EdgeChunk does the same for the route being drawn).
-interface EdgeChunk {
-  edgeId: number;
-  coords: [number, number][];
-}
 
 // Any number of routes can be shown on the map at once (each toggled
 // independently via its own row's Show/Hide button) — keyed by route id so
@@ -45,8 +34,6 @@ interface EdgeChunk {
 // shown only takes effect on the next toggle.
 interface ShownRoutePreview {
   coords: [number, number][];
-  edgeChunks: EdgeChunk[];
-  edgeUseCount: Map<number, number>;
   colour: string;
   // A cheap fingerprint of the points used to compute this cache — compared
   // against the freshly-fetched route on every list refresh so an edit made
@@ -57,8 +44,8 @@ interface ShownRoutePreview {
 const shownRoutes = new Map<number, ShownRoutePreview>();
 
 function computeShownRoutePreview(router: Router, route: Route): ShownRoutePreview {
-  const { coords, edgeChunks, edgeUseCount } = routeLineAndEdges(router, route.points);
-  return { coords, edgeChunks, edgeUseCount, colour: route.colour, pointsKey: JSON.stringify(route.points) };
+  const coords = routeLine(router, route.points);
+  return { coords, colour: route.colour, pointsKey: JSON.stringify(route.points) };
 }
 
 // Re-syncs every currently-shown route's cached preview against the
@@ -86,7 +73,6 @@ function syncShownRoutes(router: Router, map: maplibregl.Map, routes: Route[]): 
 
 function rebuildShownRoutesSources(map: maplibregl.Map): void {
   const lineFeatures: GeoJSON.Feature[] = [];
-  const chevronFeatures: GeoJSON.Feature[] = [];
   for (const preview of shownRoutes.values()) {
     if (preview.coords.length >= 2) {
       lineFeatures.push({
@@ -95,59 +81,26 @@ function rebuildShownRoutesSources(map: maplibregl.Map): void {
         geometry: { type: "LineString", coordinates: preview.coords },
       });
     }
-    const icon = onewayArrowImageId(pickContrastColorForHex(preview.colour));
-    for (const chunk of preview.edgeChunks) {
-      if (chunk.coords.length < 2) continue;
-      chevronFeatures.push({
-        type: "Feature",
-        properties: { bothDirections: (preview.edgeUseCount.get(chunk.edgeId) ?? 0) >= 2, icon },
-        geometry: { type: "LineString", coordinates: chunk.coords },
-      });
-    }
   }
   (map.getSource("saved-route-preview") as maplibregl.GeoJSONSource | undefined)?.setData({
     type: "FeatureCollection",
     features: lineFeatures,
-  });
-  (map.getSource("saved-route-preview-edges") as maplibregl.GeoJSONSource | undefined)?.setData({
-    type: "FeatureCollection",
-    features: chevronFeatures,
   });
 }
 
 // Only the point list is persisted (see the routes table's own comment in
 // electron/db.mts), not the road-following polyline drawn at the time — so
 // showing a saved route again means re-routing every leg, the same way it
-// looked while being drawn. Also returns each leg's own edge chunks (and how
-// many times each edge is used across the whole route), the same data
-// route-draw.ts tracks while drawing, so the "Show" preview can carry
-// one-way chevrons too.
-function routeLineAndEdges(
-  router: Router,
-  points: readonly { lon: number; lat: number }[],
-): { coords: [number, number][]; edgeChunks: EdgeChunk[]; edgeUseCount: Map<number, number> } {
+// looked while being drawn.
+function routeLine(router: Router, points: readonly { lon: number; lat: number }[]): [number, number][] {
   const coords: [number, number][] = [];
-  const edgeChunks: EdgeChunk[] = [];
-  const edgeUseCount = new Map<number, number>();
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
     const leg = router.find_route(a.lon, a.lat, b.lon, b.lat);
-    const legCoords: [number, number][] = [];
-    for (let j = 0; j < leg.length; j += 2) legCoords.push([leg[j], leg[j + 1]]);
-
-    const edgeIds = Array.from(router.last_route_edges());
-    const pointCounts = Array.from(router.last_route_edge_point_counts());
-    let idx = 0;
-    for (let e = 0; e < edgeIds.length; e++) {
-      const count = pointCounts[e];
-      edgeChunks.push({ edgeId: edgeIds[e], coords: legCoords.slice(idx, idx + count + 1) });
-      edgeUseCount.set(edgeIds[e], (edgeUseCount.get(edgeIds[e]) ?? 0) + 1);
-      idx += count;
-    }
-    coords.push(...legCoords);
+    for (let j = 0; j < leg.length; j += 2) coords.push([leg[j], leg[j + 1]]);
   }
-  return { coords, edgeChunks, edgeUseCount };
+  return coords;
 }
 
 function distance(a: [number, number], b: [number, number]): number {
@@ -175,10 +128,16 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
   // loaded once, and isStyleLoaded() can read false here anyway due to
   // unrelated tile activity, silently losing a "load" event that already
   // fired and won't fire again.
-  // Any number of routes can be shown at once (see shownRoutes above) — both
-  // layers carry every currently-shown route's own features together, each
-  // reading its colour/icon back off its own feature properties rather than
+  // Any number of routes can be shown at once (see shownRoutes above) — this
+  // layer carries every currently-shown route's own line together, each
+  // reading its colour back off its own feature's own properties rather than
   // one flat layer-wide paint value, so each route keeps its own colour.
+  // Drawn at 75% opacity, the same as the draft/editor view (DESIGN.md §11)
+  // — one-way chevrons were tried and dropped (2026-10-17): a stretch a
+  // route genuinely travels both ways over rendered arrows pointing both
+  // directions at once, which read as cluttered/confusing in practice on
+  // the real Portree roundabout loop, worse than just not marking direction
+  // at all.
   map.addSource("saved-route-preview", { type: "geojson", data: emptyFeatureCollection });
   map.addLayer({
     id: "saved-route-preview",
@@ -187,27 +146,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     layout: { "line-cap": "round", "line-join": "round" },
     paint: {
       "line-color": ["get", "colour"],
+      "line-opacity": 0.75,
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 9, 18, 15],
-    },
-  });
-  // One-way chevrons for shown routes — white or black is picked per-route
-  // against that route's own colour (icon-contrast.ts) at Show time and
-  // baked into each feature's own "icon" property (map-icons.ts
-  // pre-registers both variants).
-  map.addSource("saved-route-preview-edges", { type: "geojson", data: emptyFeatureCollection });
-  map.addLayer({
-    id: "saved-route-preview-chevrons",
-    type: "symbol",
-    source: "saved-route-preview-edges",
-    filter: ["!=", ["get", "bothDirections"], true],
-    layout: {
-      "symbol-placement": "line",
-      "symbol-spacing": 40,
-      "icon-image": ["get", "icon"],
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 18, 1.1],
-      "icon-rotation-alignment": "map",
-      "icon-allow-overlap": true,
-      "icon-ignore-placement": true,
     },
   });
 
@@ -511,6 +451,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
         rebuildShownRoutesSources(map);
         expandedRouteId = null;
         await refreshList();
+        stopsPanelState.refreshUsedByService?.();
       });
 
       actions.appendChild(showButton);

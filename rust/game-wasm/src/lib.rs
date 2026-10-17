@@ -57,6 +57,32 @@ pub struct Router {
     /// itself builds the flat coordinate array. Lets a caller slice that
     /// flat array back into one chunk per edge without re-deriving it.
     last_edge_point_counts: RefCell<Vec<u32>>,
+    /// Only set by `find_route_through`: the index (in *points*, not flat
+    /// coordinate pairs) of each original leg's own last point within the
+    /// combined coordinate array — `leg_point_count()[i]` entries, one per
+    /// `stops_lonlat.len()/2 - 1` leg. Consecutive legs share one boundary
+    /// point in the combined array (the point both legs run through), so a
+    /// caller rebuilding the original per-leg shape (each leg's own coords
+    /// *inclusive* of both its endpoints, e.g. `vehicle-simulation.ts`'s
+    /// `RouteLeg`) slices `coords[prev_end..=this_end]` for each leg,
+    /// `prev_end` starting at 0. Lets per-leg consumers keep benefiting
+    /// from `find_route_through`'s single shared interior-point resolution
+    /// (the whole reason it exists — see its own doc comment) instead of
+    /// going back to one `find_route` call per leg, which is exactly the
+    /// "independently resolved, a street apart" bug class that function
+    /// was built to avoid.
+    last_leg_end_point_indices: RefCell<Vec<u32>>,
+    /// Only set by `find_route_through`: each original leg's own travel
+    /// time in seconds (junction delays included, same cost `dijkstra`
+    /// already computes per leg before this just started discarding it) —
+    /// one entry per leg, same order as `last_leg_end_point_indices`.
+    /// `find_route`'s own single-leg `last_route_time_seconds` has no
+    /// per-leg equivalent to fall back on here, and a caller needing
+    /// per-leg running times (`route-timetable-panel.ts`'s
+    /// `computeLegTimesSeconds`, building a schedule's own timing-point
+    /// splits) still needs `find_route_through`'s shared interior-point
+    /// resolution for the same reason every other per-leg consumer does.
+    last_leg_time_seconds: RefCell<Vec<f64>>,
     /// OSM way ids the player has manually flagged as bus-legal despite
     /// their own tags saying otherwise (DESIGN.md §1's override layer,
     /// extended here from stops/bus stations to road edges — CLAUDE.md's
@@ -326,6 +352,27 @@ fn point_to_segment_closest(
     (dist, (lon_deg * 1e7).round() as i32, (lat_deg * 1e7).round() as i32)
 }
 
+/// Which segment of a point sequence (`full_seq[i]` -> `full_seq[i+1]`) a
+/// target point is closest to — used to find exactly where a `nearest_node`
+/// snap point falls along an edge's own full (from, ...geometry..., to)
+/// sequence, in traversal order, so `find_route` can truncate the pushed
+/// geometry there instead of running past it to the edge's far end. Panics
+/// if `full_seq` has fewer than 2 points (every edge, even a bare
+/// from->to with no intermediate geometry, always has at least 2).
+fn closest_segment_index(full_seq: &[(i32, i32)], target_lon_e7: i32, target_lat_e7: i32) -> usize {
+    let mut best_seg = 0usize;
+    let mut best_dist = f64::MAX;
+    for w in 0..full_seq.len() - 1 {
+        let (a, b) = (full_seq[w], full_seq[w + 1]);
+        let (d, _, _) = point_to_segment_closest(target_lon_e7, target_lat_e7, a.0, a.1, b.0, b.1);
+        if d < best_dist {
+            best_dist = d;
+            best_seg = w;
+        }
+    }
+    best_seg
+}
+
 /// Which side of the line `a`->`b` the point `p` falls on, via the same
 /// local equirectangular flattening as `point_to_segment_closest` — the
 /// sign of the 2D cross product `(b-a) x (p-a)`. Positive means `p` is to
@@ -419,6 +466,18 @@ fn offset_point_perpendicular(
 // caveat as the junction delay constants above, worth revisiting once a
 // placed stop is checked against a real kerb-to-centreline distance.
 const KERB_OFFSET_M: f64 = 4.5;
+
+// `nearest_node`'s own needs_outgoing/needs_incoming branches: below this
+// distance from a candidate endpoint, the snap point is close enough to
+// just call it "already at that node" — no real extension is needed to
+// reach it, so the oneway-extendability preference (see those branches'
+// own doc comments) must not override an otherwise-exact match at the
+// *other*, non-extendable endpoint. Found live (2026-10-17): without this
+// guard, a route's own true start/goal landing exactly on a node still
+// got redirected to that node's one-way-extendable neighbour instead,
+// since "exactly at the node" and "extendable" were compared as if they
+// mattered equally, when an exact match should always win outright.
+const ALREADY_AT_NODE_M: f64 = 5.0;
 
 #[derive(PartialEq)]
 struct QueueEntry {
@@ -536,6 +595,8 @@ impl Router {
             adjacency_offsets,
             last_edges: RefCell::new(Vec::new()),
             last_edge_point_counts: RefCell::new(Vec::new()),
+            last_leg_end_point_indices: RefCell::new(Vec::new()),
+            last_leg_time_seconds: RefCell::new(Vec::new()),
             last_route_time_seconds: RefCell::new(0.0),
             has_incoming,
             psv_override_way_ids,
@@ -703,23 +764,69 @@ impl Router {
                                 } else if needs_outgoing {
                                     // Prefer whichever endpoint can actually go
                                     // somewhere; distance only breaks the tie between
-                                    // two that both can (or both can't).
+                                    // two that both can (or both can't) — but only
+                                    // after preferring whichever one the edge's own
+                                    // oneway direction actually lets the start-side
+                                    // gap patch (`find_route`'s own i==0 extension)
+                                    // walk *forward from*, towards this snap point,
+                                    // when the plain "can go somewhere" check alone
+                                    // doesn't already decide it. See the mirrored
+                                    // `needs_incoming` branch below for the real bug
+                                    // this prevents — identical reasoning, just at
+                                    // the route's own true start instead of its goal.
                                     let from_has_out = !self.node_adjacency(edge.from).is_empty();
                                     let to_has_out = !self.node_adjacency(edge.to).is_empty();
+                                    let from_extendable = matches!(edge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+                                    let to_extendable = matches!(edge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+                                    let already_at_either = d_from < ALREADY_AT_NODE_M || d_to < ALREADY_AT_NODE_M;
                                     match (from_has_out, to_has_out) {
                                         (true, false) => edge.from,
                                         (false, true) => edge.to,
-                                        _ => if d_from <= d_to { edge.from } else { edge.to },
+                                        _ if already_at_either => if d_from <= d_to { edge.from } else { edge.to },
+                                        _ => match (from_extendable, to_extendable) {
+                                            (true, false) => edge.from,
+                                            (false, true) => edge.to,
+                                            _ => if d_from <= d_to { edge.from } else { edge.to },
+                                        },
                                     }
                                 } else if needs_incoming {
                                     // Same idea, mirrored: prefer whichever endpoint can
-                                    // actually be arrived at.
+                                    // actually be arrived at — and, when that's tied,
+                                    // prefer whichever one the edge's own oneway
+                                    // direction actually lets the goal-side gap patch
+                                    // extend *into*, towards this precise snap point,
+                                    // over one it can't. A real bug found live: a stop
+                                    // sitting mid-edge on a one-way loop (Sconser's own
+                                    // "Ferry Road End," 2026-10-17) whose *geometrically
+                                    // closer* endpoint, by raw distance alone, happened
+                                    // to be the one only legally departed from — not
+                                    // arrived at and then extended backward into, which
+                                    // the edge's own oneway flag forbids. Dijkstra kept
+                                    // finding a cheaper way to literally reach that
+                                    // closer node (often via a completely different,
+                                    // faster road sharing the same junction), the
+                                    // extension correctly refused to fabricate an
+                                    // illegal reverse movement, and the route simply
+                                    // stopped dozens of metres short of the real stop
+                                    // with no error anywhere. Preferring whichever
+                                    // endpoint the edge's own direction actually
+                                    // permits a legal approach into, when only one of
+                                    // the two does, lets the real extension fire and
+                                    // reach the true position instead.
                                     let from_has_in = self.has_incoming[edge.from as usize];
                                     let to_has_in = self.has_incoming[edge.to as usize];
+                                    let from_extendable = matches!(edge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+                                    let to_extendable = matches!(edge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+                                    let already_at_either = d_from < ALREADY_AT_NODE_M || d_to < ALREADY_AT_NODE_M;
                                     match (from_has_in, to_has_in) {
                                         (true, false) => edge.from,
                                         (false, true) => edge.to,
-                                        _ => if d_from <= d_to { edge.from } else { edge.to },
+                                        _ if already_at_either => if d_from <= d_to { edge.from } else { edge.to },
+                                        _ => match (from_extendable, to_extendable) {
+                                            (true, false) => edge.from,
+                                            (false, true) => edge.to,
+                                            _ => if d_from <= d_to { edge.from } else { edge.to },
+                                        },
                                     }
                                 } else {
                                     if d_from <= d_to { edge.from } else { edge.to }
@@ -768,6 +875,18 @@ impl Router {
     /// order — see the field doc comment on `last_edge_point_counts`.
     pub fn last_route_edge_point_counts(&self) -> Vec<u32> {
         self.last_edge_point_counts.borrow().clone()
+    }
+
+    /// Only meaningful after `find_route_through` — see the field doc
+    /// comment on `last_leg_end_point_indices`.
+    pub fn last_route_leg_end_point_indices(&self) -> Vec<u32> {
+        self.last_leg_end_point_indices.borrow().clone()
+    }
+
+    /// Only meaningful after `find_route_through` — see the field doc
+    /// comment on `last_leg_time_seconds`.
+    pub fn last_route_leg_time_seconds(&self) -> Vec<f64> {
+        self.last_leg_time_seconds.borrow().clone()
     }
 
     /// Kerb-snaps a click to the nearest road for a new player-placed stop
@@ -1185,18 +1304,34 @@ impl Router {
         };
         *self.last_route_time_seconds.borrow_mut() = total_cost_s;
 
-        *self.last_edges.borrow_mut() = steps.iter().map(|&(edge_idx, _)| edge_idx).collect();
-        *self.last_edge_point_counts.borrow_mut() = steps
-            .iter()
-            .map(|&(edge_idx, _)| (self.graph.edges[edge_idx as usize].geometry_len + 1) as u32)
-            .collect();
-
         let push_e7 = |coords: &mut Vec<f64>, lon_e7: i32, lat_e7: i32| {
             coords.push(lon_e7 as f64 * 1e-7);
             coords.push(lat_e7 as f64 * 1e-7);
         };
 
         let mut coords = Vec::new();
+        // Per-edge chunk tracking, derived from the real change in
+        // `coords.len()` around each push rather than a precomputed
+        // `geometry_len + 1` per step — that precomputed figure is only
+        // right for a step whose full edge geometry gets pushed unclipped.
+        // The start/goal steps below push a *truncated* slice (from the
+        // snap point onward, not the whole edge) whenever the snap point
+        // sits partway along the edge rather than at its near node, so a
+        // static per-edge length overcounts exactly those two steps. A
+        // caller slicing the flat array back into per-edge chunks via
+        // `last_edges`/`last_edge_point_counts` (route-panel.ts's
+        // `routeLineAndEdges`, still calling this once per leg) would then
+        // walk its running index past the real array end for every
+        // following edge, producing empty slices that the chevron layer's
+        // own `coords.length >= 2` filter drops outright — a real,
+        // live-reported bug (route 57C, one-way chevrons vanishing after a
+        // stop whose previous leg's goal snapped partway along its edge,
+        // 2026-10-11), confirmed by replaying the exact route natively and
+        // finding `sum(last_edge_point_counts()) > decoded points - 1` on
+        // every leg after the first. Mirrors `find_route_through`'s own
+        // delta-based tracking, already correct for the identical reason.
+        let mut leg_edges: Vec<u32> = Vec::new();
+        let mut leg_counts: Vec<u32> = Vec::new();
         // The route's first point is the true nearest point on the road
         // (from `nearest_node`), not the start node's own position — a stop
         // can sit well short of the junction its edge happens to end at, and
@@ -1212,46 +1347,215 @@ impl Router {
         // buildings"): the fallback here, the start node's own plain
         // position, is always on the path that's actually drawn next.
         let start_edge_matches = steps.first().is_some_and(|&(edge_idx, _)| edge_idx == start_snap_edge);
+        // Mirror of the goal-side gap fix below (see `goal_reached_precisely`'s
+        // own comment): the cheapest path can *depart* the start node via a
+        // different edge than the one the start's own coordinate snapped
+        // onto, for the identical reason a goal can be *arrived at* via a
+        // different edge — a real case found live (route 57C's waypoint,
+        // 2026-10-11): the start node's plain position and the true snap
+        // point were ~10m apart on the very next edge, leaving a real gap
+        // between this leg's start and the previous leg's own end. Safe
+        // under the same condition as the goal-side fix: only when the
+        // start node is one of the snapped edge's own two endpoints *and*
+        // the oneway direction actually permits departing from there
+        // towards the snap point — never when the node shares no edge with
+        // the snap point at all (that's the "goes through buildings" bug
+        // this function's own existing fallback above still guards).
+        let start_pos = &self.graph.nodes[start as usize];
+        let start_already_at_snap =
+            start_pos.lon_e7 == start_snap_lon_e7 && start_pos.lat_e7 == start_snap_lat_e7;
         if steps.is_empty() || start_edge_matches {
             push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+        } else if !start_already_at_snap {
+            let se = &self.graph.edges[start_snap_edge as usize];
+            let from_forward_ok = start == se.from && matches!(se.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+            let to_reverse_ok = start == se.to && matches!(se.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+            let n = &self.graph.nodes[start as usize];
+            push_e7(&mut coords, n.lon_e7, n.lat_e7);
+            if from_forward_ok || to_reverse_ok {
+                let from_n = &self.graph.nodes[se.from as usize];
+                let to_n = &self.graph.nodes[se.to as usize];
+                let mut full_seq: Vec<(i32, i32)> = Vec::with_capacity(se.geometry_len as usize + 2);
+                full_seq.push((from_n.lon_e7, from_n.lat_e7));
+                full_seq.extend(self.graph.edge_geometry(se).iter().copied());
+                full_seq.push((to_n.lon_e7, to_n.lat_e7));
+                if to_reverse_ok {
+                    full_seq.reverse();
+                }
+                let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+                push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                leg_edges.push(start_snap_edge);
+                leg_counts.push((seg + 1) as u32);
+            }
         } else {
             let n = &self.graph.nodes[start as usize];
             push_e7(&mut coords, n.lon_e7, n.lat_e7);
         }
 
         let mut current = start;
-        for (edge_idx, next_node) in &steps {
+        let last_step_idx = steps.len().saturating_sub(1);
+        // Whether the loop below ever actually pushed the precise
+        // `goal_snap` point. It can legitimately not: `goal_snap_edge` is
+        // whichever edge the goal's own nearest-point search matched, but
+        // the cheapest *path* to the goal node can arrive via a different
+        // edge entirely (the shortest way to a junction needn't be the one
+        // edge a point a few metres past it happens to sit on) — the same
+        // "independently-resolved endpoints land a street apart" class of
+        // bug `find_route_through`'s own doc comment describes, here
+        // between one `find_route` call's own start and goal ends rather
+        // than across two chained calls. Patched below, after the loop.
+        let mut goal_reached_precisely = false;
+        for (i, (edge_idx, next_node)) in steps.iter().enumerate() {
             let edge = &self.graph.edges[*edge_idx as usize];
-            if edge.from == current {
+            let forward = edge.from == current;
+
+            let is_start_step = i == 0 && start_edge_matches;
+            let is_goal_step = i == last_step_idx && *edge_idx == goal_snap_edge;
+
+            // Full (from, ...geometry..., to) sequence in traversal order —
+            // needed whenever this step's own snap point (start or goal)
+            // sits on this very edge, to find exactly which segment it
+            // falls on rather than running the full edge length and only
+            // patching the very last coordinate. That patch-only approach
+            // left every geometry point *past* the true snap position in
+            // the output, so the route visibly overshot the stop and then
+            // jumped straight back to it — a real user report ("goes past
+            // the stop then back up the road") on the very first live
+            // 57C test, root-caused by replaying the exact same leg
+            // against the real road data outside the game.
+            let full_seq: Vec<(i32, i32)> = if is_start_step || is_goal_step {
+                let from_n = &self.graph.nodes[edge.from as usize];
+                let to_n = &self.graph.nodes[edge.to as usize];
+                let mut seq = Vec::with_capacity(edge.geometry_len as usize + 2);
+                seq.push((from_n.lon_e7, from_n.lat_e7));
+                seq.extend(self.graph.edge_geometry(edge).iter().copied());
+                seq.push((to_n.lon_e7, to_n.lat_e7));
+                if !forward {
+                    seq.reverse();
+                }
+                seq
+            } else {
+                Vec::new()
+            };
+
+            let before = coords.len();
+            if is_start_step && is_goal_step {
+                // A single-edge route whose start and goal both snap onto
+                // the very same edge: the start snap point was already
+                // pushed above, so just push whatever lies strictly
+                // between the two segments (if any), then the goal snap
+                // point — never the far node, and never the edge's own
+                // start, which the other two branches below assume they
+                // still need to handle on their own.
+                let start_seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                let goal_seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                let lo = start_seg + 1;
+                let hi = goal_seg.max(start_seg); // goal_seg can't be before start_seg on a real path
+                for &(lon_e7, lat_e7) in &full_seq[lo.min(hi)..=hi.min(full_seq.len() - 2)] {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+                push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                goal_reached_precisely = true;
+            } else if is_start_step {
+                // Already pushed the true start snap point above — only
+                // push geometry *after* the segment it sits on, so the
+                // route doesn't first rewind to this edge's own beginning
+                // before heading the right way (the same overshoot bug,
+                // mirrored at the start).
+                let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                for &(lon_e7, lat_e7) in &full_seq[seg + 1..full_seq.len() - 1] {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+                let n = &self.graph.nodes[*next_node as usize];
+                push_e7(&mut coords, n.lon_e7, n.lat_e7);
+            } else if is_goal_step {
+                // Mirror at the goal end: push geometry only *up to* the
+                // segment the true snap point sits on, then the exact
+                // snap point itself — never the edge's own far node or
+                // anything past the snap, which is exactly what used to
+                // overshoot.
+                let seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+                push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                goal_reached_precisely = true;
+            } else if forward {
                 for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge) {
                     push_e7(&mut coords, lon_e7, lat_e7);
                 }
+                let n = &self.graph.nodes[*next_node as usize];
+                push_e7(&mut coords, n.lon_e7, n.lat_e7);
             } else {
                 for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge).iter().rev() {
                     push_e7(&mut coords, lon_e7, lat_e7);
                 }
+                let n = &self.graph.nodes[*next_node as usize];
+                push_e7(&mut coords, n.lon_e7, n.lat_e7);
             }
-            let n = &self.graph.nodes[*next_node as usize];
-            push_e7(&mut coords, n.lon_e7, n.lat_e7);
+            let added = ((coords.len() - before) / 2) as u32;
+            if added > 0 {
+                leg_edges.push(*edge_idx);
+                leg_counts.push(added);
+            }
             current = *next_node;
         }
 
-        // Same idea at the far end — only overwrite the last point with the
-        // goal's true snap position when the path's own last edge is the
-        // edge that snap point was found on. Otherwise the plain goal node
-        // position (already pushed above) is the correct, real-road point:
-        // overwriting it with a point off on some other edge is exactly the
-        // "goes through buildings" bug, found via a real user report and a
-        // real 83m one-way edge whose only-reachable end was a junction the
-        // true snap point sat most of that 83m further along, on a stretch
-        // Dijkstra's own path never actually used.
-        let goal_edge_matches = steps.last().is_some_and(|&(edge_idx, _)| edge_idx == goal_snap_edge);
-        if goal_edge_matches {
-            let len = coords.len();
-            coords[len - 2] = goal_snap_lon_e7 as f64 * 1e-7;
-            coords[len - 1] = goal_snap_lat_e7 as f64 * 1e-7;
+        // The cheapest path reached the goal node via some edge other than
+        // `goal_snap_edge` (see `goal_reached_precisely`'s own comment
+        // above). If that arrival node is one of `goal_snap_edge`'s own two
+        // endpoints AND the edge's own oneway flag actually permits
+        // travelling from that endpoint towards the snap point, the true
+        // snap point still sits on a real, legally-traversable edge
+        // touching exactly where the route already ends, so appending it
+        // (plus any geometry strictly between) is always a short, real
+        // connecting segment — never the "hundreds of metres down the
+        // wrong stretch" the start-side fallback above guards against
+        // (that guard covers an arrival node sharing *no* edge with the
+        // snap point at all, a materially worse case). The oneway check
+        // matters: `goal_snap_point_not_used_when_its_edge_was_never_
+        // actually_reached` is the real case this must still refuse —
+        // there, the arrival node is the edge's own endpoint too, but the
+        // edge only permits travel the *other* way, so continuing towards
+        // the snap point would fabricate an illegal movement, not a short
+        // real one.
+        let current_pos = &self.graph.nodes[current as usize];
+        let goal_already_at_current =
+            current_pos.lon_e7 == goal_snap_lon_e7 && current_pos.lat_e7 == goal_snap_lat_e7;
+        if !goal_reached_precisely && !goal_already_at_current {
+            let ge = &self.graph.edges[goal_snap_edge as usize];
+            let from_forward_ok = current == ge.from && matches!(ge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+            let to_reverse_ok = current == ge.to && matches!(ge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+            if from_forward_ok || to_reverse_ok {
+                let from_n = &self.graph.nodes[ge.from as usize];
+                let to_n = &self.graph.nodes[ge.to as usize];
+                let mut full_seq: Vec<(i32, i32)> = Vec::with_capacity(ge.geometry_len as usize + 2);
+                full_seq.push((from_n.lon_e7, from_n.lat_e7));
+                full_seq.extend(self.graph.edge_geometry(ge).iter().copied());
+                full_seq.push((to_n.lon_e7, to_n.lat_e7));
+                if to_reverse_ok {
+                    full_seq.reverse();
+                }
+                let seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+                push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                // `seg` real points were pushed from `full_seq[1..=seg]`
+                // plus the goal point itself, matching the `count` meaning
+                // elsewhere here: how many *new* points this synthetic
+                // final chunk contributes after the shared boundary point
+                // the main loop already pushed.
+                leg_edges.push(goal_snap_edge);
+                leg_counts.push((seg + 1) as u32);
+            }
         }
 
+        *self.last_edges.borrow_mut() = leg_edges;
+        *self.last_edge_point_counts.borrow_mut() = leg_counts;
         coords
     }
 
@@ -1295,60 +1599,310 @@ impl Router {
         };
 
         let mut coords: Vec<f64> = Vec::new();
+        // Per-edge chunk tracking across the WHOLE multi-leg journey, the
+        // same information `find_route` exposes via `last_edges`/
+        // `last_edge_point_counts` for a single leg — a caller slicing the
+        // flat coordinate array back into one chunk per edge (route-draw.ts
+        // now calls this once for a whole route instead of once per leg,
+        // specifically to fix the interior-point mismatch below, and still
+        // needs its chevron layer's per-edge sources). Built as
+        // `(edge_id, point_count)` pairs per leg, `point_count` derived
+        // from the real change in `coords.len()` around each push rather
+        // than predicted — self-correcting against the duplicate-point
+        // drain below, which removes a point that was already counted
+        // against whichever edge pushed it.
+        let mut all_edges: Vec<u32> = Vec::new();
+        let mut all_counts: Vec<u32> = Vec::new();
+        let mut leg_end_indices: Vec<u32> = Vec::new();
+        let mut leg_times_s: Vec<f64> = Vec::new();
         for i in 0..n - 1 {
             let (start, start_snap_lon_e7, start_snap_lat_e7, start_snap_edge) = resolved[i];
             let (_goal, goal_snap_lon_e7, goal_snap_lat_e7, goal_snap_edge) = resolved[i + 1];
 
-            let Some((steps, _)) = self.dijkstra(start, resolved[i + 1].0) else {
+            let Some((steps, leg_cost_s)) = self.dijkstra(start, resolved[i + 1].0) else {
                 return Vec::new();
             };
+            leg_times_s.push(leg_cost_s);
+
+            let mut leg_edges: Vec<u32> = Vec::new();
+            let mut leg_counts: Vec<u32> = Vec::new();
 
             let leg_first_idx = coords.len();
             let start_edge_matches = steps.first().is_some_and(|&(edge_idx, _)| edge_idx == start_snap_edge);
             if steps.is_empty() || start_edge_matches {
                 push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
-            } else {
+                // Tracked for i>0 only. For i>0 this point is a shared
+                // interior boundary: it's either about to be drained below
+                // (the common case, duplicating the previous leg's own
+                // end — pushing then decrementing nets to zero, needed so
+                // the drain has a real count to decrement) or, more
+                // rarely, genuinely not a duplicate and must count as a
+                // real point. For i==0 there is no previous leg and this
+                // can never be drained — it's the route's own absolute
+                // first point, the same implicit, uncounted anchor
+                // `find_route`'s callers already treat point 0 as (the
+                // flat array's own index 0, never decremented against by
+                // any chunk's count) — counting it here double-counts the
+                // whole route by one point, caught live by a full scan of
+                // every saved route (2026-10-11): `chunk-sum` came out
+                // exactly one *too high* on any route whose first leg
+                // took this common branch.
+                if i > 0 {
+                    leg_edges.push(start_snap_edge);
+                    leg_counts.push(1);
+                }
+            } else if i == 0 {
+                // Mirror of `find_route`'s own start-side gap patch (see its
+                // doc comment) — only for the route's own true start (i==0,
+                // `resolved[0]`, never shared with anything else). Safe
+                // only when `start` is one of `start_snap_edge`'s own two
+                // endpoints and its oneway flag actually permits departing
+                // from there towards the snap point; otherwise the plain
+                // node position below is the correct, honest answer, same
+                // as `find_route`'s. **Deliberately not applied to any
+                // interior point** (i>0): `resolved[i]` there was chosen
+                // precisely so one node serves as both the previous leg's
+                // goal and this leg's start without doubling back (this
+                // function's whole reason to exist, see its own doc
+                // comment) — extending past that node towards the "more
+                // precise" raw coordinate anyway can walk back onto the
+                // very edge the previous leg just arrived on, if that edge
+                // is the only one leading towards the snap point, exactly
+                // reintroducing the doubling-back bug
+                // (`find_route_through_does_not_double_back_at_an_
+                // asymmetric_interior_waypoint` catches this directly).
                 let node = &self.graph.nodes[start as usize];
                 push_e7(&mut coords, node.lon_e7, node.lat_e7);
+                let before = coords.len();
+                let se = &self.graph.edges[start_snap_edge as usize];
+                let from_forward_ok = start == se.from && matches!(se.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+                let to_reverse_ok = start == se.to && matches!(se.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+                if from_forward_ok || to_reverse_ok {
+                    let from_n = &self.graph.nodes[se.from as usize];
+                    let to_n = &self.graph.nodes[se.to as usize];
+                    let mut full_seq: Vec<(i32, i32)> = Vec::with_capacity(se.geometry_len as usize + 2);
+                    full_seq.push((from_n.lon_e7, from_n.lat_e7));
+                    full_seq.extend(self.graph.edge_geometry(se).iter().copied());
+                    full_seq.push((to_n.lon_e7, to_n.lat_e7));
+                    if to_reverse_ok {
+                        full_seq.reverse();
+                    }
+                    let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                    for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                    push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                    let added = ((coords.len() - before) / 2) as u32;
+                    if added > 0 {
+                        leg_edges.push(start_snap_edge);
+                        leg_counts.push(added);
+                    }
+                }
+            } else {
+                // Interior point (i>0) whose own first real Dijkstra step
+                // doesn't use its own snap edge — most often because the
+                // point sits mid-edge and the edge's own far *node* departs
+                // via a different edge (e.g. a short synthetic connector
+                // spliced in nearby, see `split_nearest_edge`'s own doc
+                // comment). Mirror of `find_route`'s own goal-side gap
+                // patch, not the i==0 start-side one: when the *previous*
+                // leg's own last pushed point already sits exactly at this
+                // point's precise snap coordinate (true whenever that leg's
+                // own last step happened to use this same snap edge, so its
+                // own goal-side truncation already stopped there), resuming
+                // from there and walking forward — never backward — to the
+                // node is just completing the same edge the previous leg
+                // stopped partway through, never re-walking ground it
+                // already covered. Guarded on the previous leg's own actual
+                // last point, not assumed: when the previous leg reached
+                // this node via a *different* edge entirely (the plain-node
+                // case the asymmetric-interior-waypoint test exists to
+                // catch — the snap edge can be a dead-end spur nothing
+                // legally departs, with the real path arriving via a
+                // completely different edge), inserting the precise point
+                // first would be a genuine, novel detour onto ground never
+                // actually reached, not a resumption of anything — so it's
+                // skipped entirely and the plain node remains the whole,
+                // honest answer, exactly as before. A real, live-reported
+                // bug when this unconditionally used the plain node (route
+                // 57C's own roundabout waypoint, 2026-10-17): skipped the
+                // real remaining curve points between the waypoint and the
+                // next node entirely, rendering as a visible straight chord
+                // cutting across the real curve.
+                let leg_before = coords.len();
+                let prev_point_matches_snap = leg_before >= 2
+                    && coords[leg_before - 2] == start_snap_lon_e7 as f64 * 1e-7
+                    && coords[leg_before - 1] == start_snap_lat_e7 as f64 * 1e-7;
+                let se = &self.graph.edges[start_snap_edge as usize];
+                let from_forward_ok = start == se.to && matches!(se.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+                let to_reverse_ok = start == se.from && matches!(se.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+                if prev_point_matches_snap && (from_forward_ok || to_reverse_ok) {
+                    push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                    let from_n = &self.graph.nodes[se.from as usize];
+                    let to_n = &self.graph.nodes[se.to as usize];
+                    let mut full_seq: Vec<(i32, i32)> = Vec::with_capacity(se.geometry_len as usize + 2);
+                    full_seq.push((from_n.lon_e7, from_n.lat_e7));
+                    full_seq.extend(self.graph.edge_geometry(se).iter().copied());
+                    full_seq.push((to_n.lon_e7, to_n.lat_e7));
+                    if to_reverse_ok {
+                        full_seq.reverse();
+                    }
+                    let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                    for &(lon_e7, lat_e7) in &full_seq[seg + 1..full_seq.len() - 1] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                }
+                let node = &self.graph.nodes[start as usize];
+                push_e7(&mut coords, node.lon_e7, node.lat_e7);
+                let added = ((coords.len() - leg_before) / 2) as u32;
+                leg_edges.push(start_snap_edge);
+                leg_counts.push(added);
             }
 
+            // Same overshoot fix as `find_route` — see its own doc comment
+            // on `closest_segment_index`'s first use for the full story.
             let mut current = start;
-            for (edge_idx, next_node) in &steps {
+            let last_step_idx = steps.len().saturating_sub(1);
+            let mut goal_reached_precisely = false;
+            for (step_i, (edge_idx, next_node)) in steps.iter().enumerate() {
                 let edge = &self.graph.edges[*edge_idx as usize];
-                if edge.from == current {
+                let forward = edge.from == current;
+                let is_start_step = step_i == 0 && start_edge_matches;
+                let is_goal_step = step_i == last_step_idx && *edge_idx == goal_snap_edge;
+
+                let full_seq: Vec<(i32, i32)> = if is_start_step || is_goal_step {
+                    let from_n = &self.graph.nodes[edge.from as usize];
+                    let to_n = &self.graph.nodes[edge.to as usize];
+                    let mut seq = Vec::with_capacity(edge.geometry_len as usize + 2);
+                    seq.push((from_n.lon_e7, from_n.lat_e7));
+                    seq.extend(self.graph.edge_geometry(edge).iter().copied());
+                    seq.push((to_n.lon_e7, to_n.lat_e7));
+                    if !forward {
+                        seq.reverse();
+                    }
+                    seq
+                } else {
+                    Vec::new()
+                };
+
+                let before = coords.len();
+                if is_start_step && is_goal_step {
+                    let start_seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                    let goal_seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                    let lo = start_seg + 1;
+                    let hi = goal_seg.max(start_seg);
+                    for &(lon_e7, lat_e7) in &full_seq[lo.min(hi)..=hi.min(full_seq.len() - 2)] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                    push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                    goal_reached_precisely = true;
+                } else if is_start_step {
+                    let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
+                    for &(lon_e7, lat_e7) in &full_seq[seg + 1..full_seq.len() - 1] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                    let node = &self.graph.nodes[*next_node as usize];
+                    push_e7(&mut coords, node.lon_e7, node.lat_e7);
+                } else if is_goal_step {
+                    let seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                    for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                    push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                    goal_reached_precisely = true;
+                } else if forward {
                     for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge) {
                         push_e7(&mut coords, lon_e7, lat_e7);
                     }
+                    let node = &self.graph.nodes[*next_node as usize];
+                    push_e7(&mut coords, node.lon_e7, node.lat_e7);
                 } else {
                     for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge).iter().rev() {
                         push_e7(&mut coords, lon_e7, lat_e7);
                     }
+                    let node = &self.graph.nodes[*next_node as usize];
+                    push_e7(&mut coords, node.lon_e7, node.lat_e7);
                 }
-                let node = &self.graph.nodes[*next_node as usize];
-                push_e7(&mut coords, node.lon_e7, node.lat_e7);
+                let added = ((coords.len() - before) / 2) as u32;
+                if added > 0 {
+                    leg_edges.push(*edge_idx);
+                    leg_counts.push(added);
+                }
                 current = *next_node;
             }
 
-            let goal_edge_matches = steps.last().is_some_and(|&(edge_idx, _)| edge_idx == goal_snap_edge);
-            if goal_edge_matches {
-                let len = coords.len();
-                coords[len - 2] = goal_snap_lon_e7 as f64 * 1e-7;
-                coords[len - 1] = goal_snap_lat_e7 as f64 * 1e-7;
+            // Mirror of `find_route`'s own goal-side gap patch — see its
+            // doc comment on `goal_reached_precisely` for the full story.
+            // Only for the route's own true final goal (i==n-2, resolved
+            // via `resolved[n-1]`, never shared with anything else) — see
+            // the start-side i==0 gate above for why every interior point
+            // must stop at its plain shared node instead.
+            let current_pos = &self.graph.nodes[current as usize];
+            let goal_already_at_current =
+                current_pos.lon_e7 == goal_snap_lon_e7 && current_pos.lat_e7 == goal_snap_lat_e7;
+            if i == n - 2 && !goal_reached_precisely && !goal_already_at_current {
+                let before = coords.len();
+                let ge = &self.graph.edges[goal_snap_edge as usize];
+                let from_forward_ok = current == ge.from && matches!(ge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
+                let to_reverse_ok = current == ge.to && matches!(ge.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
+                if from_forward_ok || to_reverse_ok {
+                    let from_n = &self.graph.nodes[ge.from as usize];
+                    let to_n = &self.graph.nodes[ge.to as usize];
+                    let mut full_seq: Vec<(i32, i32)> = Vec::with_capacity(ge.geometry_len as usize + 2);
+                    full_seq.push((from_n.lon_e7, from_n.lat_e7));
+                    full_seq.extend(self.graph.edge_geometry(ge).iter().copied());
+                    full_seq.push((to_n.lon_e7, to_n.lat_e7));
+                    if to_reverse_ok {
+                        full_seq.reverse();
+                    }
+                    let seg = closest_segment_index(&full_seq, goal_snap_lon_e7, goal_snap_lat_e7);
+                    for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                        push_e7(&mut coords, lon_e7, lat_e7);
+                    }
+                    push_e7(&mut coords, goal_snap_lon_e7, goal_snap_lat_e7);
+                    let added = ((coords.len() - before) / 2) as u32;
+                    if added > 0 {
+                        leg_edges.push(goal_snap_edge);
+                        leg_counts.push(added);
+                    }
+                }
             }
 
             // Drop this leg's own first point when it duplicates the
             // previous leg's last point — the normal case now that
             // interior stops resolve to one shared snap used by both
             // legs, rather than two independent ones that could differ.
+            // The matching edge-chunk entry shrinks (or drops entirely)
+            // by the same one point, keeping the two in lockstep.
             if leg_first_idx >= 2 {
                 let prev_point = (coords[leg_first_idx - 2], coords[leg_first_idx - 1]);
                 let this_point = (coords[leg_first_idx], coords[leg_first_idx + 1]);
                 if prev_point == this_point {
                     coords.drain(leg_first_idx..leg_first_idx + 2);
+                    if let Some(first_count) = leg_counts.first_mut() {
+                        *first_count -= 1;
+                        if *first_count == 0 {
+                            leg_edges.remove(0);
+                            leg_counts.remove(0);
+                        }
+                    }
                 }
             }
+
+            all_edges.extend(leg_edges);
+            all_counts.extend(leg_counts);
+            // This leg is now fully settled in `coords` — record its own
+            // last point's index (in points, not flat pairs) for
+            // `last_leg_end_point_indices`. See that field's own doc
+            // comment for how a caller rebuilds each leg's `coords`
+            // *inclusive* of both endpoints from these.
+            leg_end_indices.push((coords.len() / 2 - 1) as u32);
         }
 
+        *self.last_edges.borrow_mut() = all_edges;
+        *self.last_edge_point_counts.borrow_mut() = all_counts;
+        *self.last_leg_end_point_indices.borrow_mut() = leg_end_indices;
+        *self.last_leg_time_seconds.borrow_mut() = leg_times_s;
         coords
     }
 
@@ -1837,6 +2391,158 @@ mod tests {
         );
     }
 
+    /// A real live user report on route 57C: the goal (a stop, "Portree
+    /// Dentist") snaps onto an edge *partway* along its length, not at
+    /// either of its two endpoints. The old code pushed that whole edge's
+    /// full geometry (all the way to its far node) and only ever patched
+    /// the very last coordinate pair with the true snap position — leaving
+    /// every point *past* the snap still in the output, so the drawn route
+    /// visibly overshot the stop and then jumped straight back to it
+    /// ("goes past the stop then back up the road"). Reproduced here with
+    /// two edges in a line (A: node0->node1, B: node1->node2) and a goal
+    /// point halfway along B, well short of node2 — the overshoot would
+    /// have continued all the way to node2 before jumping back.
+    /// A real bug found live (Sconser's own "Ferry Road End" stop,
+    /// 2026-10-17): a stop sits mid-edge on a one-way loop whose *from*
+    /// end is its only legal entry (Forward-only). A separate, faster
+    /// edge reaches the loop's *to* end directly without ever using the
+    /// loop at all — and since `to` happens to be geometrically closer to
+    /// the stop's own raw coordinate than `from` is, the old plain
+    /// distance tie-break in `nearest_node` resolved the goal to `to`,
+    /// Dijkstra took the cheaper direct edge there, and the goal-side
+    /// extension correctly refused to fabricate an illegal reverse
+    /// movement back into the one-way loop — leaving the route stopped
+    /// well short of the real stop, silently, no error anywhere. Fixed by
+    /// preferring whichever endpoint the edge's own oneway direction
+    /// actually permits a legal approach into, when raw "has incoming"
+    /// is tied between the two.
+    #[test]
+    fn goal_mid_edge_on_a_one_way_loop_prefers_the_endpoint_that_can_legally_reach_it() {
+        let nodes = vec![
+            graph_node(1, -200_000, 0), // 0: start -- off-axis from the loop, so "fast" below isn't collinear with it
+            graph_node(2, 0, 100_000),  // 1: loop_from -- the loop's only legal entry
+            graph_node(3, 0, 300_000),  // 2: loop_to -- geometrically closer to the goal, but only legally *departed*
+        ];
+        let fast = edge(0, 2, 900, 11, 100.0); // start -> loop_to directly, cheap, bypasses the loop entirely
+        let mut loop_edge = edge(1, 2, 901, 11, 100.0); // loop_from -> loop_to, one real geometry point at 200_000
+        loop_edge.oneway = OnewayDirection::Forward;
+        loop_edge.geometry_start = 0;
+        loop_edge.geometry_len = 1;
+        let entry = edge(0, 1, 902, 11, 100.0); // start -> loop_from, the only way to legally reach loop_from
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![fast, loop_edge, entry],
+            restrictions: vec![],
+            geometry_points: vec![(0, 200_000)],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        // Goal at 0.021 — past the loop's one real geometry point (0.02),
+        // well short of loop_to (0.03), closer to loop_to by raw distance
+        // than to loop_from, but only reachable by entering the loop from
+        // loop_from and walking forward through it.
+        let coords = router.find_route(-0.02, 0.0, 0.0, 0.021);
+        assert!(!coords.is_empty(), "a route should exist");
+        let len = coords.len();
+        let (last_lon, last_lat) = (coords[len - 2], coords[len - 1]);
+        assert!(
+            (last_lat - 0.021).abs() < 0.0005,
+            "should reach the real goal on the loop (lat 0.021), not stop short at loop_to (lat 0.03) \
+             — got {last_lon},{last_lat}"
+        );
+        // The real geometry point on the loop must appear — proof the
+        // route actually entered and walked the loop, not just jumped to
+        // the nearer, legally-unreachable endpoint.
+        let visited_loop_geometry = (0..len).step_by(2).any(|i| (coords[i + 1] - 0.02).abs() < 1e-6);
+        assert!(visited_loop_geometry, "route should have walked through the loop's own real geometry point (lat 0.02)");
+    }
+
+    #[test]
+    fn goal_mid_edge_does_not_overshoot_past_the_snap_point() {
+        let nodes = vec![
+            graph_node(1, 0, 0),         // 0: start, exactly here
+            graph_node(2, 0, 1_000_000), // 1: mid junction
+            graph_node(3, 0, 2_000_000), // 2: edge B's own far end -- must never appear in the output
+        ];
+        let edge_a = edge(0, 1, 900, 11, 100.0);
+        let edge_b = edge(1, 2, 901, 11, 100.0);
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![edge_a, edge_b],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        // Goal 90% along edge B (lat 0.18), close enough to node 2 (lat
+        // 0.2) that `nearest_node`'s own distance tie-break resolves the
+        // goal to node 2 — not node 1, which Dijkstra could reach via edge
+        // A alone without ever touching edge B at all. The whole point of
+        // this test is a path that *does* traverse edge B and must stop
+        // partway along it, not one that bypasses it entirely.
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.18);
+        assert!(!coords.is_empty(), "a route should exist");
+
+        let len = coords.len();
+        let (last_lon, last_lat) = (coords[len - 2], coords[len - 1]);
+        assert!(
+            (last_lat - 0.18).abs() < 0.0001,
+            "final point should be the true snap position (lat 0.18) — got {last_lon},{last_lat}"
+        );
+
+        // The real regression check: nothing anywhere in the output should
+        // have overshot past the snap point toward node 2 — the exact
+        // shape of "goes past the stop then back up the road."
+        let max_lat = (0..len).step_by(2).map(|i| coords[i + 1]).fold(f64::MIN, f64::max);
+        assert!(
+            max_lat <= 0.18 + 0.0001,
+            "no point in the route should overshoot past the goal snap point (lat 0.18) — max lat was {max_lat}"
+        );
+    }
+
+    #[test]
+    fn find_route_edge_point_counts_never_overcount_a_truncated_start_or_goal_step() {
+        // Same graph as `goal_mid_edge_does_not_overshoot_past_the_snap_point`:
+        // the goal snaps 90% along edge B, so the step traversing edge B
+        // pushes a truncated slice of its geometry, not the whole edge. A
+        // real regression (route 57C, live, 2026-10-11): `last_edge_point_
+        // counts()` used to be precomputed from each edge's *full*
+        // geometry length before the loop ran, never adjusted down for a
+        // truncated start/goal step. A caller slicing the flat coordinate
+        // array by those counts (route-panel.ts's `routeLineAndEdges`,
+        // building the saved-route chevron layer) would then run its
+        // index past the array end for every edge after the truncated
+        // one, producing empty chunks the chevron layer's own
+        // `coords.length >= 2` filter silently drops — "missing one-way
+        // arrows" with no error anywhere.
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 0, 2_000_000),
+        ];
+        let edge_a = edge(0, 1, 900, 11, 100.0);
+        let edge_b = edge(1, 2, 901, 11, 100.0);
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![edge_a, edge_b],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.18);
+        assert!(!coords.is_empty(), "a route should exist");
+        let decoded_points = coords.len() / 2;
+
+        let counts = router.last_route_edge_point_counts();
+        let sum: u32 = counts.iter().sum();
+        assert_eq!(
+            sum as usize,
+            decoded_points - 1,
+            "sum of per-edge point counts should account for every decoded point except the route's own first (implicit, uncounted) anchor — got sum {sum} against {decoded_points} decoded points"
+        );
+    }
+
     /// An *interior* stop (neither a route's start nor its end) sits right
     /// next to a one-way edge whose two ends have asymmetric access: node
     /// 1 (A) has both incoming (from the start) and outgoing (on to both B
@@ -1928,6 +2634,104 @@ mod tests {
             );
             i += 2;
         }
+    }
+
+    #[test]
+    fn find_route_through_resumes_the_real_curve_after_an_interior_waypoint_mid_edge() {
+        // start0 -> A -> [geometry pt1, geometry pt2] -> B -> end, one
+        // continuous edge A->B carrying the real curve detail, with a
+        // waypoint forced to land between the two geometry points —
+        // mirrors the real bug exactly (route 57C's own roundabout
+        // waypoint, 2026-10-17): the leg arriving at the waypoint
+        // correctly truncates mid-edge (already-working `is_goal_step`
+        // logic), but the *next* leg, departing the same waypoint to
+        // continue along the very same edge, used to skip straight to
+        // node B and silently drop geometry pt2 — the real curve point
+        // between the waypoint and B — rendering as a straight chord
+        // cutting across the real curve.
+        let nodes = vec![
+            graph_node(1, 0, -100_000),
+            graph_node(2, 0, 0),
+            graph_node(3, 0, 1_000_000),
+            graph_node(4, 0, 2_000_000),
+        ];
+        let mut start_to_a = edge(0, 1, 900, 11, 100.0);
+        start_to_a.oneway = OnewayDirection::Forward;
+        let mut a_to_b = edge(1, 2, 901, 11, 100.0);
+        a_to_b.oneway = OnewayDirection::Forward;
+        a_to_b.geometry_start = 0;
+        a_to_b.geometry_len = 2;
+        let mut b_to_end = edge(2, 3, 902, 11, 100.0);
+        b_to_end.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![start_to_a, a_to_b, b_to_end],
+            restrictions: vec![],
+            geometry_points: vec![(0, 300_000), (0, 700_000)],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route_through(vec![0.0, -0.01, 0.0, 0.06, 0.0, 0.2]);
+        assert!(!coords.is_empty(), "a route should exist through the waypoint to the end");
+
+        let has_point = |lon: f64, lat: f64| {
+            coords.chunks(2).any(|c| (c[0] - lon).abs() < 1e-6 && (c[1] - lat).abs() < 1e-6)
+        };
+        assert!(has_point(0.0, 0.03), "the first real curve point (before the waypoint) should still be present");
+        assert!(
+            has_point(0.0, 0.07),
+            "the second real curve point (after the waypoint, between it and node B) must still be present \
+             — dropping it is exactly the straight-chord bug"
+        );
+
+        let n = coords.len() / 2;
+        let sum: u32 = router.last_route_edge_point_counts().iter().sum();
+        assert_eq!(sum as usize, n - 1, "chunk counts should still sum to {} got {sum}", n - 1);
+    }
+
+    /// A real bug found live (2026-10-11) by scanning every route in a real
+    /// save against the fixed router: `last_route_edge_point_counts()` is
+    /// supposed to sum to exactly `coords.len()/2 - 1` (point 0 is always
+    /// an implicit, uncounted anchor — see `last_edge_point_counts`'s own
+    /// doc comment and every TS caller's own `idx` starting at 0, never
+    /// decremented against). A fix along the way double-counted the
+    /// route's own absolute first point whenever leg 0 took the common
+    /// "first step's edge already matches the snap edge" path — true for
+    /// most real routes, which is why this was caught by scanning real
+    /// data rather than the hand-built graphs above (none of those
+    /// happened to exercise this specific path for leg 0).
+    #[test]
+    fn find_route_through_chunk_counts_never_include_the_routes_own_first_point() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 0, 2_000_000),
+        ];
+        let mut a_to_b = edge(0, 1, 900, 11, 100.0);
+        a_to_b.oneway = OnewayDirection::Forward;
+        let mut b_to_c = edge(1, 2, 901, 11, 100.0);
+        b_to_c.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph {
+            nodes,
+            edges: vec![a_to_b, b_to_c],
+            restrictions: vec![],
+            geometry_points: vec![],
+        });
+        let router = Router::new(&bytes, vec![]);
+
+        // Leg 0's own start (0.0) sits exactly on node A, so its first
+        // step's edge (a_to_b) is exactly `start_snap_edge` — the common
+        // path the real bug needed.
+        let coords = router.find_route_through(vec![0.0, 0.0, 0.0, 0.1, 0.0, 0.2]);
+        assert!(!coords.is_empty(), "a route should exist through both legs");
+        let n = coords.len() / 2;
+        let sum: u32 = router.last_route_edge_point_counts().iter().sum();
+        assert_eq!(
+            sum as usize,
+            n - 1,
+            "chunk counts should sum to {} (points minus the route's own uncounted first point), got {sum}",
+            n - 1
+        );
     }
 
     // --- junction_delay_s (pure function) ---

@@ -50,16 +50,6 @@ interface DraftWaypoint {
 }
 type DraftPoint = DraftStopPoint | DraftWaypoint;
 
-// One traversed edge's own stretch of the route, kept separate from the
-// single merged line so the chevron layer can be told, per edge, whether
-// that edge is used more than once across the whole route (DESIGN.md §11:
-// chevrons mark one-directional running — a there-and-back stretch serves
-// both directions over the same road and shouldn't get them).
-interface EdgeChunk {
-  edgeId: number;
-  coords: [number, number][];
-}
-
 const emptyFeatureCollection: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
 function lineSource(coordinates: [number, number][]): GeoJSON.FeatureCollection {
@@ -70,6 +60,29 @@ function lineSource(coordinates: [number, number][]): GeoJSON.FeatureCollection 
   };
 }
 
+// Each new route gets a colour distinct from the last, rather than every one
+// defaulting to the same blue (a live user request, 2026-10-17 — the routes
+// list had accumulated many routes all sharing the one default swatch).
+// Picked by index (how many routes already exist) around the hue wheel at
+// the golden angle (137.508°) — the standard technique for a sequence of
+// colours that stays well-separated for a very long run before two picks
+// ever land close together, with no need to check existing routes' own
+// colours for a collision at all.
+const GOLDEN_ANGLE_DEG = 137.508;
+function hueToHex(hueDeg: number, saturation: number, lightness: number): string {
+  const h = ((hueDeg % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = lightness - c / 2;
+  const [r, g, b] =
+    h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+function nextRouteColour(existingRouteCount: number): string {
+  return hueToHex(existingRouteCount * GOLDEN_ANGLE_DEG, 0.65, 0.5);
+}
+
 function pointsSource(points: DraftPoint[]): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
@@ -78,19 +91,6 @@ function pointsSource(points: DraftPoint[]): GeoJSON.FeatureCollection {
       properties: { kind: p.kind, index: i },
       geometry: { type: "Point", coordinates: [p.lon, p.lat] },
     })),
-  };
-}
-
-function edgeChunksSource(chunks: EdgeChunk[], useCount: Map<number, number>): GeoJSON.FeatureCollection {
-  return {
-    type: "FeatureCollection",
-    features: chunks
-      .filter((c) => c.coords.length >= 2)
-      .map((c) => ({
-        type: "Feature",
-        properties: { bothDirections: (useCount.get(c.edgeId) ?? 0) >= 2 },
-        geometry: { type: "LineString", coordinates: c.coords },
-      })),
   };
 }
 
@@ -150,9 +150,20 @@ export async function mountRouteDrawTool(
   // else has touched the result since.
   let draftComposedFromRouteIds: number[] = [];
   let routeCoords: [number, number][] = [];
-  let edgeChunks: EdgeChunk[] = [];
-  let edgeUseCount = new Map<number, number>();
   let warning: string | null = null;
+  // `legEndIndices[i]` is the index into `routeCoords` where the leg from
+  // `draftPoints[i]` to `draftPoints[i + 1]` ends (i.e. where `draftPoints[i
+  // + 1]` itself lands) — kept so the hail-and-ride overlay (`refresh()`
+  // below) can slice the route's own already-computed path between two
+  // section endpoints, rather than routing a fresh, independent shortest
+  // path between their raw coordinates. The latter was a real reported bug
+  // (route 56, 2026-10-11 — "it takes the shortest route, it doesn't follow
+  // the route"): a hail-and-ride section's two endpoints can be connected by
+  // a shorter path than the one the main route actually takes between them
+  // (forced via a waypoint or simply not the cheapest), so re-routing
+  // between them independently drew a different line than the route the
+  // overlay is meant to be highlighting a stretch of.
+  let legEndIndices: number[] = [];
   // Set by clicking a stop in the list (not the map): the next map click(s)
   // insert after this position instead of appending at the end, and the
   // insertion point advances to each newly-inserted point in turn so a run
@@ -168,6 +179,17 @@ export async function mountRouteDrawTool(
   // stop (an early terminus with no real loop) — see validateStartTerminus.
   let terminusIndex: number | null = null;
   let startIndex: number | null = null;
+  // Hail and ride (DESIGN.md §6): stretches between two nominated stops,
+  // each stored as {fromIndex, toIndex} into draftPoints (always "stop"
+  // points, never waypoints) — unlike terminus/start (one pair, nullable),
+  // a route can have any number of these, so it's an array built up over
+  // the editing session and persisted as-is on save. `hailRideArmedStart`
+  // is the first-clicked stop of a section in progress (mirrors
+  // `insertAfterIndex` doubling as "the armed point" for terminus/start,
+  // but needs its own slot since a hail-and-ride section spans *two*
+  // clicks, not one).
+  let hailRideSections: RouteHailAndRideSection[] = [];
+  let hailRideArmedStart: number | null = null;
   // Set by startEditing(), null for a genuinely new route — the save
   // handler branches on this to update the existing route rather than
   // creating a duplicate.
@@ -185,8 +207,8 @@ export async function mountRouteDrawTool(
 
   const addLayers = () => {
     map.addSource("route-draft-line", { type: "geojson", data: emptyFeatureCollection });
-    map.addSource("route-draft-edges", { type: "geojson", data: emptyFeatureCollection });
     map.addSource("route-draft-points", { type: "geojson", data: emptyFeatureCollection });
+    map.addSource("route-draft-hailride", { type: "geojson", data: emptyFeatureCollection });
 
     // Drawn over the road at ~75% opacity (DESIGN.md §11) — width is a
     // fixed zoom curve rather than matching each road's real width, since
@@ -203,27 +225,6 @@ export async function mountRouteDrawTool(
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 8, 18, 14],
       },
     });
-    // Chevrons showing direction of running — reuses the same "oneway-arrow"
-    // icon and line-placement approach as the road network's own one-way
-    // arrows (basemap-style.json), which needs no per-feature bearing: MapLibre
-    // derives the rotation from the line geometry itself. Sourced from the
-    // per-edge chunks (not the merged line) so a stretch used in both
-    // directions can be filtered out.
-    map.addLayer({
-      id: "route-draft-chevrons",
-      type: "symbol",
-      source: "route-draft-edges",
-      filter: ["!=", ["get", "bothDirections"], true],
-      layout: {
-        "symbol-placement": "line",
-        "symbol-spacing": 40,
-        "icon-image": "oneway-arrow",
-        "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 18, 1.1],
-        "icon-rotation-alignment": "map",
-        "icon-allow-overlap": true,
-        "icon-ignore-placement": true,
-      },
-    });
     // Stops are blue-filled; waypoints are amber and, if anything, slightly
     // bigger with a thick white ring — a waypoint has no name or popup to
     // fall back on to identify it, so it needs to win the eye against both
@@ -237,6 +238,23 @@ export async function mountRouteDrawTool(
         "circle-color": ["case", ["==", ["get", "kind"], "waypoint"], "#eab308", "#3b82f6"],
         "circle-stroke-color": "#ffffff",
         "circle-stroke-width": ["case", ["==", ["get", "kind"], "waypoint"], 3, 2],
+      },
+    });
+    // Hail and ride stretches (DESIGN.md §6) drawn dashed, directly over the
+    // solid route line, so the player can see at a glance which parts of
+    // the route have no fixed stops. A separate overlay rather than
+    // restyling route-draft-line itself, since only part of the line needs
+    // the dashed treatment — sliced out of the route's own already-computed
+    // path via `legEndIndices` (see refresh()), not re-routed independently.
+    map.addLayer({
+      id: "route-draft-hailride",
+      type: "line",
+      source: "route-draft-hailride",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#eab308",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 9, 18, 15],
+        "line-dasharray": [1, 1.4],
       },
     });
   };
@@ -257,20 +275,40 @@ export async function mountRouteDrawTool(
     (map.getSource("route-draft-line") as maplibregl.GeoJSONSource | undefined)?.setData(
       lineSource(routeCoords),
     );
-    (map.getSource("route-draft-edges") as maplibregl.GeoJSONSource | undefined)?.setData(
-      edgeChunksSource(edgeChunks, edgeUseCount),
-    );
     (map.getSource("route-draft-points") as maplibregl.GeoJSONSource | undefined)?.setData(
       pointsSource(draftPoints),
     );
+    // Slices the hail-and-ride stretch out of the route's own already-
+    // computed `routeCoords`, via `legEndIndices`, rather than routing a
+    // fresh independent path between the section's two endpoints — the
+    // section must show the stretch the route *actually* takes, which can
+    // differ from the cheapest path between those two raw coordinates (a
+    // waypoint elsewhere in the route, or simply not the shortest way,
+    // forces a different path — a real reported bug, route 56,
+    // 2026-10-11: "it takes the shortest route, it doesn't follow the
+    // route").
+    const hailRideFeatures: GeoJSON.Feature[] = [];
+    for (const section of hailRideSections) {
+      const { fromIndex, toIndex } = section;
+      if (fromIndex < 0 || toIndex > legEndIndices.length || fromIndex >= toIndex) continue;
+      const startIdx = fromIndex === 0 ? 0 : legEndIndices[fromIndex - 1];
+      const endIdx = legEndIndices[toIndex - 1];
+      const coords = routeCoords.slice(startIdx, endIdx + 1);
+      if (coords.length < 2) continue;
+      hailRideFeatures.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+    }
+    (map.getSource("route-draft-hailride") as maplibregl.GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: hailRideFeatures,
+    });
   };
 
   // Routes one leg (previous point -> next point) and appends it to
-  // routeCoords/edgeChunks/edgeUseCount, or sets `warning` if no road route
-  // exists between them. Shared by both the fast-path single append and a
-  // full rebuild after a mid-list insertion. Stops and waypoints are routed
-  // identically — a waypoint is just another point the path must pass
-  // through, so no special-casing is needed here at all.
+  // routeCoords, or sets `warning` if no road route exists between them.
+  // Shared by both the fast-path single append and a full rebuild after a
+  // mid-list insertion. Stops and waypoints are routed identically — a
+  // waypoint is just another point the path must pass through, so no
+  // special-casing is needed here at all.
   const appendLeg = (prev: DraftPoint, next: DraftPoint) => {
     const leg = router.find_route(prev.lon, prev.lat, next.lon, next.lat);
     if (leg.length === 0) {
@@ -279,38 +317,48 @@ export async function mountRouteDrawTool(
     }
     const points: [number, number][] = [];
     for (let i = 0; i < leg.length; i += 2) points.push([leg[i], leg[i + 1]]);
-
-    const edgeIds = Array.from(router.last_route_edges());
-    const pointCounts = Array.from(router.last_route_edge_point_counts());
-    let idx = 0;
-    for (let e = 0; e < edgeIds.length; e++) {
-      const count = pointCounts[e];
-      const chunkCoords = points.slice(idx, idx + count + 1);
-      edgeChunks.push({ edgeId: edgeIds[e], coords: chunkCoords });
-      edgeUseCount.set(edgeIds[e], (edgeUseCount.get(edgeIds[e]) ?? 0) + 1);
-      idx += count;
-    }
     // Drop the leg's own first point — it duplicates the previous leg's
     // last point (both are the same point's snapped node).
     routeCoords.push(...points.slice(1));
+    legEndIndices.push(routeCoords.length - 1);
   };
 
   // Recomputes the whole route from the current draftPoints order — used
   // after an insertion changes point order, since a fast single-leg append
-  // no longer applies once earlier legs may also have shifted.
+  // no longer applies once earlier legs may also have shifted. Uses
+  // `find_route_through` for the whole sequence in one call rather than
+  // `appendLeg` once per leg: an interior point snapped independently as
+  // one leg's own goal and the next leg's own start can resolve to
+  // different positions a few metres apart at a one-way-constrained
+  // junction (find_route_through's own doc comment — a real case found
+  // live, route 57C's waypoint near Cearn Ròmasdail, 2026-10-11: the two
+  // legs' endpoints didn't match, rendering as a visible kink/zigzag).
+  // find_route_through snaps every interior point exactly once, shared by
+  // both the leg arriving and the leg departing, which this bug class
+  // can't occur under by construction.
   const rebuildRoute = () => {
     routeCoords = [];
-    edgeChunks = [];
-    edgeUseCount = new Map();
+    legEndIndices = [];
     warning = null;
-    for (let i = 0; i < draftPoints.length; i++) {
-      if (i === 0) {
-        const snapped = router.snap_to_road(draftPoints[0].lon, draftPoints[0].lat);
-        routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [draftPoints[0].lon, draftPoints[0].lat]);
-        continue;
-      }
-      appendLeg(draftPoints[i - 1], draftPoints[i]);
+    if (draftPoints.length === 0) return;
+    if (draftPoints.length === 1) {
+      const snapped = router.snap_to_road(draftPoints[0].lon, draftPoints[0].lat);
+      routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [draftPoints[0].lon, draftPoints[0].lat]);
+      return;
     }
+    const flat: number[] = [];
+    for (const p of draftPoints) flat.push(p.lon, p.lat);
+    const path = router.find_route_through(new Float64Array(flat));
+    if (path.length === 0) {
+      warning = "No road route found through this sequence of stops.";
+      const snapped = router.snap_to_road(draftPoints[0].lon, draftPoints[0].lat);
+      routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [draftPoints[0].lon, draftPoints[0].lat]);
+      return;
+    }
+    const points: [number, number][] = [];
+    for (let i = 0; i < path.length; i += 2) points.push([path[i], path[i + 1]]);
+    routeCoords = points;
+    legEndIndices = Array.from(router.last_route_leg_end_point_indices());
   };
 
   const addPoint = (point: DraftPoint) => {
@@ -328,6 +376,11 @@ export async function mountRouteDrawTool(
       insertAfterIndex += 1;
       if (terminusIndex !== null && terminusIndex >= insertedAt) terminusIndex += 1;
       if (startIndex !== null && startIndex >= insertedAt) startIndex += 1;
+      if (hailRideArmedStart !== null && hailRideArmedStart >= insertedAt) hailRideArmedStart += 1;
+      hailRideSections = hailRideSections.map((s) => ({
+        fromIndex: s.fromIndex >= insertedAt ? s.fromIndex + 1 : s.fromIndex,
+        toIndex: s.toIndex >= insertedAt ? s.toIndex + 1 : s.toIndex,
+      }));
       rebuildRoute();
     } else if (!last) {
       // Snap the very first point onto the road too, the same as every
@@ -348,12 +401,13 @@ export async function mountRouteDrawTool(
     draftPoints = [];
     draftComposedFromRouteIds = [];
     routeCoords = [];
-    edgeChunks = [];
-    edgeUseCount = new Map();
+    legEndIndices = [];
     warning = null;
     insertAfterIndex = null;
     terminusIndex = null;
     startIndex = null;
+    hailRideSections = [];
+    hailRideArmedStart = null;
     editingRouteId = null;
     variationParentRoute = null;
     parentSiblingRoutes = [];
@@ -366,6 +420,16 @@ export async function mountRouteDrawTool(
     refresh();
     renderStopList();
     renderVariationSection();
+    // Upgrades the plain default above to a colour distinct from it, once
+    // the real route count is known — kept as a separate async step after
+    // the synchronous reset so clearing never has a visible colourless/
+    // flashing moment while this resolves.
+    void (async () => {
+      const routes = await window.routes.list();
+      const colour = nextRouteColour(routes.length);
+      colourInput.value = colour;
+      map.setPaintProperty("route-draft-line", "line-color", colour);
+    })();
   };
 
   // No longer positions or shows/hides itself — the caller (route-panel.ts)
@@ -653,6 +717,7 @@ export async function mountRouteDrawTool(
         parentRouteId,
         variationLetter,
         draftComposedFromRouteIds,
+        hailRideSections,
       );
       savedRouteId = editingRouteId;
       saveStatusEl.style.color = "var(--text-secondary)";
@@ -670,6 +735,7 @@ export async function mountRouteDrawTool(
         parentRouteId,
         variationLetter,
         draftComposedFromRouteIds,
+        hailRideSections,
       );
       savedRouteId = created.id;
       // A second Save click without leaving drawing mode now updates this
@@ -697,6 +763,7 @@ export async function mountRouteDrawTool(
       const freshPoints = resolveRoutePoints(dep, allRoutesAfterSave) as readonly RoutePoint[];
       await window.routes.refreshComposedPoints(depId, [...freshPoints]);
     }
+    stopsPanelState.refreshUsedByService?.();
   });
 
   saveSection.appendChild(numberRow);
@@ -994,6 +1061,60 @@ export async function mountRouteDrawTool(
   };
   terminateButton.addEventListener("click", handleTerminateOrStartClick);
 
+  // Hail and ride (DESIGN.md §6): "click start stop, then end stop" — the
+  // user's own explicit choice of interaction, mirroring the
+  // terminus/start button above exactly (acts on whichever stop is
+  // currently armed via `insertAfterIndex`), except a route can have any
+  // number of these sections, so each completed pair is pushed onto
+  // `hailRideSections` and the button resets to "start" rather than
+  // locking after one.
+  const hailRideButton = document.createElement("button");
+  hailRideButton.className = "btn";
+  hailRideButton.style.width = "100%";
+  body.appendChild(hailRideButton);
+
+  const updateHailRideButton = () => {
+    const selected = insertAfterIndex !== null ? draftPoints[insertAfterIndex] : null;
+    if (hailRideArmedStart === null) {
+      hailRideButton.textContent = "Mark hail and ride start";
+      hailRideButton.disabled = selected === null || selected.kind !== "stop";
+    } else {
+      hailRideButton.textContent = "Mark hail and ride end";
+      hailRideButton.disabled =
+        selected === null || selected.kind !== "stop" || insertAfterIndex === hailRideArmedStart;
+    }
+  };
+
+  const handleHailRideClick = () => {
+    if (insertAfterIndex === null) return;
+    if (hailRideArmedStart === null) {
+      hailRideArmedStart = insertAfterIndex;
+    } else {
+      const fromIndex = Math.min(hailRideArmedStart, insertAfterIndex);
+      const toIndex = Math.max(hailRideArmedStart, insertAfterIndex);
+      const overlaps = hailRideSections.some((s) => fromIndex <= s.toIndex && toIndex >= s.fromIndex);
+      if (overlaps) {
+        warning = "That stretch overlaps a hail and ride section that's already marked.";
+        hailRideArmedStart = null;
+        updateStatus();
+        renderStopList();
+        return;
+      }
+      hailRideSections.push({ fromIndex, toIndex });
+      hailRideArmedStart = null;
+      refresh();
+    }
+    renderStopList();
+    updateStatus();
+  };
+  hailRideButton.addEventListener("click", handleHailRideClick);
+
+  const removeHailRideSection = (section: RouteHailAndRideSection) => {
+    hailRideSections = hailRideSections.filter((s) => s !== section);
+    refresh();
+    renderStopList();
+  };
+
   const removePoint = (index: number) => {
     draftPoints.splice(index, 1);
     draftComposedFromRouteIds = [];
@@ -1009,6 +1130,16 @@ export async function mountRouteDrawTool(
       if (startIndex === index) startIndex = null;
       else if (startIndex > index) startIndex -= 1;
     }
+    if (hailRideArmedStart !== null) {
+      if (hailRideArmedStart === index) hailRideArmedStart = null;
+      else if (hailRideArmedStart > index) hailRideArmedStart -= 1;
+    }
+    hailRideSections = hailRideSections
+      .filter((s) => s.fromIndex !== index && s.toIndex !== index)
+      .map((s) => ({
+        fromIndex: s.fromIndex > index ? s.fromIndex - 1 : s.fromIndex,
+        toIndex: s.toIndex > index ? s.toIndex - 1 : s.toIndex,
+      }));
     rebuildRoute();
     refresh();
     renderStopList();
@@ -1034,6 +1165,34 @@ export async function mountRouteDrawTool(
     subLine.style.color = "var(--text-accent)";
     subLine.style.borderBottom = "1px solid var(--border)";
     subLine.textContent = `└ ${label}`;
+    pointList.appendChild(subLine);
+  }
+
+  // Same shape as appendSubLine, plus a small remove control — unlike
+  // terminus/start (cleared via the single button above once both are
+  // set), a hail-and-ride section needs to be removable individually,
+  // since a route can have several.
+  function appendHailRideSubLine(label: string, section: RouteHailAndRideSection): void {
+    const subLine = document.createElement("div");
+    subLine.style.padding = "2px 8px 6px 24px";
+    subLine.style.fontSize = "11px";
+    subLine.style.color = "var(--text-accent)";
+    subLine.style.borderBottom = "1px solid var(--border)";
+    subLine.style.display = "flex";
+    subLine.style.alignItems = "center";
+    subLine.style.justifyContent = "space-between";
+    const text = document.createElement("span");
+    text.textContent = `└ ${label}`;
+    subLine.appendChild(text);
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "btn btn-icon";
+    removeBtn.textContent = "×";
+    removeBtn.title = "Remove hail and ride section";
+    removeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeHailRideSection(section);
+    });
+    subLine.appendChild(removeBtn);
     pointList.appendChild(subLine);
   }
 
@@ -1115,11 +1274,19 @@ export async function mountRouteDrawTool(
       if (point.kind === "stop") {
         if (i === terminusIndex) appendSubLine("Terminus — service ends here");
         if (i === startIndex) appendSubLine("Start — return begins here");
+        for (const section of hailRideSections) {
+          if (i === section.fromIndex) appendHailRideSubLine("Hail and ride starts here", section);
+          if (i === section.toIndex) appendHailRideSubLine("Hail and ride ends here", section);
+        }
+      }
+      if (hailRideArmedStart === i) {
+        appendSubLine("Click the end stop, then “Mark hail and ride end”");
       }
     }
     const last = pointList.lastElementChild as HTMLElement | null;
     if (last) last.style.borderBottom = "none";
     updateTerminateButton();
+    updateHailRideButton();
   }
 
   const updateStatus = () => {
@@ -1191,12 +1358,6 @@ export async function mountRouteDrawTool(
     get routeCoords() {
       return routeCoords;
     },
-    get edgeChunks() {
-      return edgeChunks;
-    },
-    get edgeUseCount() {
-      return edgeUseCount;
-    },
     get isDrawing() {
       return routeDrawState.isDrawing;
     },
@@ -1217,9 +1378,16 @@ export async function mountRouteDrawTool(
   return {
     el: panel,
     startDrawing: () => {
-      // A previous session left an *edit* or *variation* in progress —
-      // starting a genuinely new route shouldn't carry those points over.
-      if (editingRouteId !== null || variationParentRoute !== null) clear();
+      // A previous session left an *edit* or *variation* in progress, or
+      // there's nothing drawn yet at all (e.g. the very first "+ New
+      // route" after boot) — either way there's a genuinely new route
+      // about to start, which should get its own distinct colour
+      // (clear()'s own async upgrade) rather than carrying over stale
+      // points or just sitting on whatever colour the box last showed.
+      // A draft already in progress (draftPoints non-empty) is left
+      // alone, unaffected — re-entering drawing mode picks up where it
+      // left off, same as before.
+      if (editingRouteId !== null || variationParentRoute !== null || draftPoints.length === 0) clear();
       setDrawing(true);
     },
     startEditing: async (route: Route) => {
@@ -1239,6 +1407,8 @@ export async function mountRouteDrawTool(
       draftComposedFromRouteIds = [...route.composedFromRouteIds];
       terminusIndex = route.terminusIndex;
       startIndex = route.startIndex;
+      hailRideSections = route.hailAndRideSections.map((s) => ({ ...s }));
+      hailRideArmedStart = null;
       editingRouteId = route.id;
       variationParentRoute = null;
       parentSiblingRoutes = [];
@@ -1262,6 +1432,8 @@ export async function mountRouteDrawTool(
       );
       terminusIndex = parent.terminusIndex;
       startIndex = parent.startIndex;
+      hailRideSections = parent.hailAndRideSections.map((s) => ({ ...s }));
+      hailRideArmedStart = null;
       editingRouteId = null;
       variationParentRoute = parent;
       draftComposedFromRouteIds = [];

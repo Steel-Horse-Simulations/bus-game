@@ -1097,12 +1097,143 @@ local network rather than one route.
   build (real coordinates for the bypass's path, added as an ordinary
   edge, the same shape as any other imported road), not a player-facing
   feature. Two-stage plan, confirmed with the user:
-  1. **Now**: get the bypass's real path (coordinates or a traced route)
-     and add it as a one-off to the road graph.
+  1. **Now — done 2026-10-10.** Real path derived from the user's own
+     official Highland Council engineering drawing PDF (`Portree Link
+     Road Update.pdf`), not estimated: PyMuPDF vector/text extraction of
+     the drawing's own printed reference grid, a rigorous two-point
+     similarity transform (scale+rotation+translation, not an assumed
+     north-up/exact-scale guess) anchored on two user-given real-world
+     grid references, then — once the user supplied a PDF overlay
+     screenshot directly on a known, pixel-exact live game screenshot —
+     the two new roundabout centres and the real connecting road shape
+     were read directly via MapLibre's own `map.unproject()` against that
+     exact view (far more precise than the CAD transform alone), with the
+     original CAD-derived curve's own real curvature kept and only
+     shifted (a few metres) to land exactly on the two measured roundabout
+     centres, per the user's own correction. Final geometry: existing
+     (untouched) roundabout -> new ~25m roundabout at Cearn Romasdail ->
+     new ~25m roundabout where the bypass meets Staffin Road, replacing a
+     short stretch of it (confirmed with the user: the new roundabout's
+     east edge sits exactly on Staffin Road's real centreline). Added as
+     **Primary class, 30mph** (both the user's explicit choice -- not the
+     default 50mph a plain Primary tag would imply), two-way.
+     Implemented as `rust/pipeline/examples/add_portree_bypass.rs`: loads
+     `road_graph.bin`, finds the real existing roundabout node and the
+     real Staffin Road edge nearest the computed coordinates (asserts
+     <15m or refuses rather than guessing), splits that edge at the exact
+     splice point, and appends the new edges -- the same shape as
+     `graph_build::merge_road_graphs`'s own index-renumbering pattern,
+     applied to a single manual addition rather than a whole second
+     source. **Revised same day** after the user tested a drawn route and
+     found "I couldn't see any roundabouts": the first version only kept
+     each roundabout's centre as a plain waypoint on one continuous edge,
+     so a route just curved smoothly through the point with no visible
+     loop. Rebuilt (from the pre-patch backup, not double-patched) with
+     **real circular geometry** at both roundabouts: 16 graph nodes per
+     circle at a 12.5m radius, joined by 16 one-way edges going clockwise
+     (UK convention, same rule `road_graph.rs` already applies to real
+     `junction=roundabout` ways), with the entry/exit nodes on each circle
+     chosen from the real curve's own incoming/outgoing bearings at that
+     point (not guessed) so the arms meet the circle where the real road
+     actually would. The user confirmed wanting this over the simpler
+     point-only version.
+
+     **Revised a third time, same day**, after the user live-tested the
+     circles and sent screenshots showing two real problems: (1) the
+     existing (untouched) roundabout now had a route cutting straight
+     through its middle, and (2) both new roundabouts showed a "weird"
+     near-full loop instead of a natural bend. Root cause of (1): the
+     bypass had been connected directly to an existing real ring node
+     (osm_id 34580186) -- topologically valid, but it let the router
+     shortcut straight onto the new road instead of ever using the real
+     ring's own arc, and added a new edge incident to one of the ring's own
+     4 nodes, which isn't truly "untouched." Fixed by tracing the real ring
+     directly from the graph (a 4-node real UK mini-roundabout) and
+     splicing a genuinely new node onto it at the exact point the bypass's
+     own real approach bearing meets the ring (computed, not guessed),
+     leaving the ring's own 4 original nodes/edges byte-for-byte unchanged
+     -- the same splice technique now used for both the existing roundabout
+     and Staffin Road, via one shared `split_nearest_edge` helper. Root
+     cause of (2): the two new roundabout circles were one-way clockwise
+     (true UK convention), which with only two roughly-opposite arms and no
+     give-way/circulation simulated yet (Phase 9 "hard part") forced every
+     route the *long* way around; switched both to two-way, letting the
+     router take the natural shorter arc in each direction instead -- a
+     deliberate realism-vs-legibility tradeoff, worth revisiting if real
+     roundabout circulation rules are ever simulated. Live re-verified
+     after the fix: the existing roundabout now shows both route
+     directions following its real circular shape, and both new
+     roundabouts show a small natural bend rather than a loop.
+
+     Live-verified, not just offline: reloaded
+     the running packaged game against the patched
+     `%APPDATA%\bus-game\map-data\road_graph.bin`, confirmed
+     `router.node_count()`/`edge_count()` match the patch's own reported
+     totals exactly, and confirmed `find_route` from the housing estate
+     past the existing roundabout to Staffin Road actually routes via the
+     new edge (not a detour) and continues correctly onto the split
+     Staffin Road pieces. Both the dev `pipeline-data/road_graph.bin` and
+     the installed game's own copy were patched; originals backed up to
+     `pipeline-data/.backup-before-portree-bypass/`.
+     **Important: this patch does NOT survive a full pipeline rebuild** --
+     running the main pipeline binary regenerates `road_graph.bin` from
+     raw OSM data from scratch, which doesn't include the bypass yet, so
+     `add_portree_bypass.rs` must be re-run against the fresh output every
+     time until stage 2 below happens. Routes 57A/57C themselves (using
+     this road in their timetables) are not yet built -- that's separate,
+     still-pending work.
+
+     **Visual road layer abandoned 2026-10-10 after live testing, by the
+     user's own instruction** ("This is rubbish") -- the
+     `road_graph.bin` patch itself (real circular roundabouts, the 3-arm
+     Staffin Road splice) is kept and still live. The visual road layer
+     (`portree-bypass-layer.ts`, drawn on top of the patch purely so the
+     bypass showed as a road surface on the map) went through several
+     rounds of live correction and still didn't look right once actually
+     tested in the running game -- a route drawn through it looked like it
+     was cutting through the roundabouts rather than going around them,
+     and the layer's own road line ran straight through each roundabout's
+     centre instead of connecting to its edge. That layer has been fully
+     reverted: `portree-bypass-layer.ts` deleted, its `main.ts` hook
+     removed, a clean installer rebuilt with neither present.
+     `road_graph.bin` was briefly restored to the real-OSM-only backup
+     alongside it, in a misreading of the user's next instruction -- the
+     user immediately corrected that ("I need to make the routes before
+     you do that"), so the patch was re-applied to both copies (dev
+     `pipeline-data/` and the installed game's own
+     `%APPDATA%\bus-game\map-data\`) and is live again.
+
+     **The actual plan, given directly by the user, in full** (a second
+     correction after an incomplete first reading only captured part of
+     it -- "don't just randomly do some of what I say and ignore the
+     rest"):
+     1. **Draw the real, permanent 57A/57C now**, in the ordinary in-game
+        route editor, routed *over the bypass* -- made possible by the
+        `road_graph.bin` patch staying in place for exactly this purpose.
+        This captures the route's real intended path while the patched
+        data is available to draw against, well before OSM actually
+        surveys the bypass.
+     2. **Separately, also draw temporary 57A/57C** routed over the
+        *existing* real road network (no bypass) -- for actual play now,
+        since the real bypass doesn't exist in OSM yet and the permanent
+        version can't be used live until it does.
+     3. **Once both are drawn and saved**, the one-off `road_graph.bin`
+        patch can be reverted -- a saved route's own path is stored as
+        its own waypoint data, independent of whatever `road_graph.bin`
+        currently contains, so the permanent route's geometry survives the
+        patch being removed. `add_portree_bypass.rs` is kept (not
+        deleted) purely as the record of how to re-apply it if needed
+        again before that point.
+     Real route detail for 57A/57C (termini, stops, current real-world
+     path for the temporary version, timetable/frequency) -- the same
+     kind of information the other real fixed routes (398, Airlink 100)
+     were built from -- is not yet known and is a genuine open question
+     for the user, not guessed at. See OPEN-ITEMS.md T73.
   2. **Later**: once the bypass is properly surveyed and lands in a real
-     OSM extract, the pipeline is rebuilt against that newer data and the
-     one-off addition is simply dropped in favour of the real geometry —
-     no reconciliation mechanism needed since nothing reusable was built.
+     OSM extract, the pipeline is rebuilt against that newer data (by
+     then the one-off patch is long gone, step 3 above), and the
+     temporary 57A/57C are swapped for the already-drawn permanent
+     versions from step 1, the same as any other route update.
 
 ## 14. Fleet numbering scheme — FINALIZED (replaces every old number-range block)
 

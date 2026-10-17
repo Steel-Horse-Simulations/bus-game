@@ -45,11 +45,19 @@ function regionDropdown(selected: string, onChange: (value: string) => void): Dr
 }
 
 export function mountDepotGroupsPanel(): void {
+  // top:8px/right:8px is also vehicle-simulation.ts's own Mon-Fri/Sat/Sun
+  // day-type bar's corner (fixed top-right, mounted later in main.ts's own
+  // boot order) — at equal z-index, this button lost the DOM-order
+  // tiebreak to that bar and was completely hidden behind it, a real live
+  // user report ("I can't see the button anymore") for the exact same
+  // root cause route-panel.ts already had to fix once (56px comfortably
+  // clears the bar's own measured 42px height from top:8px, same value
+  // reused here for consistency rather than re-deriving it).
   const toggle = document.createElement("button");
   toggle.className = "btn";
   toggle.textContent = "Depot groups";
   toggle.style.position = "absolute";
-  toggle.style.top = "8px";
+  toggle.style.top = "56px";
   toggle.style.right = "8px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);
@@ -57,7 +65,7 @@ export function mountDepotGroupsPanel(): void {
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
-  panel.style.top = "40px";
+  panel.style.top = "88px";
   panel.style.right = "8px";
   panel.style.zIndex = "2";
   panel.style.width = "360px";
@@ -105,6 +113,18 @@ export function mountDepotGroupsPanel(): void {
   addRow.appendChild(nameInput);
   addRow.appendChild(addControls);
   panel.appendChild(addRow);
+
+  // Live user report: "I can't make a new depot group" — the Add button's
+  // handler had no error handling at all, so a failed create (most likely
+  // `depot_groups.name`'s own UNIQUE constraint — db.mts — rejecting a
+  // name that's already taken) threw an unhandled rejection with zero
+  // visible feedback: clicking Add just silently did nothing. This surfaces
+  // whatever the real error actually is instead of guessing at it.
+  const addError = document.createElement("div");
+  addError.style.color = "var(--text-danger)";
+  addError.style.fontSize = "0.85em";
+  addError.style.display = "none";
+  panel.appendChild(addError);
 
   const refresh = async () => {
     const groups = await window.depotGroups.list();
@@ -188,8 +208,17 @@ export function mountDepotGroupsPanel(): void {
   addButton.addEventListener("click", async () => {
     const name = nameInput.value.trim();
     if (!name) return;
-    await window.depotGroups.create(name, newRegionDropdown.value);
-    nameInput.value = "";
-    await refresh();
+    addError.style.display = "none";
+    try {
+      await window.depotGroups.create(name, newRegionDropdown.value);
+      nameInput.value = "";
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addError.textContent = message.includes("UNIQUE constraint failed")
+        ? `A depot group named "${name}" already exists.`
+        : `Couldn't create the depot group: ${message}`;
+      addError.style.display = "block";
+    }
   });
 }

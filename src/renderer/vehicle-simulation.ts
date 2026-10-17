@@ -52,6 +52,17 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   let routeCache = new Map<number, CachedRoute>();
   let timetablesByRoute = new Map<number, RouteTimetable[]>();
 
+  // NOTE (2026-10-11): briefly migrated to `find_route_through` for the
+  // whole route in one call (same fix shape as route-draw.ts's own
+  // `rebuildRoute`, to avoid an interior point being independently
+  // re-snapped as one leg's own goal and the next leg's own start). Reverted
+  // the same day after a live install hung indefinitely on boot ("Drawing
+  // stops…" never progressing) — not yet root-caused; the native Rust
+  // timing for the worst real route in the save came back under half a
+  // second, so the cause isn't simply "this is slow," but something in the
+  // WASM build specifically. Reverted untested rather than risk another
+  // live hang; see OPEN-ITEMS.md for the real fix to retry, properly
+  // verified against the live packaged app this time before shipping.
   const buildLegs = (points: RoutePoint[]): RouteLeg[] => {
     const legs: RouteLeg[] = [];
     for (let i = 0; i < points.length - 1; i++) {
