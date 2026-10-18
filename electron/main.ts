@@ -77,6 +77,13 @@ import {
   listRepaintShops,
   setRepaintShopWeeklyCapacity,
   deleteRepaintShop,
+  createDuty,
+  deleteDuty,
+  setDutyLocked,
+  renameDuty,
+  addDutyPiece,
+  removeDutyPiece,
+  listDutiesForDepotGroup,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -406,6 +413,25 @@ function registerDeadMileageHandlers(): void {
   ipcMain.handle("deadMileage:deleteRoute", (_e, routeId: number) => deleteDeadMileageRoute(save, routeId));
 }
 
+// Duties (OPERATIONS.md §7, Phase 3) — see db.mts's own "duties"/
+// "duty_pieces" SCHEMA comments for why a piece stores only a (routeId,
+// departureMinutes) reference rather than the journey itself.
+function registerDutyHandlers(): void {
+  ipcMain.handle("duties:listForDepotGroup", (_e, depotGroupId: number, dayType: DayType) =>
+    listDutiesForDepotGroup(save, depotGroupId, dayType),
+  );
+  ipcMain.handle("duties:create", (_e, depotGroupId: number, depotId: number, dayType: DayType) =>
+    createDuty(save, depotGroupId, depotId, dayType),
+  );
+  ipcMain.handle("duties:delete", (_e, dutyId: number) => deleteDuty(save, dutyId));
+  ipcMain.handle("duties:setLocked", (_e, dutyId: number, locked: boolean) => setDutyLocked(save, dutyId, locked));
+  ipcMain.handle("duties:rename", (_e, dutyId: number, dutyNumber: string) => renameDuty(save, dutyId, dutyNumber));
+  ipcMain.handle("duties:addPiece", (_e, dutyId: number, routeId: number, departureMinutes: number) =>
+    addDutyPiece(save, dutyId, routeId, departureMinutes),
+  );
+  ipcMain.handle("duties:removePiece", (_e, pieceId: number) => removeDutyPiece(save, pieceId));
+}
+
 function registerRepaintShopHandlers(): void {
   ipcMain.handle("repaintShops:list", () => listRepaintShops(save));
   ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, weeklyCapacity: number) =>
@@ -530,6 +556,7 @@ app.whenReady().then(async () => {
   registerLiveryHandlers();
   registerRepaintShopHandlers();
   registerDeadMileageHandlers();
+  registerDutyHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

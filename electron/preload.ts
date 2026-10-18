@@ -27,6 +27,8 @@ import type {
   DeadMileageDirection,
   DeadMileageBranch,
   DeadMileageWaypoint,
+  Duty,
+  DutyPiece,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -251,4 +253,20 @@ contextBridge.exposeInMainWorld("deadMileage", {
     ipcRenderer.invoke("deadMileage:setBranchWaypoints", branchId, waypoints) as Promise<void>,
   deleteBranch: (branchId: number) => ipcRenderer.invoke("deadMileage:deleteBranch", branchId) as Promise<void>,
   deleteRoute: (routeId: number) => ipcRenderer.invoke("deadMileage:deleteRoute", routeId) as Promise<void>,
+});
+
+// Duties (OPERATIONS.md §7, Phase 3) — one vehicle's own chained work
+// pattern for a depot group + day type, built from the day's already-
+// published journeys (see db.mts's own "duties"/"duty_pieces" comments).
+contextBridge.exposeInMainWorld("duties", {
+  listForDepotGroup: (depotGroupId: number, dayType: DayType) =>
+    ipcRenderer.invoke("duties:listForDepotGroup", depotGroupId, dayType) as Promise<Duty[]>,
+  create: (depotGroupId: number, depotId: number, dayType: DayType) =>
+    ipcRenderer.invoke("duties:create", depotGroupId, depotId, dayType) as Promise<Duty>,
+  delete: (dutyId: number) => ipcRenderer.invoke("duties:delete", dutyId) as Promise<void>,
+  setLocked: (dutyId: number, locked: boolean) => ipcRenderer.invoke("duties:setLocked", dutyId, locked) as Promise<void>,
+  rename: (dutyId: number, dutyNumber: string) => ipcRenderer.invoke("duties:rename", dutyId, dutyNumber) as Promise<void>,
+  addPiece: (dutyId: number, routeId: number, departureMinutes: number) =>
+    ipcRenderer.invoke("duties:addPiece", dutyId, routeId, departureMinutes) as Promise<DutyPiece>,
+  removePiece: (pieceId: number) => ipcRenderer.invoke("duties:removePiece", pieceId) as Promise<void>,
 });

@@ -1,5 +1,6 @@
 import { createDropdown, type Dropdown } from "./dropdown";
 import { busStationsState } from "./stops-layer";
+import { dutyPanelState } from "./duty-panel";
 
 const NO_STATION_LABEL = "(none)";
 
@@ -164,6 +165,14 @@ export function mountDepotGroupsPanel(): void {
       region.el.style.flex = "1";
       region.el.style.minWidth = "0";
 
+      const dutiesButton = document.createElement("button");
+      dutiesButton.className = "btn btn-icon";
+      dutiesButton.textContent = "Duties";
+      dutiesButton.title = "Build this depot group's vehicle duties (OPERATIONS.md §7)";
+      dutiesButton.addEventListener("click", () => {
+        dutyPanelState.openForDepotGroup?.(group.id, group.name);
+      });
+
       const deleteButton = document.createElement("button");
       deleteButton.className = "btn btn-icon btn-danger";
       deleteButton.textContent = "×";
@@ -175,6 +184,7 @@ export function mountDepotGroupsPanel(): void {
 
       row.appendChild(nameField);
       row.appendChild(region.el);
+      row.appendChild(dutiesButton);
       row.appendChild(deleteButton);
 
       // The direction rule's reference point (DESIGN.md §6) — manual only,

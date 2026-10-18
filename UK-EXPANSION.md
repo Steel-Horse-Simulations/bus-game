@@ -29,9 +29,9 @@ Ireland) plus the Isle of Man.
   of any other regional extract.
 
 Whether Scotland-specific systems (the island/remote-area review, the
-existing £2 Highland/SPT cap) get built out as equivalents elsewhere, or
-stay special cases, is still genuinely undecided — flag rather than guess
-when it becomes relevant to a specific system.
+existing £2 Highland/SPT/Aberdeen cap, §8) get built out as equivalents
+elsewhere, or stay special cases, is still genuinely undecided — flag
+rather than guess when it becomes relevant to a specific system.
 
 ---
 
@@ -180,15 +180,19 @@ two. Don't reintroduce the route-based version.
 
 ## 8. Fare cap systems by nation (4 of 5 done; London pending map)
 
-**General rule across every fare cap system below (Highland/SPT, England,
-Wales, London):** sightseeing services get NO fare cap anywhere — full
-price always applies, no exceptions. This generalises what was already
+**General rule across every fare cap system below (Highland/SPT/Aberdeen,
+England, Wales, London):** sightseeing services get NO fare cap anywhere —
+full price always applies, no exceptions. This generalises what was already
 true of the original Highland/SPT £2 cap into a rule that holds across
 every fare cap in the game.
 
-### Highland + SPT (existing, unchanged)
-£2 single cap within either zone, £4 crossing between them. See
-DESIGN.md §9 for full detail — unaffected by this expansion.
+### Highland + SPT + Aberdeen
+£2 single cap within any one zone, £4 crossing between two of them. Extended
+to a third zone, Aberdeen (Aberdeen City and Aberdeenshire), 2026-10-17 —
+matching the real scheme's own extension — on the same terms as the
+original two. See DESIGN.md §9 for full detail, including why no
+England-style special higher-cap crossing case is needed for Aberdeen (it's
+nowhere near the England border, unlike SPT).
 
 ### England
 - All services: single ticket capped at **£3**.

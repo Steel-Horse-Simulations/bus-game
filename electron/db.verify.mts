@@ -35,6 +35,13 @@ import {
   deleteDepot,
   createStopGroup,
   listStopGroupIds,
+  createDuty,
+  deleteDuty,
+  setDutyLocked,
+  renameDuty,
+  addDutyPiece,
+  removeDutyPiece,
+  listDutiesForDepotGroup,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -628,6 +635,92 @@ db.close();
     unlinkSync(copy);
   } else {
     console.log("skip real save upgrade check: no save at", realSave);
+  }
+}
+
+// --- duties (OPERATIONS.md §7, Phase 3) — depot-anchored numbering
+// (2026-10-17 correction: a duty always belongs to one physical depot in
+// its group, with duty_number itself encoding which one — 1xxx for the
+// main depot, 2xxx for the next, and so on) ---
+{
+  db = openSave(path);
+  const dutyGroup = createDepotGroup(db, "Fort William", "North Scotland");
+  const depotA = createDepot(db, dutyGroup.id, "Fort William Depot", -5.1, 56.8, []).depot;
+  const depotB = createDepot(db, dutyGroup.id, "Mallaig Outstation", -5.7, 57.0, []).depot;
+
+  const dutyA1 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  assert(dutyA1.dutyNumber === "1001", `first duty at the main (lowest-id) depot gets 1001, got ${dutyA1.dutyNumber}`);
+  const dutyA2 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  assert(dutyA2.dutyNumber === "1002", `second duty at the same depot gets 1002, got ${dutyA2.dutyNumber}`);
+  const dutyB1 = createDuty(db, dutyGroup.id, depotB.id, "monday_friday");
+  assert(dutyB1.dutyNumber === "2001", `first duty at the group's second depot gets 2001, got ${dutyB1.dutyNumber}`);
+
+  // No separate persisted counter — numbering is derived from the current
+  // max, so deleting the current highest (1002) frees exactly that number
+  // for reuse; a gap left by deleting a lower number would NOT be reused
+  // (the max above it is unaffected either way).
+  deleteDuty(db, dutyA2.id);
+  const dutyA3 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  assert(dutyA3.dutyNumber === "1002", `deleting the current highest-numbered duty frees that exact number for reuse — expected 1002, got ${dutyA3.dutyNumber}`);
+
+  const listed = listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday");
+  assert(
+    listed.map((d) => d.dutyNumber).join(",") === "1001,1002,2001",
+    `listDutiesForDepotGroup sorts numerically, which already groups by depot — got ${listed.map((d) => d.dutyNumber).join(",")}`,
+  );
+  assert(listed.every((d) => d.depotGroupId === dutyGroup.id), "every listed duty carries the right depotGroupId");
+  assert(
+    listed.find((d) => d.dutyNumber === "1001")?.depotId === depotA.id && listed.find((d) => d.dutyNumber === "2001")?.depotId === depotB.id,
+    "each duty carries its own real depotId",
+  );
+
+  setDutyLocked(db, dutyA1.id, true);
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyA1.id)?.locked === true, "lock took effect");
+
+  renameDuty(db, dutyA1.id, "1001X");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyA1.id)?.dutyNumber === "1001X", "manual rename overrides the generated number");
+
+  const dutyRoute = createRoute(db, dutyGroup.id, "99", [], "outbound", null, null, "#ff0000", null, null, null, []);
+  const piece = addDutyPiece(db, dutyB1.id, dutyRoute.id, 480);
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added");
+  removeDutyPiece(db, piece.id);
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 0, "piece removed");
+
+  deleteDuty(db, dutyB1.id);
+  assert(!listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").some((d) => d.id === dutyB1.id), "deleteDuty also removes it from the listing");
+  db.close();
+}
+
+// v31 -> v32 (depot_id on duties), against a copy of the player's own real
+// save — proven against the real shape, not just a synthetic fixture.
+{
+  const realSave = path2.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite");
+  if (existsSync(realSave)) {
+    const copy = "./electron/.verify-real-save-duties-copy.sqlite";
+    if (existsSync(copy)) unlinkSync(copy);
+    copyFileSync(realSave, copy);
+    const upgraded = openSave(copy);
+    const versionCheckDb = new DatabaseSync(copy);
+    const { user_version } = versionCheckDb.prepare("PRAGMA user_version").get() as { user_version: number };
+    versionCheckDb.close();
+    assert(user_version === 32, `real save migrates to schema v32, got v${user_version}`);
+    const realGroups = listDepotGroups(upgraded);
+    if (realGroups.length > 0) {
+      const realDepots = listDepots(upgraded);
+      const groupWithDepot = realGroups.find((g) => realDepots.some((d) => d.depotGroupId === g.id));
+      if (groupWithDepot) {
+        const depot = realDepots.find((d) => d.depotGroupId === groupWithDepot.id)!;
+        const created = createDuty(upgraded, groupWithDepot.id, depot.id, "monday_friday");
+        assert(created.depotId === depot.id, "a duty created on the real (migrated) save carries the right depotId");
+        deleteDuty(upgraded, created.id);
+      } else {
+        console.log("skip real-save duty creation check: no depot group in the real save has a depot yet");
+      }
+    }
+    upgraded.close();
+    unlinkSync(copy);
+  } else {
+    console.log("skip real save v31->v32 migration check: no save at", realSave);
   }
 }
 

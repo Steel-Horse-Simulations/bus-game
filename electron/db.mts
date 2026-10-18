@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 30;
+const SCHEMA_VERSION = 32;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -368,6 +368,53 @@ CREATE TABLE IF NOT EXISTS dead_mileage_branches (
   waypoints TEXT NOT NULL DEFAULT '[]',
   UNIQUE (route_id, depot_entrance_id)
 );
+
+-- A duty (OPERATIONS.md §7 "Duties", Phase 3's own item): one vehicle's
+-- continuous work pattern across a single day type, built from the day's
+-- own generated journeys (a route's timetable, already published — nothing
+-- new is persisted about the journeys themselves). Deliberately vehicle-only
+-- for now: no driver, no hours/length validation — those are Phase 6's own
+-- concern once drivers and the GB/EU hours regime actually exist, since a
+-- driver can swap mid-duty and is genuinely a separate layer from which
+-- vehicle does which run (decided with the user, 2026-10-17).
+--
+-- depot_id (added 2026-10-17, same day as the table itself — real user
+-- data never existed on the depot-less shape, so this was a straight
+-- DROP+recreate, not a migrated column): every duty is anchored to one
+-- physical depot within its own depot group, since that's where the
+-- vehicle (and later, the driver) actually starts and ends the day — a
+-- depot group can have more than one physical depot, and a duty belongs to
+-- exactly one of them, never floats free of all of them. duty_number is
+-- generated from the depot's own rank within its group (ordered by id,
+-- "the main depot" first) — 1xxx for the first depot, 2xxx for the second,
+-- and so on (electron/db.mts's own createDuty), so the numbering itself
+-- shows which depot a duty belongs to at a glance.
+CREATE TABLE IF NOT EXISTS duties (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
+  duty_number TEXT NOT NULL,
+  locked INTEGER NOT NULL DEFAULT 0
+);
+
+-- One journey chained into a duty, in running order. A journey has no
+-- identity of its own anywhere else in the save — it's derived fresh each
+-- time from its route's own timetable (generateDepartureMinutesForBands),
+-- the same "merged view is a projection, not a copy" principle the
+-- timetable grid itself already follows — so a piece is just enough to
+-- re-find that exact journey: which route, and which of its generated
+-- departures (minutes from midnight). Dead running between consecutive
+-- pieces (or before the first/after the last) is never stored either; it's
+-- computed live from the router, same as the dead mileage preview and the
+-- hail-and-ride overlay.
+CREATE TABLE IF NOT EXISTS duty_pieces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  duty_id INTEGER NOT NULL REFERENCES duties(id),
+  sequence_order INTEGER NOT NULL,
+  route_id INTEGER NOT NULL REFERENCES routes(id),
+  departure_minutes INTEGER NOT NULL
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -646,6 +693,21 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN bearing");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 31) {
+    // v31 -> v32: duties gains a required depot_id (see the table's own
+    // SCHEMA comment) — nothing real was ever built on the depot-less
+    // shape (the feature shipped and was unshipped again the same day), so
+    // dropped rather than migrated; CREATE TABLE IF NOT EXISTS above
+    // recreates both tables fresh.
+    db.exec("DROP TABLE IF EXISTS duty_pieces");
+    db.exec("DROP TABLE IF EXISTS duties");
+    db.exec(SCHEMA);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 30) {
+    // v30 -> v31: the duties and duty_pieces tables — brand new, created by
+    // the CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
+    // the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 29) {
     // v29 -> v30: routes gained hail_and_ride_sections (DESIGN.md §6 "Hail
@@ -1740,4 +1802,138 @@ export function listDeadMileageRoutesForDepot(db: SaveDb, depotId: number): Dead
 export function deleteDeadMileageRoute(db: SaveDb, routeId: number): void {
   db.prepare("DELETE FROM dead_mileage_branches WHERE route_id = ?").run(routeId);
   db.prepare("DELETE FROM dead_mileage_routes WHERE id = ?").run(routeId);
+}
+
+// Duties (OPERATIONS.md §7, Phase 3) — see the SCHEMA block's own comments
+// on `duties`/`duty_pieces` for why a piece stores only enough to re-find
+// its journey, not the journey itself.
+export interface DutyPiece {
+  id: number;
+  routeId: number;
+  departureMinutes: number;
+}
+
+export interface Duty {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  dayType: DayType;
+  dutyNumber: string;
+  locked: boolean;
+  pieces: DutyPiece[];
+}
+
+// A depot's 1-based rank within its own group, ordered by id (the first
+// depot ever added to the group is "the main depot") — purely a numbering
+// convention for duty_number, not stored anywhere of its own; recomputed
+// fresh every time a duty is created so adding a new depot later doesn't
+// require renumbering anything that already exists.
+function depotRankInGroup(db: SaveDb, depotGroupId: number, depotId: number): number {
+  const rows = db.prepare("SELECT id FROM depots WHERE depot_group_id = ? ORDER BY id").all(depotGroupId) as { id: number }[];
+  const index = rows.findIndex((r) => r.id === depotId);
+  return index === -1 ? rows.length : index + 1;
+}
+
+// The next duty_number for a depot, following the user's own convention
+// (2026-10-17): 1xxx for the main depot in the group, 2xxx for the next,
+// and so on — so the number alone shows which depot a duty belongs to.
+// Takes the highest existing number for this depot's own block, not a
+// plain count — there's no separate persisted counter, so deleting the
+// current highest-numbered duty frees that exact number for reuse (the
+// next create just sees a lower max again), but a gap left by deleting a
+// lower one stays a gap, since the max above it is unaffected. Simple and
+// good enough for a derived, non-authoritative number the player can
+// always rename anyway (`renameDuty`).
+function nextDutyNumber(db: SaveDb, depotGroupId: number, depotId: number): string {
+  const rank = depotRankInGroup(db, depotGroupId, depotId);
+  const base = rank * 1000;
+  const { maxNumber } = db
+    .prepare("SELECT MAX(CAST(duty_number AS INTEGER)) AS maxNumber FROM duties WHERE depot_id = ?")
+    .get(depotId) as { maxNumber: number | null };
+  return String(Math.max(maxNumber ?? base, base) + 1);
+}
+
+export function createDuty(db: SaveDb, depotGroupId: number, depotId: number, dayType: DayType): Duty {
+  const dutyNumber = nextDutyNumber(db, depotGroupId, depotId);
+  const result = db
+    .prepare("INSERT INTO duties (depot_group_id, depot_id, day_type, duty_number, locked) VALUES (?, ?, ?, ?, 0)")
+    .run(depotGroupId, depotId, dayType, dutyNumber);
+  return { id: Number(result.lastInsertRowid), depotGroupId, depotId, dayType, dutyNumber, locked: false, pieces: [] };
+}
+
+export function deleteDuty(db: SaveDb, dutyId: number): void {
+  db.prepare("DELETE FROM duty_pieces WHERE duty_id = ?").run(dutyId);
+  db.prepare("DELETE FROM duties WHERE id = ?").run(dutyId);
+}
+
+export function setDutyLocked(db: SaveDb, dutyId: number, locked: boolean): void {
+  db.prepare("UPDATE duties SET locked = ? WHERE id = ?").run(locked ? 1 : 0, dutyId);
+}
+
+export function renameDuty(db: SaveDb, dutyId: number, dutyNumber: string): void {
+  db.prepare("UPDATE duties SET duty_number = ? WHERE id = ?").run(dutyNumber, dutyId);
+}
+
+// Appends one journey to the end of a duty's own running order — the only
+// way pieces are added; manual chaining and auto-complete alike always
+// build a duty forward in time, never splice one into the middle.
+export function addDutyPiece(db: SaveDb, dutyId: number, routeId: number, departureMinutes: number): DutyPiece {
+  const { maxOrder } = db
+    .prepare("SELECT COALESCE(MAX(sequence_order), -1) AS maxOrder FROM duty_pieces WHERE duty_id = ?")
+    .get(dutyId) as { maxOrder: number };
+  const result = db
+    .prepare("INSERT INTO duty_pieces (duty_id, sequence_order, route_id, departure_minutes) VALUES (?, ?, ?, ?)")
+    .run(dutyId, maxOrder + 1, routeId, departureMinutes);
+  return { id: Number(result.lastInsertRowid), routeId, departureMinutes };
+}
+
+// Removes one piece from wherever it sits in the duty — the remaining
+// pieces' own sequence_order values are left with a gap, harmless since
+// listDutiesForDepotGroup only ever orders by it, never assumes it's
+// contiguous.
+export function removeDutyPiece(db: SaveDb, pieceId: number): void {
+  db.prepare("DELETE FROM duty_pieces WHERE id = ?").run(pieceId);
+}
+
+// Every duty across every depot in the group, for one day type — ordered
+// by duty_number (not id), so the natural sort already groups them by
+// depot (1xxx block, then 2xxx, ...) the way the user asked for
+// (2026-10-17), without the caller needing to re-sort.
+export function listDutiesForDepotGroup(db: SaveDb, depotGroupId: number, dayType: DayType): Duty[] {
+  const dutyRows = db
+    .prepare(
+      "SELECT id, depot_group_id, depot_id, day_type, duty_number, locked FROM duties WHERE depot_group_id = ? AND day_type = ? ORDER BY CAST(duty_number AS INTEGER)",
+    )
+    .all(depotGroupId, dayType) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    day_type: DayType;
+    duty_number: string;
+    locked: number;
+  }[];
+  const pieceRows = db
+    .prepare(
+      `SELECT p.id, p.duty_id, p.route_id, p.departure_minutes
+       FROM duty_pieces p
+       JOIN duties d ON d.id = p.duty_id
+       WHERE d.depot_group_id = ? AND d.day_type = ?
+       ORDER BY p.duty_id, p.sequence_order`,
+    )
+    .all(depotGroupId, dayType) as { id: number; duty_id: number; route_id: number; departure_minutes: number }[];
+  const piecesByDuty = new Map<number, DutyPiece[]>();
+  for (const p of pieceRows) {
+    const list = piecesByDuty.get(p.duty_id) ?? [];
+    list.push({ id: p.id, routeId: p.route_id, departureMinutes: p.departure_minutes });
+    piecesByDuty.set(p.duty_id, list);
+  }
+  return dutyRows.map((d) => ({
+    id: d.id,
+    depotGroupId: d.depot_group_id,
+    depotId: d.depot_id,
+    dayType: d.day_type,
+    dutyNumber: d.duty_number,
+    locked: !!d.locked,
+    pieces: piecesByDuty.get(d.id) ?? [],
+  }));
 }

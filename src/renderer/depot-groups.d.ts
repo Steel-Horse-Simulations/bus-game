@@ -279,8 +279,39 @@ interface DeadMileageApi {
   deleteRoute(routeId: number): Promise<void>;
 }
 
+// Duties (OPERATIONS.md §7, Phase 3) — see db.mts's own "duties"/
+// "duty_pieces" SCHEMA comments for why a piece is only enough to re-find
+// its journey (which route, which generated departure), not the journey
+// itself.
+interface DutyPiece {
+  id: number;
+  routeId: number;
+  departureMinutes: number;
+}
+
+interface Duty {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  dayType: DayType;
+  dutyNumber: string;
+  locked: boolean;
+  pieces: DutyPiece[];
+}
+
+interface DutiesApi {
+  listForDepotGroup(depotGroupId: number, dayType: DayType): Promise<Duty[]>;
+  create(depotGroupId: number, depotId: number, dayType: DayType): Promise<Duty>;
+  delete(dutyId: number): Promise<void>;
+  setLocked(dutyId: number, locked: boolean): Promise<void>;
+  rename(dutyId: number, dutyNumber: string): Promise<void>;
+  addPiece(dutyId: number, routeId: number, departureMinutes: number): Promise<DutyPiece>;
+  removePiece(pieceId: number): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
+  duties: DutiesApi;
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

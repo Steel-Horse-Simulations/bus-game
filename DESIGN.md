@@ -1078,8 +1078,9 @@ DAY £9.60; weekly £26.50 / £25.00 / £38.50.
 Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are in
 `reference/`.
 
-### £2 fare cap (Highland and SPT)
-Modelled on the real Scottish schemes. Two zones:
+### £2 fare cap (Highland, SPT and Aberdeen)
+Modelled on the real Scottish schemes. Three zones (extended to Aberdeen,
+2026-10-17, matching the real scheme's own extension):
 
 - **Highland** — the Highland council area plus Moray.
 - **SPT** — the twelve council areas the former Strathclyde region divided
@@ -1087,18 +1088,31 @@ Modelled on the real Scottish schemes. Two zones:
   Renfrewshire, Glasgow City, Inverclyde, North Ayrshire, North Lanarkshire,
   Renfrewshire, South Ayrshire, South Lanarkshire, West Dunbartonshire — full
   council areas throughout.
+- **Aberdeen** — Aberdeen City and Aberdeenshire, full council areas.
 
-**Deliberate departure from reality:** in the game these two zones border
-each other directly, with no gap — real Argyll and Bute already touches
-Highland, so this falls out naturally from using whole council areas rather
-than needing an artificial patch.
+**Deliberate departure from reality:** in the game these zones border each
+other directly, with no gap — real Argyll and Bute already touches Highland,
+and real Aberdeenshire already touches Moray (so Aberdeen already touches
+Highland too), so this falls out naturally from using whole council areas
+throughout rather than needing an artificial patch anywhere.
 
-Within either zone, a **single ticket is capped at £2** to the passenger.
+Within any one zone, a **single ticket is capped at £2** to the passenger.
 The operator still receives the **full real fare** — the government pays the
-gap between £2 and the real fare, not a fixed top-up. Leaving the zone,
-normal fare applies to the rest of the journey, paid by the customer as
-normal. **Crossing from one zone into the other, the single is capped at £4**
-instead of £2.
+gap between £2 and the real fare, not a fixed top-up. Leaving a zone into
+anywhere that isn't one of the three, **normal (uncapped) fare applies to
+that portion of the journey**, paid by the customer as normal — the cap only
+ever covers the part of a journey actually inside a capped zone.
+**Crossing directly from one zone into another (they all border each other
+with no gap, per the departure from reality above), the single for that
+whole journey is capped at £4** instead of £2 — the same rule regardless of
+which two of the three zones are involved (Highland↔SPT, Highland↔Aberdeen,
+SPT↔Aberdeen all behave identically; there is no three-zone "through fare"
+case, since Highland sits between the other two and a journey crossing all
+three in one go isn't a realistic single service). A journey that leaves a
+capped zone, crosses real uncapped territory, and later enters a different
+capped zone is **not** a £4 crossing — each capped portion gets its own £2
+cap and the uncapped middle portion is charged normally, exactly as if it
+were two separate journeys.
 
 The cap applies to **single tickets only** — day, weekly, 28-day and return
 tickets are unaffected. The driver sells whichever ticket is actually
