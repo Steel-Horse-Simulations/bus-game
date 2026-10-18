@@ -1,8 +1,12 @@
-// Read-only browsable view of the vehicle catalogue (VEHICLE-SPECS.md,
-// vehicle-catalogue.mts) — the user's own choice of scope for this first
-// increment of Phase 3's "vehicle configurator and catalogue": prove the
-// data model reads correctly before wiring in purchasing, a fleet/
-// ownership table, or depot assignment. No save-file interaction at all.
+// Browsable vehicle catalogue (VEHICLE-SPECS.md, vehicle-catalogue.mts)
+// plus a minimal buy-one-vehicle flow and owned-fleet list (OPERATIONS.md
+// §3) — this panel's own first increment was read-only by the user's own
+// choice; this second pass wires in purchasing, deliberately scoped small
+// (decided with the user, 2026-10-18): new vehicles only, buy-outright
+// only, no basket/bulk discount, no leasing, no condition decay over
+// time, no delivery lead time — a vehicle is bought and appears at its
+// depot immediately, but still gets a real fleet number and plate
+// (fleet-numbering.mts), since that was the point of starting here.
 import {
   VEHICLE_MODELS,
   GENERAL_RULES,
@@ -10,11 +14,13 @@ import {
   vehicleModelsByCategory,
   generalOptionsFor,
   axleCountForLength,
+  findVehicleModel,
   type VehicleModel,
   type LengthVariant,
   type Capacity,
   type EnergyOption,
 } from "./vehicle-catalogue.mts";
+import { createDropdown } from "./dropdown";
 
 function formatPrice(vehicle: VehicleModel): string {
   if (vehicle.basePriceGBP === null) return vehicle.priceNote ?? "Priced as donor vehicle";
@@ -93,7 +99,142 @@ function buildLengthSection(vehicle: VehicleModel, length: LengthVariant): HTMLE
   return section;
 }
 
-function buildVehicleDetail(vehicle: VehicleModel): HTMLElement {
+interface BuyContext {
+  depotGroups: DepotGroup[];
+  depots: Depot[];
+  onBought: () => void;
+}
+
+function buildBuySection(vehicle: VehicleModel, ctx: BuyContext): HTMLElement {
+  const section = document.createElement("div");
+  section.style.borderTop = "1px solid var(--border)";
+  section.style.padding = "8px 0";
+  section.style.display = "flex";
+  section.style.flexDirection = "column";
+  section.style.gap = "6px";
+
+  if (vehicle.basePriceGBP === null) {
+    const note = document.createElement("div");
+    note.className = "label-muted";
+    note.textContent = "Can't be bought directly — built from its donor vehicle via a conversion, not yet in the game.";
+    section.appendChild(note);
+    return section;
+  }
+  if (ctx.depotGroups.length === 0) {
+    const note = document.createElement("div");
+    note.className = "label-muted";
+    note.textContent = "Create a depot group and place a depot before buying a vehicle.";
+    section.appendChild(note);
+    return section;
+  }
+
+  const heading = document.createElement("div");
+  heading.style.fontWeight = "600";
+  heading.textContent = "Buy";
+  section.appendChild(heading);
+
+  let selectedLength = vehicle.lengths[0];
+  let selectedDepotGroupId: number | null = ctx.depotGroups[0].id;
+  let selectedDepotId: number | null = null;
+
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "6px";
+  row.style.flexWrap = "wrap";
+  section.appendChild(row);
+
+  if (vehicle.lengths.length > 1) {
+    const lengthDropdown = createDropdown(
+      vehicle.lengths.map((l) => formatLengthHeading(vehicle, l)),
+      formatLengthHeading(vehicle, selectedLength),
+      (label) => {
+        const found = vehicle.lengths.find((l) => formatLengthHeading(vehicle, l) === label);
+        if (found) selectedLength = found;
+      },
+    );
+    lengthDropdown.el.style.flex = "1";
+    lengthDropdown.el.style.minWidth = "140px";
+    row.appendChild(lengthDropdown.el);
+  }
+
+  const depotGroupDropdown = createDropdown(
+    ctx.depotGroups.map((g) => g.name),
+    ctx.depotGroups[0].name,
+    (name) => {
+      const found = ctx.depotGroups.find((g) => g.name === name);
+      selectedDepotGroupId = found?.id ?? null;
+      refreshDepotDropdown();
+    },
+  );
+  depotGroupDropdown.el.style.flex = "1";
+  depotGroupDropdown.el.style.minWidth = "140px";
+  row.appendChild(depotGroupDropdown.el);
+
+  const depotDropdownContainer = document.createElement("div");
+  depotDropdownContainer.style.flex = "1";
+  depotDropdownContainer.style.minWidth = "140px";
+  row.appendChild(depotDropdownContainer);
+
+  function refreshDepotDropdown(): void {
+    depotDropdownContainer.innerHTML = "";
+    const depotsHere = ctx.depots.filter((d) => d.depotGroupId === selectedDepotGroupId);
+    if (depotsHere.length === 0) {
+      selectedDepotId = null;
+      const note = document.createElement("div");
+      note.className = "label-muted";
+      note.style.fontSize = "0.85em";
+      note.textContent = "No depot placed for this group yet.";
+      depotDropdownContainer.appendChild(note);
+      buyButton.disabled = true;
+      return;
+    }
+    selectedDepotId = depotsHere[0].id;
+    const dropdown = createDropdown(
+      depotsHere.map((d) => d.name),
+      depotsHere[0].name,
+      (name) => {
+        selectedDepotId = depotsHere.find((d) => d.name === name)?.id ?? null;
+      },
+    );
+    depotDropdownContainer.appendChild(dropdown.el);
+    buyButton.disabled = false;
+  }
+
+  const buyButton = document.createElement("button");
+  buyButton.className = "btn";
+  buyButton.textContent = `Buy — ${formatPrice(vehicle)}`;
+  buyButton.addEventListener("click", async () => {
+    if (selectedDepotGroupId === null || selectedDepotId === null || vehicle.basePriceGBP === null) return;
+    buyButton.disabled = true;
+    try {
+      const bought = await window.vehicles.buy(
+        selectedDepotGroupId,
+        selectedDepotId,
+        vehicle.id,
+        selectedLength.lengthM,
+        selectedLength.variantLabel ?? null,
+        vehicle.powerType,
+        vehicle.basePriceGBP,
+      );
+      result.textContent = `Bought — fleet number ${bought.fleetNumber}, plate ${bought.plate}.`;
+      result.style.display = "block";
+      ctx.onBought();
+    } finally {
+      buyButton.disabled = false;
+    }
+  });
+  section.appendChild(buyButton);
+
+  const result = document.createElement("div");
+  result.style.color = "var(--text-success)";
+  result.style.display = "none";
+  section.appendChild(result);
+
+  refreshDepotDropdown();
+  return section;
+}
+
+function buildVehicleDetail(vehicle: VehicleModel, ctx: BuyContext): HTMLElement {
   const detail = document.createElement("div");
   detail.className = "panel-section";
   detail.style.padding = "8px 12px";
@@ -140,6 +281,8 @@ function buildVehicleDetail(vehicle: VehicleModel): HTMLElement {
     detail.appendChild(optionsList);
   }
 
+  detail.appendChild(buildBuySection(vehicle, ctx));
+
   return detail;
 }
 
@@ -184,9 +327,62 @@ export function mountVehicleCataloguePanel(): void {
   panel.appendChild(list);
 
   let openVehicleId: string | null = null;
+  let depotGroups: DepotGroup[] = [];
+  let depots: Depot[] = [];
+  let ownedVehicles: Vehicle[] = [];
 
-  function render(): void {
+  async function render(): Promise<void> {
+    [depotGroups, depots] = await Promise.all([window.depotGroups.list(), window.depots.list()]);
+    const perGroup = await Promise.all(depotGroups.map((g) => window.vehicles.listForDepotGroup(g.id)));
+    ownedVehicles = perGroup.flat();
+
+    const ctx: BuyContext = { depotGroups, depots, onBought: () => void render() };
+
     list.innerHTML = "";
+
+    const fleetLabel = document.createElement("div");
+    fleetLabel.style.padding = "6px 12px";
+    fleetLabel.style.color = "var(--text-muted)";
+    fleetLabel.style.fontSize = "0.8em";
+    fleetLabel.style.textTransform = "uppercase";
+    fleetLabel.textContent = `Your fleet (${ownedVehicles.length})`;
+    list.appendChild(fleetLabel);
+
+    if (ownedVehicles.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "label-muted";
+      empty.style.padding = "4px 12px 8px";
+      empty.textContent = "No vehicles bought yet — pick a model below.";
+      list.appendChild(empty);
+    }
+    for (const owned of ownedVehicles) {
+      const model = findVehicleModel(owned.modelId);
+      const depot = depots.find((d) => d.id === owned.depotId);
+      const row = document.createElement("div");
+      row.style.padding = "4px 12px";
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      row.style.fontSize = "0.9em";
+
+      const label = document.createElement("span");
+      label.style.flex = "1";
+      const variant = owned.variantLabel ? ` (${owned.variantLabel})` : "";
+      label.textContent = `${owned.fleetNumber} · ${owned.plate} — ${model?.name ?? owned.modelId}${variant} @ ${depot?.name ?? "?"}`;
+      row.appendChild(label);
+
+      const deleteButton = document.createElement("button");
+      deleteButton.className = "btn btn-icon btn-danger";
+      deleteButton.textContent = "×";
+      deleteButton.title = "Remove this vehicle";
+      deleteButton.addEventListener("click", async () => {
+        await window.vehicles.delete(owned.id);
+        void render();
+      });
+      row.appendChild(deleteButton);
+
+      list.appendChild(row);
+    }
     for (const [category, vehicles] of vehicleModelsByCategory()) {
       const categoryLabel = document.createElement("div");
       categoryLabel.style.padding = "6px 12px";
@@ -216,12 +412,12 @@ export function mountVehicleCataloguePanel(): void {
 
         row.addEventListener("click", () => {
           openVehicleId = openVehicleId === vehicle.id ? null : vehicle.id;
-          render();
+          void render();
         });
         list.appendChild(row);
 
         if (openVehicleId === vehicle.id) {
-          list.appendChild(buildVehicleDetail(vehicle));
+          list.appendChild(buildVehicleDetail(vehicle, ctx));
         }
       }
     }
@@ -249,6 +445,6 @@ export function mountVehicleCataloguePanel(): void {
     panelOpen = !panelOpen;
     panel.style.display = panelOpen ? "flex" : "none";
     toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) render();
+    if (panelOpen) void render();
   });
 }

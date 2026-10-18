@@ -309,9 +309,41 @@ interface DutiesApi {
   removePiece(pieceId: number): Promise<void>;
 }
 
+type VehiclePowerType = "diesel" | "electric" | "hybrid" | "hydrogen";
+
+interface Vehicle {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: VehiclePowerType;
+  fleetNumber: string;
+  plate: string;
+  condition: number;
+  purchasePriceGBP: number;
+  boughtAt: string;
+}
+
+interface VehiclesApi {
+  buy(
+    depotGroupId: number,
+    depotId: number,
+    modelId: string,
+    lengthM: number,
+    variantLabel: string | null,
+    powerType: VehiclePowerType,
+    purchasePriceGBP: number,
+  ): Promise<Vehicle>;
+  listForDepotGroup(depotGroupId: number): Promise<Vehicle[]>;
+  delete(vehicleId: number): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
+  vehicles: VehiclesApi;
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

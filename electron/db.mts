@@ -1,8 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
+import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate } from "../src/renderer/fleet-numbering.mts";
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 32;
+const SCHEMA_VERSION = 33;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -415,6 +416,33 @@ CREATE TABLE IF NOT EXISTS duty_pieces (
   route_id INTEGER NOT NULL REFERENCES routes(id),
   departure_minutes INTEGER NOT NULL
 );
+
+-- An owned vehicle (OPERATIONS.md §3 "Buying"/"Fleet numbers and plates").
+-- Deliberately minimal for this first increment (decided with the user,
+-- 2026-10-18): new, buy-outright only, no basket/bulk discount, no
+-- leasing, no condition decay over time, no delivery lead time — a
+-- vehicle is bought and appears at its depot immediately. Every vehicle
+-- still gets a real fleet number and plate, since that was the whole
+-- point of starting here. model_id matches a VehicleModel.id in
+-- vehicle-catalogue.mts; category_digit/sequential_number are their own
+-- columns (not parsed back out of fleet_number) so numbering stays exact
+-- regardless of how many digits the sequential part grows to.
+CREATE TABLE IF NOT EXISTS vehicles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  model_id TEXT NOT NULL,
+  length_m REAL NOT NULL,
+  variant_label TEXT,
+  power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+  category_digit INTEGER NOT NULL,
+  sequential_number INTEGER NOT NULL,
+  fleet_number TEXT NOT NULL UNIQUE,
+  plate TEXT NOT NULL UNIQUE,
+  condition REAL NOT NULL DEFAULT 100,
+  purchase_price_gbp INTEGER NOT NULL,
+  bought_at TEXT NOT NULL
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -693,6 +721,11 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN bearing");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 32) {
+    // v32 -> v33: the vehicles table — brand new, created by the CREATE
+    // TABLE IF NOT EXISTS in SCHEMA above, so this only advances the
+    // version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 31) {
     // v31 -> v32: duties gains a required depot_id (see the table's own
@@ -1936,4 +1969,116 @@ export function listDutiesForDepotGroup(db: SaveDb, depotGroupId: number, dayTyp
     locked: !!d.locked,
     pieces: piecesByDuty.get(d.id) ?? [],
   }));
+}
+
+// Owned vehicles (OPERATIONS.md §3). See the vehicles table's own SCHEMA
+// comment for this increment's deliberate scope: new, buy-outright only.
+export interface Vehicle {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: "diesel" | "electric" | "hybrid" | "hydrogen";
+  fleetNumber: string;
+  plate: string;
+  condition: number;
+  purchasePriceGBP: number;
+  boughtAt: string;
+}
+
+// Buys one vehicle: computes its real category digit from the model/
+// length (fleet-numbering.mts, UK-EXPANSION.md §14), the next sequential
+// number within that digit (MAX-based, same convention as duty numbering
+// — deleting the current top vehicle in a category frees its exact
+// number for reuse, a gap left by deleting a lower one does not), and a
+// real registration plate for the depot's own location — the depot's
+// coordinates stand in for "the area it was bought in" (OPERATIONS.md
+// §3) since there's no dealer-selection step in this first increment.
+export function buyVehicle(
+  db: SaveDb,
+  depotGroupId: number,
+  depotId: number,
+  modelId: string,
+  lengthM: number,
+  variantLabel: string | null,
+  powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
+  purchasePriceGBP: number,
+): Vehicle {
+  const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
+  if (!depot) throw new Error(`buyVehicle: depot ${depotId} not found`);
+
+  const categoryDigit = fleetCategoryDigit(modelId, lengthM);
+  const { maxSeq } = db.prepare("SELECT MAX(sequential_number) AS maxSeq FROM vehicles WHERE category_digit = ?").get(categoryDigit) as {
+    maxSeq: number | null;
+  };
+  const sequentialNumber = (maxSeq ?? 0) + 1;
+  const suffix = powerTypeSuffix(powerType);
+  const fleetNumber = formatFleetNumber(categoryDigit, sequentialNumber, suffix);
+  const boughtAt = new Date();
+  const plate = generatePlate(depot.lon, depot.lat, boughtAt);
+
+  const result = db
+    .prepare(
+      `INSERT INTO vehicles
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, ?, ?)`,
+    )
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, purchasePriceGBP, boughtAt.toISOString());
+
+  return {
+    id: Number(result.lastInsertRowid),
+    depotGroupId,
+    depotId,
+    modelId,
+    lengthM,
+    variantLabel,
+    powerType,
+    fleetNumber,
+    plate,
+    condition: 100,
+    purchasePriceGBP,
+    boughtAt: boughtAt.toISOString(),
+  };
+}
+
+export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Vehicle[] {
+  const rows = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at
+       FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
+    )
+    .all(depotGroupId) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    model_id: string;
+    length_m: number;
+    variant_label: string | null;
+    power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+    fleet_number: string;
+    plate: string;
+    condition: number;
+    purchase_price_gbp: number;
+    bought_at: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    depotGroupId: r.depot_group_id,
+    depotId: r.depot_id,
+    modelId: r.model_id,
+    lengthM: r.length_m,
+    variantLabel: r.variant_label,
+    powerType: r.power_type,
+    fleetNumber: r.fleet_number,
+    plate: r.plate,
+    condition: r.condition,
+    purchasePriceGBP: r.purchase_price_gbp,
+    boughtAt: r.bought_at,
+  }));
+}
+
+export function deleteVehicle(db: SaveDb, vehicleId: number): void {
+  db.prepare("DELETE FROM vehicles WHERE id = ?").run(vehicleId);
 }

@@ -84,6 +84,9 @@ import {
   addDutyPiece,
   removeDutyPiece,
   listDutiesForDepotGroup,
+  buyVehicle,
+  listVehiclesForDepotGroup,
+  deleteVehicle,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -432,6 +435,24 @@ function registerDutyHandlers(): void {
   ipcMain.handle("duties:removePiece", (_e, pieceId: number) => removeDutyPiece(save, pieceId));
 }
 
+function registerVehicleHandlers(): void {
+  ipcMain.handle(
+    "vehicles:buy",
+    (
+      _e,
+      depotGroupId: number,
+      depotId: number,
+      modelId: string,
+      lengthM: number,
+      variantLabel: string | null,
+      powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
+      purchasePriceGBP: number,
+    ) => buyVehicle(save, depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, purchasePriceGBP),
+  );
+  ipcMain.handle("vehicles:listForDepotGroup", (_e, depotGroupId: number) => listVehiclesForDepotGroup(save, depotGroupId));
+  ipcMain.handle("vehicles:delete", (_e, vehicleId: number) => deleteVehicle(save, vehicleId));
+}
+
 function registerRepaintShopHandlers(): void {
   ipcMain.handle("repaintShops:list", () => listRepaintShops(save));
   ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, weeklyCapacity: number) =>
@@ -557,6 +578,7 @@ app.whenReady().then(async () => {
   registerRepaintShopHandlers();
   registerDeadMileageHandlers();
   registerDutyHandlers();
+  registerVehicleHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

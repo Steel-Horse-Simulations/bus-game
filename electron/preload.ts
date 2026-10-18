@@ -29,6 +29,7 @@ import type {
   DeadMileageWaypoint,
   Duty,
   DutyPiece,
+  Vehicle,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -269,4 +270,21 @@ contextBridge.exposeInMainWorld("duties", {
   addPiece: (dutyId: number, routeId: number, departureMinutes: number) =>
     ipcRenderer.invoke("duties:addPiece", dutyId, routeId, departureMinutes) as Promise<DutyPiece>,
   removePiece: (pieceId: number) => ipcRenderer.invoke("duties:removePiece", pieceId) as Promise<void>,
+});
+
+// Owned vehicles (OPERATIONS.md §3) — deliberately minimal first
+// increment, see db.mts's own "vehicles" table comment for scope.
+contextBridge.exposeInMainWorld("vehicles", {
+  buy: (
+    depotGroupId: number,
+    depotId: number,
+    modelId: string,
+    lengthM: number,
+    variantLabel: string | null,
+    powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
+    purchasePriceGBP: number,
+  ) =>
+    ipcRenderer.invoke("vehicles:buy", depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, purchasePriceGBP) as Promise<Vehicle>,
+  listForDepotGroup: (depotGroupId: number) => ipcRenderer.invoke("vehicles:listForDepotGroup", depotGroupId) as Promise<Vehicle[]>,
+  delete: (vehicleId: number) => ipcRenderer.invoke("vehicles:delete", vehicleId) as Promise<void>,
 });

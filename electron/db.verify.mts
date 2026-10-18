@@ -42,6 +42,9 @@ import {
   addDutyPiece,
   removeDutyPiece,
   listDutiesForDepotGroup,
+  buyVehicle,
+  listVehiclesForDepotGroup,
+  deleteVehicle,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -691,8 +694,57 @@ db.close();
   db.close();
 }
 
-// v31 -> v32 (depot_id on duties), against a copy of the player's own real
-// save — proven against the real shape, not just a synthetic fixture.
+// --- vehicles (OPERATIONS.md §3) — a minimal buy-one-vehicle flow,
+// real fleet number and plate on purchase ---
+{
+  db = openSave(path);
+  const vg = createDepotGroup(db, "Perth", "East Scotland");
+  // Glasgow's own real coordinates, so the plate generator picks a real,
+  // checkable area code (SA, per OPERATIONS.md §3).
+  const vDepot = createDepot(db, vg.id, "Perth Depot", -4.2518, 55.8642, []).depot;
+
+  const v1 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  assert(v1.fleetNumber === "4001", `first double-decker twin-axle vehicle gets fleet number 4001, got ${v1.fleetNumber}`);
+  assert(v1.plate.startsWith("SA"), `a Glasgow-area depot gets an SA plate, got ${v1.plate}`);
+  assert(v1.condition === 100, "a new vehicle starts at full condition");
+
+  const v2 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  assert(v2.fleetNumber === "4002", `second vehicle in the same category gets 4002, got ${v2.fleetNumber}`);
+
+  const v3 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400ev", 11.1, null, "electric", 380_000);
+  assert(v3.fleetNumber === "4003e", `an electric double-decker twin-axle shares the same 4xxx sequence as its diesel sibling, with an e suffix, got ${v3.fleetNumber}`);
+
+  const v4 = buyVehicle(db, vg.id, vDepot.id, "wrightbus-gb-kite-hydroliner", 12.2, null, "hydrogen", 420_000);
+  assert(v4.fleetNumber === "3001h", `a hydrogen full-size single-deck gets category 3 with an h suffix, got ${v4.fleetNumber}`);
+
+  const listed = listVehiclesForDepotGroup(db, vg.id);
+  assert(listed.length === 4, `all 4 bought vehicles are listed, got ${listed.length}`);
+  assert(listed.every((v) => v.depotGroupId === vg.id && v.depotId === vDepot.id), "every listed vehicle carries the right depot group and depot");
+  assert(new Set(listed.map((v) => v.fleetNumber)).size === 4, "every fleet number is unique");
+  assert(new Set(listed.map((v) => v.plate)).size === 4, "every plate is unique");
+
+  deleteVehicle(db, v2.id);
+  assert(listVehiclesForDepotGroup(db, vg.id).length === 3, "deleteVehicle removes it from the listing");
+  // v2 (4002) is the MIDDLE entry in category 4, not the current max (v3
+  // is 4003e) — deleting it leaves a gap rather than freeing a number,
+  // the same MAX-based convention already established for duty numbers.
+  const v5 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  assert(v5.fleetNumber === "4004", `deleting a non-max vehicle (4002) leaves a gap rather than reusing it — next is 4004, got ${v5.fleetNumber}`);
+
+  let threwOnBadDepot = false;
+  try {
+    buyVehicle(db, vg.id, 999_999, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  } catch {
+    threwOnBadDepot = true;
+  }
+  assert(threwOnBadDepot, "buying against a non-existent depot throws rather than silently generating a nonsense plate");
+
+  db.close();
+}
+
+// v31 -> v33 (depot_id on duties, then the new vehicles table), against a
+// copy of the player's own real save — proven against the real shape,
+// not just a synthetic fixture.
 {
   const realSave = path2.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite");
   if (existsSync(realSave)) {
@@ -703,7 +755,7 @@ db.close();
     const versionCheckDb = new DatabaseSync(copy);
     const { user_version } = versionCheckDb.prepare("PRAGMA user_version").get() as { user_version: number };
     versionCheckDb.close();
-    assert(user_version === 32, `real save migrates to schema v32, got v${user_version}`);
+    assert(user_version === 33, `real save migrates to schema v33, got v${user_version}`);
     const realGroups = listDepotGroups(upgraded);
     if (realGroups.length > 0) {
       const realDepots = listDepots(upgraded);
@@ -713,14 +765,19 @@ db.close();
         const created = createDuty(upgraded, groupWithDepot.id, depot.id, "monday_friday");
         assert(created.depotId === depot.id, "a duty created on the real (migrated) save carries the right depotId");
         deleteDuty(upgraded, created.id);
+
+        const boughtVehicle = buyVehicle(upgraded, groupWithDepot.id, depot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+        assert(boughtVehicle.fleetNumber.startsWith("4"), `a vehicle bought on the real (migrated) save gets a real fleet number, got ${boughtVehicle.fleetNumber}`);
+        assert(/^[A-Z]{2,3}/.test(boughtVehicle.plate), `a vehicle bought on the real (migrated) save gets a real plate, got ${boughtVehicle.plate}`);
+        deleteVehicle(upgraded, boughtVehicle.id);
       } else {
-        console.log("skip real-save duty creation check: no depot group in the real save has a depot yet");
+        console.log("skip real-save duty/vehicle creation check: no depot group in the real save has a depot yet");
       }
     }
     upgraded.close();
     unlinkSync(copy);
   } else {
-    console.log("skip real save v31->v32 migration check: no save at", realSave);
+    console.log("skip real save v31->v33 migration check: no save at", realSave);
   }
 }
 

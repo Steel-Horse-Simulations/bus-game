@@ -211,21 +211,27 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     ],
   },
   {
-    id: "adl-enviro500",
-    name: "ADL Enviro500",
+    // Replaces the ADL Enviro500 (UK-EXPANSION.md §14a, "Vehicle catalogue
+    // change — Enviro500 replaced by Enviro400 XLB", confirmed final spec)
+    // — the Enviro500 entry this used to be is gone from the catalogue
+    // entirely, not kept alongside it.
+    id: "adl-enviro400-xlb",
+    name: "ADL Enviro400 XLB",
     category: "10,000s — diesel double-deckers",
     powerType: "diesel",
     topSpeedMph: 50,
-    basePriceGBP: 265_000,
+    basePriceGBP: 270_000,
+    notes: ["Airlink 100's own vehicle requirement (13m Volvo 9700DD previously) now points at this XLB instead."],
     lengths: [
       {
-        lengthM: 13.8,
+        lengthM: 13.4,
         fleetNumberRange: "10,000s",
-        capacity: { kind: "seatedStanding", seated: 80, standing: 32, tipUps: 3 },
-        energyOptions: [{ label: "Standard tank (Scotland-spec)", capacity: 430, unit: "L", rangeMiles: 660 }],
+        capacity: { kind: "seatedStanding", seated: 100, standing: 25, tipUps: 3 },
+        energyOptions: [{ label: "Standard tank", capacity: 250, unit: "L", rangeMiles: 380 }],
         notes: [
-          "80 fixed seats: 25 lower deck, 55 upper deck.",
-          "The 3 tip-ups trade off against standing space, not adding to the 112-passenger total capacity ceiling.",
+          "100 fixed seats: 61 upper deck, 36 lower deck.",
+          "The 3 tip-ups trade off against standing space, not adding to the 125-passenger total capacity ceiling.",
+          "Tri-axle (>12.9m).",
         ],
       },
     ],
@@ -481,7 +487,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     notes: [
       "A separate buying menu entry from the single-deck 9700, not merged — single vs double deck is a fundamental distinction.",
       "Both lengths are tri-axle.",
-      "Airlink 100 requires the 13m version specifically.",
     ],
     lengths: [
       { lengthM: 13, fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },

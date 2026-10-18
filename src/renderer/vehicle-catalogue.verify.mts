@@ -103,9 +103,13 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
-  const enviro500 = findVehicleModel("adl-enviro500")!;
-  const cap = enviro500.lengths[0].capacity;
-  assert(cap.kind === "seatedStanding" && cap.tipUps === 3, "the Enviro500 carries 3 tip-ups");
+  // adl-enviro500 was replaced by adl-enviro400-xlb (UK-EXPANSION.md §14a).
+  const xlb = findVehicleModel("adl-enviro400-xlb")!;
+  const cap = xlb.lengths[0].capacity;
+  assert(cap.kind === "seatedStanding" && cap.tipUps === 3, "the XLB carries 3 tip-ups");
+  assert(cap.kind === "seatedStanding" && cap.seated === 100 && cap.standing === 25, "the XLB seats 100, stands 25");
+  assert(xlb.lengths[0].lengthM === 13.4, "the XLB is 13.4m, tri-axle");
+  assert(xlb.basePriceGBP === 270_000, "the XLB is £270,000");
 }
 
 {
