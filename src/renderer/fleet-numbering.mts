@@ -20,29 +20,24 @@ export type VehicleBroadClass = "minibus" | "single-deck" | "double-decker" | "c
 // differently in future) rather than erroring loudly. This list is
 // exhaustive on purpose: an id missing from it is a real bug, not a
 // vehicle that defaults to some guessed category.
+// Updated 2026-10-18 for vehicle-catalogue.mts's own delta-pricing merge
+// (several old separate diesel/electric/hydrogen ids collapsed into one
+// multi-power id each — see that file's own header for the full list).
 const BROAD_CLASS_BY_MODEL_ID: Record<string, VehicleBroadClass> = {
-  "adl-enviro400-mmc": "double-decker",
+  "adl-enviro400": "double-decker",
   "adl-enviro400-xlb": "double-decker",
-  "streetdeck-ultroliner-diesel": "double-decker",
-  "adl-enviro200-mmc": "single-deck",
-  "volvo-7900-hybrid": "single-deck",
+  "wrightbus-streetdeck": "double-decker",
+  "adl-enviro200": "single-deck",
+  "volvo-7900": "single-deck",
   "mcv-evora": "single-deck",
-  "evm-cityline-diesel": "minibus",
-  "evm-cityline-electric": "minibus",
+  "evm-cityline": "minibus",
   "volvo-9700": "coach",
   "volvo-9700dd": "coach",
   "yutong-coach": "coach",
   "adl-enviro400-opentop-diesel": "double-decker",
   "adl-enviro400-opentop-electric": "double-decker",
-  "wrightbus-gb-kite-hydroliner": "single-deck",
-  "volvo-7900-electric": "single-deck",
-  "wrightbus-gb-kite-electroliner": "single-deck",
-  "adl-enviro200ev": "single-deck",
-  "yutong-e10": "single-deck",
-  "yutong-e12": "single-deck",
-  "adl-enviro400ev": "double-decker",
-  "streetdeck-electroliner": "double-decker",
-  "streetdeck-hydroliner": "double-decker",
+  "wrightbus-gb-kite": "single-deck",
+  "yutong-e10-e12": "single-deck",
 };
 
 export function broadClassForModel(modelId: string): VehicleBroadClass {

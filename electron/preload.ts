@@ -30,6 +30,8 @@ import type {
   Duty,
   DutyPiece,
   Vehicle,
+  BasketItem,
+  VehicleOrder,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -272,19 +274,61 @@ contextBridge.exposeInMainWorld("duties", {
   removePiece: (pieceId: number) => ipcRenderer.invoke("duties:removePiece", pieceId) as Promise<void>,
 });
 
-// Owned vehicles (OPERATIONS.md §3) — deliberately minimal first
-// increment, see db.mts's own "vehicles" table comment for scope.
+// Owned vehicles (OPERATIONS.md §3). Direct buying moved to the basket
+// flow below (addBasketItem -> placeOrder -> collectOrder) — the Configure
+// screen no longer buys a vehicle outright in one step.
 contextBridge.exposeInMainWorld("vehicles", {
-  buy: (
+  listForDepotGroup: (depotGroupId: number) => ipcRenderer.invoke("vehicles:listForDepotGroup", depotGroupId) as Promise<Vehicle[]>,
+  delete: (vehicleId: number) => ipcRenderer.invoke("vehicles:delete", vehicleId) as Promise<void>,
+  transfer: (vehicleId: number, newDepotId: number) => ipcRenderer.invoke("vehicles:transfer", vehicleId, newDepotId) as Promise<Vehicle>,
+});
+
+// The buy menu's basket (OPERATIONS.md §3 "Buying") — one company-wide
+// basket, see basket_items' own SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("basket", {
+  add: (
     depotGroupId: number,
     depotId: number,
     modelId: string,
     lengthM: number,
     variantLabel: string | null,
     powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
-    purchasePriceGBP: number,
+    liveryId: number | null,
+    manufacturer: string,
+    quantity: number,
+    unitPriceGBP: number,
+    paymentMethod: "buy_outright" | "lease" | "lease_to_own",
+    isUsed: boolean,
+    usedCondition: number | null,
   ) =>
-    ipcRenderer.invoke("vehicles:buy", depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, purchasePriceGBP) as Promise<Vehicle>,
-  listForDepotGroup: (depotGroupId: number) => ipcRenderer.invoke("vehicles:listForDepotGroup", depotGroupId) as Promise<Vehicle[]>,
-  delete: (vehicleId: number) => ipcRenderer.invoke("vehicles:delete", vehicleId) as Promise<void>,
+    ipcRenderer.invoke(
+      "basket:add",
+      depotGroupId,
+      depotId,
+      modelId,
+      lengthM,
+      variantLabel,
+      powerType,
+      liveryId,
+      manufacturer,
+      quantity,
+      unitPriceGBP,
+      paymentMethod,
+      isUsed,
+      usedCondition,
+    ) as Promise<BasketItem>,
+  list: () => ipcRenderer.invoke("basket:list") as Promise<BasketItem[]>,
+  setQuantity: (basketItemId: number, quantity: number) => ipcRenderer.invoke("basket:setQuantity", basketItemId, quantity) as Promise<void>,
+  setDepot: (basketItemId: number, depotGroupId: number, depotId: number) => ipcRenderer.invoke("basket:setDepot", basketItemId, depotGroupId, depotId) as Promise<void>,
+  setLivery: (basketItemId: number, liveryId: number | null) => ipcRenderer.invoke("basket:setLivery", basketItemId, liveryId) as Promise<void>,
+  remove: (basketItemId: number) => ipcRenderer.invoke("basket:remove", basketItemId) as Promise<void>,
+  placeOrder: () => ipcRenderer.invoke("basket:placeOrder") as Promise<number>,
+});
+
+// Orders awaiting collection (OPERATIONS.md §3 "Delivery and transfers") —
+// see vehicle_orders' own SCHEMA comment in db.mts for the deliberate
+// "immediately available to collect" simplification.
+contextBridge.exposeInMainWorld("orders", {
+  list: () => ipcRenderer.invoke("orders:list") as Promise<VehicleOrder[]>,
+  collect: (orderId: number) => ipcRenderer.invoke("orders:collect", orderId) as Promise<Vehicle>,
 });

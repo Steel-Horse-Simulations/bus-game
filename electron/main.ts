@@ -84,9 +84,18 @@ import {
   addDutyPiece,
   removeDutyPiece,
   listDutiesForDepotGroup,
-  buyVehicle,
   listVehiclesForDepotGroup,
   deleteVehicle,
+  transferVehicle,
+  addBasketItem,
+  listBasket,
+  setBasketItemQuantity,
+  setBasketItemDepot,
+  setBasketItemLivery,
+  removeBasketItem,
+  placeOrder,
+  listOrders,
+  collectOrder,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -436,8 +445,14 @@ function registerDutyHandlers(): void {
 }
 
 function registerVehicleHandlers(): void {
+  ipcMain.handle("vehicles:listForDepotGroup", (_e, depotGroupId: number) => listVehiclesForDepotGroup(save, depotGroupId));
+  ipcMain.handle("vehicles:delete", (_e, vehicleId: number) => deleteVehicle(save, vehicleId));
+  ipcMain.handle("vehicles:transfer", (_e, vehicleId: number, newDepotId: number) => transferVehicle(save, vehicleId, newDepotId));
+}
+
+function registerBasketAndOrderHandlers(): void {
   ipcMain.handle(
-    "vehicles:buy",
+    "basket:add",
     (
       _e,
       depotGroupId: number,
@@ -446,11 +461,40 @@ function registerVehicleHandlers(): void {
       lengthM: number,
       variantLabel: string | null,
       powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
-      purchasePriceGBP: number,
-    ) => buyVehicle(save, depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, purchasePriceGBP),
+      liveryId: number | null,
+      manufacturer: string,
+      quantity: number,
+      unitPriceGBP: number,
+      paymentMethod: "buy_outright" | "lease" | "lease_to_own",
+      isUsed: boolean,
+      usedCondition: number | null,
+    ) =>
+      addBasketItem(
+        save,
+        depotGroupId,
+        depotId,
+        modelId,
+        lengthM,
+        variantLabel,
+        powerType,
+        liveryId,
+        manufacturer,
+        quantity,
+        unitPriceGBP,
+        paymentMethod,
+        isUsed,
+        usedCondition,
+      ),
   );
-  ipcMain.handle("vehicles:listForDepotGroup", (_e, depotGroupId: number) => listVehiclesForDepotGroup(save, depotGroupId));
-  ipcMain.handle("vehicles:delete", (_e, vehicleId: number) => deleteVehicle(save, vehicleId));
+  ipcMain.handle("basket:list", () => listBasket(save));
+  ipcMain.handle("basket:setQuantity", (_e, basketItemId: number, quantity: number) => setBasketItemQuantity(save, basketItemId, quantity));
+  ipcMain.handle("basket:setDepot", (_e, basketItemId: number, depotGroupId: number, depotId: number) => setBasketItemDepot(save, basketItemId, depotGroupId, depotId));
+  ipcMain.handle("basket:setLivery", (_e, basketItemId: number, liveryId: number | null) => setBasketItemLivery(save, basketItemId, liveryId));
+  ipcMain.handle("basket:remove", (_e, basketItemId: number) => removeBasketItem(save, basketItemId));
+  ipcMain.handle("basket:placeOrder", () => placeOrder(save));
+
+  ipcMain.handle("orders:list", () => listOrders(save));
+  ipcMain.handle("orders:collect", (_e, orderId: number) => collectOrder(save, orderId));
 }
 
 function registerRepaintShopHandlers(): void {
@@ -579,6 +623,7 @@ app.whenReady().then(async () => {
   registerDeadMileageHandlers();
   registerDutyHandlers();
   registerVehicleHandlers();
+  registerBasketAndOrderHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

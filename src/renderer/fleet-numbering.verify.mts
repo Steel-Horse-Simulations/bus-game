@@ -17,13 +17,13 @@ for (const v of VEHICLE_MODELS) {
 }
 
 // --- category digit boundaries, against UK-EXPANSION.md §14's own worked examples ---
-assert(broadClassForModel("evm-cityline-diesel") === "minibus", "the Cityline is a minibus");
-assert(fleetCategoryDigit("evm-cityline-diesel", 7.4) === 1, "minibus is always digit 1");
+assert(broadClassForModel("evm-cityline") === "minibus", "the Cityline is a minibus");
+assert(fleetCategoryDigit("evm-cityline", 7.4) === 1, "minibus is always digit 1");
 assert(fleetCategoryDigit("mcv-evora", 10.8) === 2, "Evora at 10.8m is digit 2 (midibus, at the cutoff)");
 assert(fleetCategoryDigit("mcv-evora", 12.9) === 3, "Evora at 12.9m is digit 3 (full-size single-deck)");
-assert(fleetCategoryDigit("adl-enviro200ev", 9.9) === 2, "Enviro200EV at 9.9m is digit 2");
-assert(fleetCategoryDigit("adl-enviro200ev", 10.9) === 3, "Enviro200EV at 10.9m is digit 3 (just over the 10.8m cutoff)");
-assert(fleetCategoryDigit("adl-enviro400-mmc", 11.5) === 4, "Enviro400 MMC at 11.5m is digit 4 (double-decker twin-axle)");
+assert(fleetCategoryDigit("adl-enviro200", 9.9) === 2, "the merged Enviro200's own electric 9.9m length is digit 2");
+assert(fleetCategoryDigit("adl-enviro200", 10.9) === 3, "the merged Enviro200's own electric 10.9m length is digit 3 (just over the 10.8m cutoff)");
+assert(fleetCategoryDigit("adl-enviro400", 11.5) === 4, "the merged Enviro400's own diesel 11.5m length is digit 4 (double-decker twin-axle)");
 assert(fleetCategoryDigit("adl-enviro400-xlb", 13.4) === 5, "the XLB at 13.4m is digit 5 (double-decker tri-axle)");
 assert(fleetCategoryDigit("volvo-9700", 12.4) === 6, "9700 at 12.4m is digit 6 (coach twin-axle)");
 assert(fleetCategoryDigit("volvo-9700", 13.1) === 7, "9700 at 13.1m is digit 7 (coach tri-axle)");

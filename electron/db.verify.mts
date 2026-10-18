@@ -45,6 +45,17 @@ import {
   buyVehicle,
   listVehiclesForDepotGroup,
   deleteVehicle,
+  transferVehicle,
+  createLivery,
+  addBasketItem,
+  listBasket,
+  setBasketItemQuantity,
+  setBasketItemDepot,
+  setBasketItemLivery,
+  removeBasketItem,
+  placeOrder,
+  listOrders,
+  collectOrder,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -703,18 +714,18 @@ db.close();
   // checkable area code (SA, per OPERATIONS.md §3).
   const vDepot = createDepot(db, vg.id, "Perth Depot", -4.2518, 55.8642, []).depot;
 
-  const v1 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  const v1 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
   assert(v1.fleetNumber === "4001", `first double-decker twin-axle vehicle gets fleet number 4001, got ${v1.fleetNumber}`);
   assert(v1.plate.startsWith("SA"), `a Glasgow-area depot gets an SA plate, got ${v1.plate}`);
   assert(v1.condition === 100, "a new vehicle starts at full condition");
 
-  const v2 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  const v2 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
   assert(v2.fleetNumber === "4002", `second vehicle in the same category gets 4002, got ${v2.fleetNumber}`);
 
-  const v3 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400ev", 11.1, null, "electric", 380_000);
+  const v3 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.1, null, "electric", 380_000);
   assert(v3.fleetNumber === "4003e", `an electric double-decker twin-axle shares the same 4xxx sequence as its diesel sibling, with an e suffix, got ${v3.fleetNumber}`);
 
-  const v4 = buyVehicle(db, vg.id, vDepot.id, "wrightbus-gb-kite-hydroliner", 12.2, null, "hydrogen", 420_000);
+  const v4 = buyVehicle(db, vg.id, vDepot.id, "wrightbus-gb-kite", 12.2, null, "hydrogen", 420_000);
   assert(v4.fleetNumber === "3001h", `a hydrogen full-size single-deck gets category 3 with an h suffix, got ${v4.fleetNumber}`);
 
   const listed = listVehiclesForDepotGroup(db, vg.id);
@@ -728,12 +739,12 @@ db.close();
   // v2 (4002) is the MIDDLE entry in category 4, not the current max (v3
   // is 4003e) — deleting it leaves a gap rather than freeing a number,
   // the same MAX-based convention already established for duty numbers.
-  const v5 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+  const v5 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
   assert(v5.fleetNumber === "4004", `deleting a non-max vehicle (4002) leaves a gap rather than reusing it — next is 4004, got ${v5.fleetNumber}`);
 
   let threwOnBadDepot = false;
   try {
-    buyVehicle(db, vg.id, 999_999, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+    buyVehicle(db, vg.id, 999_999, "adl-enviro400", 11.5, null, "diesel", 235_000);
   } catch {
     threwOnBadDepot = true;
   }
@@ -742,9 +753,84 @@ db.close();
   db.close();
 }
 
-// v31 -> v33 (depot_id on duties, then the new vehicles table), against a
-// copy of the player's own real save — proven against the real shape,
-// not just a synthetic fixture.
+// --- buy-menu rebuild (2026-10-18): livery_id on vehicles, the basket,
+// orders awaiting collection, and depot-to-depot transfers ---
+{
+  db = openSave(path);
+  const bg = createDepotGroup(db, "Basket Test", "East Scotland");
+  const bDepotA = createDepot(db, bg.id, "Depot A", -3.1883, 55.9533, []).depot;
+  const bDepotB = createDepot(db, bg.id, "Depot B", -3.2, 55.96, []).depot;
+  const livery = createLivery(db, "Test Livery", "#112233", "#445566");
+
+  // buyVehicle's own optional liveryId/conditionOverride round-trip.
+  const liveriedVehicle = buyVehicle(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", 235_000, livery.id);
+  assert(liveriedVehicle.liveryId === livery.id, "buyVehicle round-trips an explicit liveryId");
+  const usedConditionVehicle = buyVehicle(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", 100_000, null, 55);
+  assert(usedConditionVehicle.condition === 55, "buyVehicle round-trips an explicit conditionOverride (for a used vehicle)");
+  const plainVehicle = buyVehicle(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", 235_000);
+  assert(plainVehicle.liveryId === null, "a vehicle bought with no liveryId argument defaults to null (plain white)");
+  assert(listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === liveriedVehicle.id)?.liveryId === livery.id, "listVehiclesForDepotGroup round-trips liveryId too");
+
+  // transferVehicle moves a vehicle to a different depot (and depot group,
+  // if the target depot belongs to a different one).
+  const transferred = transferVehicle(db, plainVehicle.id, bDepotB.id);
+  assert(transferred.depotId === bDepotB.id, "transferVehicle updates depotId");
+  assert(transferred.depotGroupId === bg.id, "transferVehicle keeps the same depot group when the target depot is in it");
+
+  // --- basket ---
+  const item1 = addBasketItem(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", null, "Alexander Dennis", 2, 235_000, "buy_outright", false, null);
+  assert(item1.quantity === 2, "addBasketItem stores the quantity given");
+  const item2 = addBasketItem(db, bg.id, bDepotA.id, "volvo-7900", 12, null, "hybrid", livery.id, "Volvo", 1, 240_000, "lease", false, null);
+  assert(listBasket(db).length === 2, "both basket items are listed");
+
+  setBasketItemQuantity(db, item1.id, 3);
+  assert(listBasket(db).find((i) => i.id === item1.id)?.quantity === 3, "setBasketItemQuantity updates the quantity");
+  setBasketItemQuantity(db, item2.id, 0);
+  assert(listBasket(db).find((i) => i.id === item2.id) === undefined, "setBasketItemQuantity with 0 removes the item (same as Remove)");
+
+  const item3 = addBasketItem(db, bg.id, bDepotA.id, "volvo-7900", 12, null, "hybrid", livery.id, "Volvo", 1, 240_000, "lease", false, null);
+  setBasketItemDepot(db, item3.id, bg.id, bDepotB.id);
+  assert(listBasket(db).find((i) => i.id === item3.id)?.depotId === bDepotB.id, "setBasketItemDepot moves a basket item to a different depot");
+  setBasketItemLivery(db, item3.id, null);
+  assert(listBasket(db).find((i) => i.id === item3.id)?.liveryId === null, "setBasketItemLivery clears a basket item's livery back to plain white");
+
+  const usedItem = addBasketItem(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", null, "Alexander Dennis", 1, 90_000, "buy_outright", true, 42);
+  assert(usedItem.isUsed && usedItem.usedCondition === 42, "a used basket item stores isUsed and usedCondition");
+
+  removeBasketItem(db, usedItem.id);
+  assert(listBasket(db).find((i) => i.id === usedItem.id) === undefined, "removeBasketItem removes it outright");
+
+  // item1 (qty 3) + item3 (qty 1) = 4 vehicles' worth of orders.
+  const beforeOrderCount = listOrders(db).length;
+  const createdCount = placeOrder(db);
+  assert(createdCount === 4, `placeOrder expands quantity into one order row per vehicle — 3 + 1 = 4, got ${createdCount}`);
+  assert(listBasket(db).length === 0, "placeOrder empties the basket");
+  const ordersNow = listOrders(db);
+  assert(ordersNow.length === beforeOrderCount + 4, "the 4 new orders are listed");
+
+  const orderToCollect = ordersNow.find((o) => o.modelId === "volvo-7900")!;
+  const beforeVehicleCount = listVehiclesForDepotGroup(db, bg.id).length;
+  const collected = collectOrder(db, orderToCollect.id);
+  assert(collected.modelId === "volvo-7900", "collectOrder finalises the right order into a real vehicle");
+  assert(collected.fleetNumber.length > 0 && collected.plate.length > 0, "a collected order gets a real fleet number and plate, same as any other buyVehicle");
+  assert(listVehiclesForDepotGroup(db, bg.id).length === beforeVehicleCount + 1, "the collected vehicle is now a real owned vehicle");
+  assert(!listOrders(db).some((o) => o.id === orderToCollect.id), "collectOrder removes the order once finalised");
+
+  let threwOnBadOrder = false;
+  try {
+    collectOrder(db, 999_999);
+  } catch {
+    threwOnBadOrder = true;
+  }
+  assert(threwOnBadOrder, "collecting a non-existent order throws rather than silently doing nothing");
+
+  db.close();
+}
+
+// v31 -> v34 (depot_id on duties, the vehicles table, then the buy-menu
+// rebuild's livery_id/basket_items/vehicle_orders), against a copy of the
+// player's own real save — proven against the real shape, not just a
+// synthetic fixture.
 {
   const realSave = path2.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite");
   if (existsSync(realSave)) {
@@ -755,7 +841,7 @@ db.close();
     const versionCheckDb = new DatabaseSync(copy);
     const { user_version } = versionCheckDb.prepare("PRAGMA user_version").get() as { user_version: number };
     versionCheckDb.close();
-    assert(user_version === 33, `real save migrates to schema v33, got v${user_version}`);
+    assert(user_version === 34, `real save migrates to schema v34, got v${user_version}`);
     const realGroups = listDepotGroups(upgraded);
     if (realGroups.length > 0) {
       const realDepots = listDepots(upgraded);
@@ -766,7 +852,7 @@ db.close();
         assert(created.depotId === depot.id, "a duty created on the real (migrated) save carries the right depotId");
         deleteDuty(upgraded, created.id);
 
-        const boughtVehicle = buyVehicle(upgraded, groupWithDepot.id, depot.id, "adl-enviro400-mmc", 11.5, null, "diesel", 235_000);
+        const boughtVehicle = buyVehicle(upgraded, groupWithDepot.id, depot.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
         assert(boughtVehicle.fleetNumber.startsWith("4"), `a vehicle bought on the real (migrated) save gets a real fleet number, got ${boughtVehicle.fleetNumber}`);
         assert(/^[A-Z]{2,3}/.test(boughtVehicle.plate), `a vehicle bought on the real (migrated) save gets a real plate, got ${boughtVehicle.plate}`);
         deleteVehicle(upgraded, boughtVehicle.id);
@@ -777,7 +863,7 @@ db.close();
     upgraded.close();
     unlinkSync(copy);
   } else {
-    console.log("skip real save v31->v33 migration check: no save at", realSave);
+    console.log("skip real save v31->v34 migration check: no save at", realSave);
   }
 }
 

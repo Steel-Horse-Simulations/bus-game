@@ -10,7 +10,8 @@ import { registerSupportVehicleIcons } from "./support-vehicle-icons";
 import { mountDepotGroupsPanel } from "./depot-groups-panel";
 import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
-import { mountVehicleCataloguePanel } from "./vehicle-catalogue-panel";
+import { mountVehicleBuyMenu } from "./vehicle-buy-menu";
+import { seedRealLiveries } from "./livery-seed-data.mts";
 import { mountLiveryPanel } from "./livery-panel";
 import { mountRepaintShops } from "./repaint-shop-panel";
 import { mountDeadMileagePreview } from "./dead-mileage-preview";
@@ -80,7 +81,6 @@ map.addControl(navControl, "top-right");
 (navControl as unknown as { _container: HTMLElement })._container.style.marginTop = "56px";
 registerMapIcons(map);
 mountDepotGroupsPanel();
-mountVehicleCataloguePanel();
 mountLiveryPanel();
 (window as unknown as { __map: maplibregl.Map }).__map = map;
 
@@ -128,6 +128,10 @@ init().then(async () => {
   setLoadingProgress(0.97, "Loading dealers…");
   await seedRealDealers();
   await mountDealerPlacement(map, router);
+  // Seeded before the buy menu loads its own initial liveries list, same
+  // reasoning as seedRealDealers() above.
+  await seedRealLiveries();
+  mountVehicleBuyMenu();
   await mountDealerReferencePins(map);
   await mountRepaintShops(map);
   await mountDeadMileagePreview(map, router);

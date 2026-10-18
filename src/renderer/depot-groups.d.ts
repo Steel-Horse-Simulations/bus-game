@@ -324,26 +324,85 @@ interface Vehicle {
   condition: number;
   purchasePriceGBP: number;
   boughtAt: string;
+  liveryId: number | null;
 }
 
 interface VehiclesApi {
-  buy(
+  listForDepotGroup(depotGroupId: number): Promise<Vehicle[]>;
+  delete(vehicleId: number): Promise<void>;
+  transfer(vehicleId: number, newDepotId: number): Promise<Vehicle>;
+}
+
+type PaymentMethod = "buy_outright" | "lease" | "lease_to_own";
+
+interface BasketItem {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: VehiclePowerType;
+  liveryId: number | null;
+  manufacturer: string;
+  quantity: number;
+  unitPriceGBP: number;
+  paymentMethod: PaymentMethod;
+  isUsed: boolean;
+  usedCondition: number | null;
+}
+
+interface BasketApi {
+  add(
     depotGroupId: number,
     depotId: number,
     modelId: string,
     lengthM: number,
     variantLabel: string | null,
     powerType: VehiclePowerType,
-    purchasePriceGBP: number,
-  ): Promise<Vehicle>;
-  listForDepotGroup(depotGroupId: number): Promise<Vehicle[]>;
-  delete(vehicleId: number): Promise<void>;
+    liveryId: number | null,
+    manufacturer: string,
+    quantity: number,
+    unitPriceGBP: number,
+    paymentMethod: PaymentMethod,
+    isUsed: boolean,
+    usedCondition: number | null,
+  ): Promise<BasketItem>;
+  list(): Promise<BasketItem[]>;
+  setQuantity(basketItemId: number, quantity: number): Promise<void>;
+  setDepot(basketItemId: number, depotGroupId: number, depotId: number): Promise<void>;
+  setLivery(basketItemId: number, liveryId: number | null): Promise<void>;
+  remove(basketItemId: number): Promise<void>;
+  placeOrder(): Promise<number>;
+}
+
+interface VehicleOrder {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: VehiclePowerType;
+  liveryId: number | null;
+  unitPriceGBP: number;
+  paymentMethod: PaymentMethod;
+  isUsed: boolean;
+  usedCondition: number | null;
+  orderedAt: string;
+}
+
+interface OrdersApi {
+  list(): Promise<VehicleOrder[]>;
+  collect(orderId: number): Promise<Vehicle>;
 }
 
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
   vehicles: VehiclesApi;
+  basket: BasketApi;
+  orders: OrdersApi;
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

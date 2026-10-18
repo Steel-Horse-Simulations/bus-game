@@ -266,6 +266,16 @@ long distance and local services where possible; where that isn't possible they
 take the **train, charged to the home depot**. A transferring vehicle is
 collected by anyone at the receiving depot holding the right licence.
 
+**Repaint on transfer** (confirmed 2026-10-18): where the destination depot or
+area requires a different livery from the one the vehicle already carries
+(DESIGN.md's own "Island and remote-area review" and its "Livery lock in
+the buy menu" note), the transfer also repaints it, at a flat one-off cost
+by vehicle size — minibus or midibus **£2,500**, single-decker or coach
+**£4,000**, double-decker **£5,500**. Separate from, and much cheaper than,
+the existing player-initiated repaint-shop queue (§5's own "Repainting" —
+deliberately expensive and slow); this one is an automatic consequence of
+the transfer itself, not a manual repaint job.
+
 ### Buying
 Vehicles can be bought **new, second-hand, or leased**. Several can be bought at
 once through a **basket allowing mixed specifications in one order** —
@@ -459,22 +469,31 @@ badge markers, and each livery is supplied as a small badge image.
   bus turns.
 - Leave the **middle third clear** for the route number to sit in.
 
-### The three images per livery
-Each livery is supplied as three images at the same size and alignment:
+### The three images per livery — the number box is being dropped
+**Open item (2026-10-18): the user wants the number box (item 3 below)
+replaced with a different approach, not yet designed — "we can talk
+about that when we get to that bit." Don't build against the number-box
+mechanism described below; it's being superseded, kept here only as the
+last-agreed fallback until the replacement is decided.** The badge and
+mask (items 1-2) stand as specified — real badge images are already in
+`assets/liveries/`, named by livery name (not id — see that folder's own
+note elsewhere in this file).
+
+Each livery is supplied as images at the same size and alignment:
 
 1. **The badge** — the livery pattern itself, as specified above.
 2. **A branding mask** — black where the livery is unchanged, **white** for the
    primary branding region and **mid grey** for the secondary. The renderer tints
    only those pixels, so one asset serves every branding colour.
-3. **A number box** — a plain **magenta `#FF00FF`** rectangle, hard-edged, on a
+3. ~~**A number box** — a plain **magenta `#FF00FF`** rectangle, hard-edged, on a
    transparent background, showing where the route number sits. Magenta never
    occurs in a real livery, so it is detectable with a wide tolerance and cannot
-   be confused with the mask.
+   be confused with the mask.~~ Superseded — see the open item above.
 
-The number box is an authoring convenience. What the game needs is four numbers,
+~~The number box is an authoring convenience. What the game needs is four numbers,
 so the pipeline reads the box's bounding rectangle once on import and stores it as
 fractions of the image. After that the number can be nudged in a settings field
-without regenerating artwork.
+without regenerating artwork.~~
 
 Keep the **centre third of the badge a single flat colour**, so the route number
 does not land half on one colour and half on another.
@@ -495,7 +514,17 @@ Reference values for the two liveries drawn so far:
 | Stagecoach Local | `#00539b` blue | `#f2f0ec` white |
 
 Badges are produced from photographs of real buses. Store them in
-`assets/liveries/` named by livery id.
+`assets/liveries/`, flat (no subfolders, matching `assets/icons/`'s own
+convention) — `<name>.png` for the badge, `<name>-mask.png` for the
+branding mask (the number-box file is on hold, see the open item above).
+**Named by the livery's own name, not its numeric id** (corrected
+2026-10-18) — a livery's id is only ever assigned once it's actually
+created in a given save, so it isn't a stable, predictable key for a
+shipped asset the way the name is; the renderer matches on name instead.
+37 real badges are already in place as of 2026-10-18 (Lothian, SPT,
+Stagecoach's own variants, Citylink, Airlink 100, the training and
+island/remote liveries, and more) — masks and the number-box replacement
+are still outstanding.
 
 ## 5. Liveries
 

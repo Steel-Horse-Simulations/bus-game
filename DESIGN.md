@@ -1733,13 +1733,26 @@ rather than getting a new one. Don't assume one implies the other.
 | North Uist | Lifeline | North Uist Transport |
 | Islay | Lifeline | Islay Coaches |
 | Mull | Lifeline | None — the operator's normal livery |
-| Skye | Lifeline | Rapsons (a real historic Highland operator name) |
+| Skye | Lifeline | **Rapsons** (preferred) — also accepts **D&E** and **Highland Council** (confirmed 2026-10-18) |
 | Fort William | Mixed commercial/subsidised | None |
-| Caithness | Mixed commercial/subsidised | None |
+| Caithness | Mixed commercial/subsidised | **D&E** (preferred) — also accepts **Highland Council** (confirmed 2026-10-18, closing a gap this table left open since T64 first supplied the real-world detail: "Caithness vehicles should be D&E Livery or Highland Council Livery") |
 | Oban | Mostly commercial, partial subsidy | None |
 | Ullapool | Lifeline only, including its long distance buses | Rapsons (shared with Skye) |
 | Campbeltown | Lifeline | Town-only services (never leaving Campbeltown) use the SPT livery; longer or connecting services from Campbeltown carry no specific livery |
 | Galashiels | Mixed commercial/lifeline | None |
+
+**Livery lock in the buy menu (confirmed 2026-10-18).** A depot in a
+restricted area — any row above with a specific livery, not "None" — only
+lets the player pick from that area's own acceptable set when buying a
+vehicle there; every other livery is shown but greyed out, not hidden
+(so the restriction itself stays visible, not just mysteriously absent).
+Each restricted area currently has exactly one livery of its own, except
+Skye and Caithness, which were widened the same day to accept Highland
+Council too (Skye also accepts D&E). Where an area accepts more than one
+livery, it also has its own **preferred** livery (marked above) — picked
+by default, and the selection snaps back to it automatically if the
+player changes the buy menu's depot to a restricted area where whatever
+was previously selected isn't on that area's own accepted list.
 
 ### Community transport
 A demand-responsive service for communities too small even for a lifeline

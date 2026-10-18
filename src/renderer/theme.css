@@ -198,7 +198,11 @@ body .maplibregl-popup-anchor-right .maplibregl-popup-tip {
 }
 .dropdown-menu {
   position: fixed;
-  z-index: 20;
+  /* Portaled to document.body (see dropdown.ts), so this has to clear
+     every overlay's own z-index, not just its own stacking context —
+     the vehicle buy menu's full-screen overlay (z-index 1000) silently
+     swallowed every dropdown click behind it at the old value of 20. */
+  z-index: 1100;
   background: var(--bg-surface-2);
   border: 1px solid var(--border-strong);
   border-radius: 6px;

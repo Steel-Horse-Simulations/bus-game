@@ -3,7 +3,7 @@ import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate }
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 33;
+const SCHEMA_VERSION = 34;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -418,15 +418,13 @@ CREATE TABLE IF NOT EXISTS duty_pieces (
 );
 
 -- An owned vehicle (OPERATIONS.md §3 "Buying"/"Fleet numbers and plates").
--- Deliberately minimal for this first increment (decided with the user,
--- 2026-10-18): new, buy-outright only, no basket/bulk discount, no
--- leasing, no condition decay over time, no delivery lead time — a
--- vehicle is bought and appears at its depot immediately. Every vehicle
--- still gets a real fleet number and plate, since that was the whole
--- point of starting here. model_id matches a VehicleModel.id in
--- vehicle-catalogue.mts; category_digit/sequential_number are their own
--- columns (not parsed back out of fleet_number) so numbering stays exact
--- regardless of how many digits the sequential part grows to.
+-- model_id matches a VehicleModel.id in vehicle-catalogue.mts;
+-- category_digit/sequential_number are their own columns (not parsed back
+-- out of fleet_number) so numbering stays exact regardless of how many
+-- digits the sequential part grows to. livery_id is nullable — NULL means
+-- the real default (OPERATIONS.md §5): plain white with the route number
+-- centred, unless a council-assigned area livery applies, which is
+-- resolved at display time, not stored per vehicle.
 CREATE TABLE IF NOT EXISTS vehicles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
@@ -441,7 +439,65 @@ CREATE TABLE IF NOT EXISTS vehicles (
   plate TEXT NOT NULL UNIQUE,
   condition REAL NOT NULL DEFAULT 100,
   purchase_price_gbp INTEGER NOT NULL,
-  bought_at TEXT NOT NULL
+  bought_at TEXT NOT NULL,
+  livery_id INTEGER REFERENCES liveries(id)
+);
+
+-- A line in the current, uncommitted order (OPERATIONS.md §3 "Buying") —
+-- one basket, shared company-wide rather than scoped to a single depot
+-- group, since the bulk discount itself groups "the whole basket... by
+-- manufacturer regardless of each vehicle's own destination or livery."
+-- unit_price_gbp is the already-computed per-vehicle price (base + power
+-- delta + length delta + axle charge + selected options), the same figure
+-- priceFor()/priceForGeneralOption() compute client-side — stored rather
+-- than recomputed from scratch at order time, so a later catalogue change
+-- can never retroactively alter an item already sitting in the basket.
+-- manufacturer is stored directly (not re-derived from model_id every
+-- query) purely so the bulk-discount grouping is a plain SQL/JS GROUP BY,
+-- matching the real display name vehicle-catalogue.mts's manufacturerOf()
+-- already derives.
+CREATE TABLE IF NOT EXISTS basket_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  model_id TEXT NOT NULL,
+  length_m REAL NOT NULL,
+  variant_label TEXT,
+  power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+  livery_id INTEGER REFERENCES liveries(id),
+  manufacturer TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  unit_price_gbp INTEGER NOT NULL,
+  payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
+  is_used INTEGER NOT NULL DEFAULT 0,
+  used_condition REAL
+);
+
+-- One vehicle "placed" (OPERATIONS.md §3 "Delivery and transfers") after
+-- Basket's own "Place order" — one row per physical vehicle (a basket
+-- line's own quantity > 1 expands into that many rows here), awaiting
+-- collection. There's no day-tick/calendar or driver-availability system
+-- yet (both Phase 6/7), so the real "2 or 3 a day, who collects and when,
+-- depot manager skill" simulation this section describes isn't built —
+-- every order is immediately available to collect, and collecting (by
+-- either button the Deliveries screen shows) finalises it into a real
+-- vehicles row straight away. Deliberately simplified rather than faked
+-- with invented day-tick numbers; revisit once drivers/duties/a real
+-- calendar exist to hang the real mechanic on.
+CREATE TABLE IF NOT EXISTS vehicle_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  model_id TEXT NOT NULL,
+  length_m REAL NOT NULL,
+  variant_label TEXT,
+  power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+  livery_id INTEGER REFERENCES liveries(id),
+  unit_price_gbp INTEGER NOT NULL,
+  payment_method TEXT NOT NULL CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
+  is_used INTEGER NOT NULL DEFAULT 0,
+  used_condition REAL,
+  ordered_at TEXT NOT NULL
 );
 `;
 
@@ -721,6 +777,14 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN bearing");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 33) {
+    // v33 -> v34: the buy-menu rebuild (OPERATIONS.md §3) — vehicles
+    // gained a nullable livery_id, and basket_items/vehicle_orders are
+    // brand new (created by the CREATE TABLE IF NOT EXISTS in SCHEMA
+    // above). Existing vehicles get livery_id = NULL, same as "plain
+    // white" already means for a vehicle bought before this existed.
+    db.exec("ALTER TABLE vehicles ADD COLUMN livery_id INTEGER REFERENCES liveries(id)");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 32) {
     // v32 -> v33: the vehicles table — brand new, created by the CREATE
@@ -1986,6 +2050,7 @@ export interface Vehicle {
   condition: number;
   purchasePriceGBP: number;
   boughtAt: string;
+  liveryId: number | null;
 }
 
 // Buys one vehicle: computes its real category digit from the model/
@@ -2005,6 +2070,8 @@ export function buyVehicle(
   variantLabel: string | null,
   powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
   purchasePriceGBP: number,
+  liveryId: number | null = null,
+  conditionOverride: number | null = null,
 ): Vehicle {
   const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
   if (!depot) throw new Error(`buyVehicle: depot ${depotId} not found`);
@@ -2018,14 +2085,15 @@ export function buyVehicle(
   const fleetNumber = formatFleetNumber(categoryDigit, sequentialNumber, suffix);
   const boughtAt = new Date();
   const plate = generatePlate(depot.lon, depot.lat, boughtAt);
+  const condition = conditionOverride ?? 100;
 
   const result = db
     .prepare(
       `INSERT INTO vehicles
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, purchasePriceGBP, boughtAt.toISOString());
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), liveryId);
 
   return {
     id: Number(result.lastInsertRowid),
@@ -2037,16 +2105,17 @@ export function buyVehicle(
     powerType,
     fleetNumber,
     plate,
-    condition: 100,
+    condition,
     purchasePriceGBP,
     boughtAt: boughtAt.toISOString(),
+    liveryId,
   };
 }
 
 export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
        FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
     )
     .all(depotGroupId) as {
@@ -2062,6 +2131,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     condition: number;
     purchase_price_gbp: number;
     bought_at: string;
+    livery_id: number | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -2076,9 +2146,316 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     condition: r.condition,
     purchasePriceGBP: r.purchase_price_gbp,
     boughtAt: r.bought_at,
+    liveryId: r.livery_id,
   }));
 }
 
 export function deleteVehicle(db: SaveDb, vehicleId: number): void {
   db.prepare("DELETE FROM vehicles WHERE id = ?").run(vehicleId);
+}
+
+// A depot-to-depot transfer (OPERATIONS.md §3 "Delivery and transfers") —
+// immediate, not simulated in transit (no driver/duty system yet to hang
+// "a driver each way, vehicle unusable in transit" on). Repaint-on-transfer
+// (OPERATIONS.md §3, confirmed 2026-10-18) is a separate, already-specified
+// cost that needs to know whether the destination area requires a
+// different livery — that area-matching logic lives in the renderer
+// (livery-seed-data.mts's RESTRICTED_AREA_LIVERIES), so this function just
+// moves the vehicle; the caller applies any repaint consequence.
+export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: number): Vehicle {
+  const depot = db.prepare("SELECT depot_group_id FROM depots WHERE id = ?").get(newDepotId) as { depot_group_id: number } | undefined;
+  if (!depot) throw new Error(`transferVehicle: depot ${newDepotId} not found`);
+  db.prepare("UPDATE vehicles SET depot_id = ?, depot_group_id = ? WHERE id = ?").run(newDepotId, depot.depot_group_id, vehicleId);
+  const row = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
+       FROM vehicles WHERE id = ?`,
+    )
+    .get(vehicleId) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    model_id: string;
+    length_m: number;
+    variant_label: string | null;
+    power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+    fleet_number: string;
+    plate: string;
+    condition: number;
+    purchase_price_gbp: number;
+    bought_at: string;
+    livery_id: number | null;
+  };
+  return {
+    id: row.id,
+    depotGroupId: row.depot_group_id,
+    depotId: row.depot_id,
+    modelId: row.model_id,
+    lengthM: row.length_m,
+    variantLabel: row.variant_label,
+    powerType: row.power_type,
+    fleetNumber: row.fleet_number,
+    plate: row.plate,
+    condition: row.condition,
+    purchasePriceGBP: row.purchase_price_gbp,
+    boughtAt: row.bought_at,
+    liveryId: row.livery_id,
+  };
+}
+
+// --- Basket (OPERATIONS.md §3 "Buying") — see basket_items' own SCHEMA
+// comment for why this is one company-wide basket, not per depot group. ---
+
+export interface BasketItem {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: "diesel" | "electric" | "hybrid" | "hydrogen";
+  liveryId: number | null;
+  manufacturer: string;
+  quantity: number;
+  unitPriceGBP: number;
+  paymentMethod: "buy_outright" | "lease" | "lease_to_own";
+  isUsed: boolean;
+  usedCondition: number | null;
+}
+
+interface BasketItemRow {
+  id: number;
+  depot_group_id: number;
+  depot_id: number;
+  model_id: string;
+  length_m: number;
+  variant_label: string | null;
+  power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+  livery_id: number | null;
+  manufacturer: string;
+  quantity: number;
+  unit_price_gbp: number;
+  payment_method: "buy_outright" | "lease" | "lease_to_own";
+  is_used: number;
+  used_condition: number | null;
+}
+
+function basketItemFromRow(r: BasketItemRow): BasketItem {
+  return {
+    id: r.id,
+    depotGroupId: r.depot_group_id,
+    depotId: r.depot_id,
+    modelId: r.model_id,
+    lengthM: r.length_m,
+    variantLabel: r.variant_label,
+    powerType: r.power_type,
+    liveryId: r.livery_id,
+    manufacturer: r.manufacturer,
+    quantity: r.quantity,
+    unitPriceGBP: r.unit_price_gbp,
+    paymentMethod: r.payment_method,
+    isUsed: !!r.is_used,
+    usedCondition: r.used_condition,
+  };
+}
+
+export function addBasketItem(
+  db: SaveDb,
+  depotGroupId: number,
+  depotId: number,
+  modelId: string,
+  lengthM: number,
+  variantLabel: string | null,
+  powerType: "diesel" | "electric" | "hybrid" | "hydrogen",
+  liveryId: number | null,
+  manufacturer: string,
+  quantity: number,
+  unitPriceGBP: number,
+  paymentMethod: "buy_outright" | "lease" | "lease_to_own",
+  isUsed: boolean,
+  usedCondition: number | null,
+): BasketItem {
+  const result = db
+    .prepare(
+      `INSERT INTO basket_items
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, liveryId, manufacturer, quantity, unitPriceGBP, paymentMethod, isUsed ? 1 : 0, usedCondition);
+  return {
+    id: Number(result.lastInsertRowid),
+    depotGroupId,
+    depotId,
+    modelId,
+    lengthM,
+    variantLabel,
+    powerType,
+    liveryId,
+    manufacturer,
+    quantity,
+    unitPriceGBP,
+    paymentMethod,
+    isUsed,
+    usedCondition,
+  };
+}
+
+export function listBasket(db: SaveDb): BasketItem[] {
+  const rows = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition
+       FROM basket_items ORDER BY id`,
+    )
+    .all() as unknown as BasketItemRow[];
+  return rows.map(basketItemFromRow);
+}
+
+export function setBasketItemQuantity(db: SaveDb, basketItemId: number, quantity: number): void {
+  if (quantity <= 0) {
+    db.prepare("DELETE FROM basket_items WHERE id = ?").run(basketItemId);
+    return;
+  }
+  db.prepare("UPDATE basket_items SET quantity = ? WHERE id = ?").run(quantity, basketItemId);
+}
+
+export function setBasketItemDepot(db: SaveDb, basketItemId: number, depotGroupId: number, depotId: number): void {
+  db.prepare("UPDATE basket_items SET depot_group_id = ?, depot_id = ? WHERE id = ?").run(depotGroupId, depotId, basketItemId);
+}
+
+export function setBasketItemLivery(db: SaveDb, basketItemId: number, liveryId: number | null): void {
+  db.prepare("UPDATE basket_items SET livery_id = ? WHERE id = ?").run(liveryId, basketItemId);
+}
+
+export function removeBasketItem(db: SaveDb, basketItemId: number): void {
+  db.prepare("DELETE FROM basket_items WHERE id = ?").run(basketItemId);
+}
+
+// Converts the whole basket into vehicle_orders (one row per vehicle, a
+// basket line's own quantity expanded out) and empties the basket.
+// Returns the number of orders created.
+export function placeOrder(db: SaveDb): number {
+  const items = listBasket(db);
+  const orderedAt = new Date().toISOString();
+  const insert = db.prepare(
+    `INSERT INTO vehicle_orders
+      (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  let count = 0;
+  for (const item of items) {
+    for (let i = 0; i < item.quantity; i++) {
+      insert.run(
+        item.depotGroupId,
+        item.depotId,
+        item.modelId,
+        item.lengthM,
+        item.variantLabel,
+        item.powerType,
+        item.liveryId,
+        item.unitPriceGBP,
+        item.paymentMethod,
+        item.isUsed ? 1 : 0,
+        item.usedCondition,
+        orderedAt,
+      );
+      count++;
+    }
+  }
+  db.prepare("DELETE FROM basket_items").run();
+  return count;
+}
+
+// --- Orders awaiting collection (OPERATIONS.md §3 "Delivery and
+// transfers") — see vehicle_orders' own SCHEMA comment for the
+// deliberate "immediately available to collect" simplification. ---
+
+export interface VehicleOrder {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  modelId: string;
+  lengthM: number;
+  variantLabel: string | null;
+  powerType: "diesel" | "electric" | "hybrid" | "hydrogen";
+  liveryId: number | null;
+  unitPriceGBP: number;
+  paymentMethod: "buy_outright" | "lease" | "lease_to_own";
+  isUsed: boolean;
+  usedCondition: number | null;
+  orderedAt: string;
+}
+
+interface VehicleOrderRow {
+  id: number;
+  depot_group_id: number;
+  depot_id: number;
+  model_id: string;
+  length_m: number;
+  variant_label: string | null;
+  power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+  livery_id: number | null;
+  unit_price_gbp: number;
+  payment_method: "buy_outright" | "lease" | "lease_to_own";
+  is_used: number;
+  used_condition: number | null;
+  ordered_at: string;
+}
+
+function vehicleOrderFromRow(r: VehicleOrderRow): VehicleOrder {
+  return {
+    id: r.id,
+    depotGroupId: r.depot_group_id,
+    depotId: r.depot_id,
+    modelId: r.model_id,
+    lengthM: r.length_m,
+    variantLabel: r.variant_label,
+    powerType: r.power_type,
+    liveryId: r.livery_id,
+    unitPriceGBP: r.unit_price_gbp,
+    paymentMethod: r.payment_method,
+    isUsed: !!r.is_used,
+    usedCondition: r.used_condition,
+    orderedAt: r.ordered_at,
+  };
+}
+
+export function listOrders(db: SaveDb): VehicleOrder[] {
+  const rows = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at
+       FROM vehicle_orders ORDER BY ordered_at`,
+    )
+    .all() as unknown as VehicleOrderRow[];
+  return rows.map(vehicleOrderFromRow);
+}
+
+// Finalises an order into a real owned vehicle (same fleet-number/plate
+// issuance as buyVehicle, since mechanically this IS the delayed half of
+// that same purchase) and removes the order. Used for both the
+// Deliveries screen's "Collect" and "Dealer delivers" buttons — the real
+// difference between the two (time/cost) depends on the driver-
+// availability and finance systems noted in vehicle_orders' own SCHEMA
+// comment, neither of which exists yet.
+export function collectOrder(db: SaveDb, orderId: number): Vehicle {
+  const order = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at
+       FROM vehicle_orders WHERE id = ?`,
+    )
+    .get(orderId) as VehicleOrderRow | undefined;
+  if (!order) throw new Error(`collectOrder: order ${orderId} not found`);
+  const vehicle = buyVehicle(
+    db,
+    order.depot_group_id,
+    order.depot_id,
+    order.model_id,
+    order.length_m,
+    order.variant_label,
+    order.power_type,
+    order.unit_price_gbp,
+    order.livery_id,
+    order.is_used ? order.used_condition : null,
+  );
+  db.prepare("DELETE FROM vehicle_orders WHERE id = ?").run(orderId);
+  return vehicle;
 }

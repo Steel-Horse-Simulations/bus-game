@@ -305,5 +305,14 @@ long-distance purchase rules. Companion to `DESIGN.md`/`OPERATIONS.md`/
 the four, it wins, being the more recent and more detailed source. Not yet
 built — see `OPEN-ITEMS.md`.
 
-There is no vehicle artwork to produce. Liveries are colour sets only
-(`OPERATIONS.md` §4).
+**Correction (2026-10-18): the line above was stale and wrong.**
+`OPERATIONS.md` §4 ("Map badge liveries") already specs real per-livery
+badge images in detail — three PNGs per livery (the badge itself, a
+branding mask, a number-box marker), 256×112px, transparent background,
+stored in `assets/liveries/` named by livery id. "No vehicle artwork"
+only ever meant no full drawn vehicle side-profile; the small map badge
+was always part of the design, this file's own summary just never caught
+up to it. The folder already exists (empty as of 2026-10-18) — read
+`OPERATIONS.md` §4 in full before building anything that touches it, the
+wiring to actually load/display these (map rendering, the vehicle-buying
+UI) isn't built yet.

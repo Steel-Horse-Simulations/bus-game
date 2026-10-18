@@ -95,31 +95,35 @@ for **£10,000**, and this **cannot be undone**. Only available on vehicles
 that have a defined open-top variant in the catalogue — currently the
 ADL Enviro400 (diesel and electric) only.
 
-## 2. Options — selection type and general effect
+## 2. Options — selection type, price and general effect
 
 Selection type is checkbox unless noted. Effect is the general rule applying
 across every vehicle it's available on; per-vehicle figures (fuel tank,
-battery) are in §3 against each vehicle.
+battery) are in §3 against each vehicle. Prices confirmed 2026-10-18 — a
+one-off cost at purchase, applied once (not per seat/litre/kg multiplied
+twice) unless the option's own row says otherwise.
 
-| Option | Power type | Effect |
-|---|---|---|
-| CCTV cameras | All | **Standard on every vehicle**, not optional |
-| CCTV audio (dropdown: none / cab / full) | All | See below |
-| USB and power sockets | All | Small satisfaction boost + slight marketing/awareness boost |
-| Wi-Fi | All | Same shape as USB, bigger effect — matters more to passengers |
-| Comfier seats | All | Bigger effect than Wi-Fi, no marketing boost. Scales on a **binary long-distance / short-journey split**, not continuously |
-| Air conditioning | All | Bigger effect than Wi-Fi, no marketing boost. **Seasonal** — bigger boost in summer months |
-| Next-stop audio | All | Satisfaction + marketing boost. Matters **more** than screens (accessibility: essential for visually impaired passengers) |
-| Passenger info screens | All | Satisfaction + marketing boost, smaller than audio |
-| Premium driver seat | All | Driver happiness boost **and** reduces sickness/turnover — feeds into the existing warning/dismissal system |
-| Larger fuel tank | Diesel only | Per-vehicle range boost — see §3 |
-| Larger battery pack (dropdown) | Electric only | Per-vehicle range boost — see §3 |
-| Larger hydrogen tank (dropdown) | Hydrogen only | Per-vehicle range boost — see §3 (Kite and StreetDeck Hydroliners already have their tank tiers recorded there) |
-| Pantograph charging | Electric only | Enables opportunity charging during layovers, reducing overnight depot charging need. Needs infrastructure: **£3,500 per stop**; at a bus station/interchange, **one per stance**, not one for the whole site |
-| Low floor conversion | EVM Cityline only | Purely functional — satisfies accessibility requirements, avoids the stepped-vehicle accessibility penalty |
-| Seatbelts | All | Standard on coaches. On other vehicle types, a functional option satisfying school contract eligibility — no satisfaction effect |
-| Foldable school signs | All | Purely functional, satisfies school contract requirements, shown/hidden per journey |
-| Instructor mirrors | All | Training vehicles only. Purely functional — lets the instructor see properly. Not available/relevant on any non-training vehicle |
+| Option | Power type | Price | Effect |
+|---|---|---|---|
+| CCTV cameras | All | Standard, no price | **Standard on every vehicle**, not optional |
+| CCTV audio (dropdown: none / cab / full) | All | None £0 · Cab-only £150 · Full £450 | See below |
+| USB and power sockets | All | **£30 per seat** (seated capacity only, never standing) | Small satisfaction boost + slight marketing/awareness boost |
+| Wi-Fi | All | £2,200 flat | Same shape as USB, bigger effect — matters more to passengers |
+| Comfier seats | All | **£120 per seat** (seated capacity only) | Bigger effect than Wi-Fi, no marketing boost. Scales on a **binary long-distance / short-journey split**, not continuously |
+| Air conditioning | All | £8,000 flat (**£3,000 on the EVM Cityline minibus**) | Bigger effect than Wi-Fi, no marketing boost. **Seasonal** — bigger boost in summer months |
+| Next-stop audio | All | £2,500 flat | Satisfaction + marketing boost. Matters **more** than screens (accessibility: essential for visually impaired passengers) |
+| Passenger info screens | All | £3,500 flat | Satisfaction + marketing boost, smaller than audio |
+| Premium driver seat | All | £1,800 flat | Driver happiness boost **and** reduces sickness/turnover — feeds into the existing warning/dismissal system |
+| Larger fuel tank | Diesel only | **£15 per extra litre** above the vehicle's own base tank — see §3 and the worked examples below | Per-vehicle range boost — see §3 |
+| Larger battery pack (dropdown) | Electric only | **£300 per extra kWh** above the base pack, except the Volvo 7900 Electric's own named tiers (below) — see §3 | Per-vehicle range boost — see §3 |
+| Larger hydrogen tank (dropdown) | Hydrogen only | **£1,000 per extra kg** above the base tank — see §3 (Kite and StreetDeck Hydroliners already have their tank tiers recorded there) | Per-vehicle range boost — see §3 |
+| Pantograph charging | Electric only | **£20,000** on the vehicle itself | Enables opportunity charging during layovers, reducing overnight depot charging need. Separate from the depot-side infrastructure: **£3,500 per stop**; at a bus station/interchange, **one per stance**, not one for the whole site |
+| Low floor conversion | EVM Cityline only | £18,000 | Purely functional — satisfies accessibility requirements, avoids the stepped-vehicle accessibility penalty |
+| Seatbelts | All | **£90 per seat** (seated capacity only) on non-coaches; **standard and free on coaches** | Standard on coaches. On other vehicle types, a functional option satisfying school contract eligibility — no satisfaction effect |
+| Foldable school signs | All | £600 flat | Purely functional, satisfies school contract requirements, shown/hidden per journey |
+| Instructor mirrors | All | £400 flat | Training vehicles only. Purely functional — lets the instructor see properly. Not available/relevant on any non-training vehicle |
+| Adding seats beyond the standard layout | All | **£120 per added seat** | New, confirmed 2026-10-18 — not yet given a passenger-facing effect beyond raising capacity |
+| New luggage racks (vehicles without them) | All | **£1,500 per vehicle**, flat | New, confirmed 2026-10-18 |
 
 **CCTV audio detail:**
 - **Cab-only audio** — protects the driver in a complaint (evidence), slightly
@@ -130,6 +134,41 @@ battery) are in §3 against each vehicle.
   Requires a new route flag, set by the operations manager, shown in the
   route list. Once flagged, full-audio vehicles are preferentially assigned
   to that route where possible.
+
+**Smaller tank/battery/hydrogen-tank alternatives are a discount, not a
+separate price** (confirmed 2026-10-18): the bigger option is the base —
+already what §3's/§4a's base prices assume — and choosing a *smaller*
+tank/battery/hydrogen tank removes exactly what the step up would have
+cost, at the same per-unit rate. Two worked examples, both confirmed
+directly:
+- **ADL Enviro400 (diesel), 200L smaller tank (350mi)** — −£1,125 off the
+  £235,000 base (275L/475mi base; 75L × £15/L).
+- **Wrightbus StreetDeck Ultroliner, 190L smaller tank (330mi)** — −£825 off
+  the £310,000 base (245L/425mi base; 55L × £15/L).
+
+This only applies where the catalogue's own pair is explicitly named
+"Standard tank" + "Smaller tank" (the Enviro400 and StreetDeck Ultroliner).
+The Volvo 9700's own "Standard tank" (480L) vs "InterCity tank" (600L) pair
+is named differently and reads the other way round under the general
+rule above — InterCity is the paid-for upgrade, not a relabelled
+"smaller": **+£1,800** (120L × £15/L) over the 480L Standard base. Flagged
+here rather than assumed, since the user's own confirmation only covered
+the two "Standard/Smaller" pairs by name.
+
+**Volvo 7900 Electric's own named battery tiers** (confirmed 2026-10-18,
+given directly rather than computed from a flat per-kWh rate, since they
+don't reduce to one evenly — NCA is £300/kWh, LFP is £250/kWh, both
+measured against the 280kWh NCA base, but the LFP figures below don't
+match a plain "extra kWh × £250" calculation and are used exactly as
+given instead):
+
+| Pack | Price |
+|---|---|
+| NCA 280kWh (base) | £0 |
+| NCA 375kWh | +£28,500 |
+| NCA 470kWh | +£57,000 |
+| LFP 350kWh | +£3,500 |
+| LFP 500kWh | +£41,000 |
 
 ---
 
