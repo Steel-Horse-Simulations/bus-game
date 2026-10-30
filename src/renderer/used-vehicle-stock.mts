@@ -1,11 +1,13 @@
-// Placeholder used-vehicle listings for the buy menu's Used screen.
-// OPERATIONS.md §3's own buy-menu spec says plainly: "Used prices and
-// condition formulae are not decided, so use placeholder data" — so
-// nothing here is a real formula, and none of it is persisted to the
-// save (regenerating it is free, there's nothing real to lose). A fixed
-// seed per model/slot keeps the same listings showing on every panel
-// open, rather than reshuffling on every render (which would let the
-// player "refresh for a better price").
+// Used-vehicle listings for the buy menu's Used screen. The PRICE formula
+// is now real (OPERATIONS.md §3 "Condition", confirmed 2026-10-30): new
+// price falls 10% per year of age to a floor of 20% of new price, then
+// that figure is scaled by the vehicle's own condition. The CONDITION
+// formula itself, and the age range a listing is drawn from, are still
+// placeholders — no real formula for either has been confirmed, so
+// nothing here is persisted to the save (regenerating it is free, there's
+// nothing real to lose). A fixed seed per model/slot keeps the same
+// listings showing on every panel open, rather than reshuffling on every
+// render (which would let the player "refresh for a better price").
 import { VEHICLE_MODELS, priceFor, lengthsForPower, type VehicleModel, type LengthVariant, type PowerType } from "./vehicle-catalogue.mts";
 import { generatePlate } from "./fleet-numbering.mts";
 
@@ -55,14 +57,15 @@ export function generateUsedListings(): UsedListing[] {
       const newPriceGBP = priceFor(vehicle, length);
       if (newPriceGBP === null) continue;
 
-      // Placeholder formula only (see header note): 2-8 years old,
-      // condition falls roughly 8 points per year with some noise, floor
-      // 20 (OPERATIONS.md: "very cheap and much less reliable"), price
-      // falls faster than condition since depreciation front-loads.
+      // Age range and condition formula are still placeholders (see
+      // header note): 2-8 years old, condition falls roughly 8 points per
+      // year with some noise, floor 20.
       const ageYears = 2 + rng() * 6;
       const condition = Math.max(20, Math.round(100 - ageYears * 8 - rng() * 10));
-      const depreciation = Math.min(0.75, 0.08 * ageYears + rng() * 0.05);
-      const usedPriceGBP = Math.round((newPriceGBP * (1 - depreciation)) / 100) * 100;
+      // Real price formula (OPERATIONS.md §3 "Condition"): 10%/year
+      // depreciation, floor 20% of new price, then scaled by condition.
+      const ageDepreciationFactor = Math.max(0.2, 1 - 0.1 * ageYears);
+      const usedPriceGBP = Math.round((newPriceGBP * ageDepreciationFactor * (condition / 100)) / 100) * 100;
 
       const boughtAt = new Date();
       boughtAt.setFullYear(boughtAt.getFullYear() - Math.floor(ageYears));

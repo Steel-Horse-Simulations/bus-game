@@ -97,7 +97,6 @@ export interface LengthVariant {
   // 11.1m electric length has no diesel equivalent, and none of its
   // diesel lengths exist electric).
   powerType: PowerType;
-  fleetNumberRange: string;
   // Distinguishes two real builds that share the same length and power
   // (the Cityline's low-floor vs stepped-entrance conversion, DESIGN.md's
   // own "Low floor is a retrofittable option; defaults to steps") —
@@ -360,7 +359,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.5,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "seatedStanding", seated: 74, standing: 16 },
         energyOptions: [
           { label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475, priceDeltaGBP: 0 },
@@ -370,7 +368,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.9,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "seatedStanding", seated: 82, standing: 18 },
         energyOptions: [
           { label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475, priceDeltaGBP: 0 },
@@ -381,7 +378,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.5,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "seatedStanding", seated: 85, standing: 20 },
         energyOptions: [
           { label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475, priceDeltaGBP: 0 },
@@ -392,7 +388,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.1,
         powerType: "electric",
-        fleetNumberRange: "80,000s",
         capacity: { kind: "seatedStanding", seated: 80, standing: 18 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 354, unit: "kWh", rangeMiles: 215, priceDeltaGBP: 0 },
@@ -421,7 +416,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 13.4,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "seatedStanding", seated: 100, standing: 25, tipUps: 3 },
         energyOptions: [{ label: "Standard tank", capacity: 250, unit: "L", rangeMiles: 380 }],
         notes: [
@@ -454,7 +448,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.6,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 96, maxSeated: 74, maxStanding: 26 },
         energyOptions: [
           { label: "Standard tank", capacity: 245, unit: "L", rangeMiles: 425, priceDeltaGBP: 0 },
@@ -464,7 +457,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 98, maxSeated: 83, maxStanding: 18 },
         energyOptions: [
           { label: "Standard tank", capacity: 245, unit: "L", rangeMiles: 425, priceDeltaGBP: 0 },
@@ -475,7 +467,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.5,
         powerType: "diesel",
-        fleetNumberRange: "10,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 100, maxSeated: 75, maxStanding: 28 },
         energyOptions: [
           { label: "Standard tank", capacity: 245, unit: "L", rangeMiles: 425, priceDeltaGBP: 0 },
@@ -486,14 +477,12 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.7,
         powerType: "electric",
-        fleetNumberRange: "80,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 84, maxSeated: 73, maxStanding: 14 },
         energyOptions: [{ label: "Battery", capacity: 442, unit: "kWh", rangeMiles: 275 }],
       },
       {
         lengthM: 10.9,
         powerType: "hydrogen",
-        fleetNumberRange: "87,000",
         capacity: { kind: "maxCapacity", maxCapacity: 90, maxSeated: 69, maxStanding: 24 },
         energyOptions: [{ label: "Hydrogen tank (one size only)", capacity: 27, unit: "kg", rangeMiles: 295 }],
         bufferBatteryKWh: 111,
@@ -517,7 +506,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.9,
         powerType: "diesel",
-        fleetNumberRange: "60,000s",
         capacity: { kind: "seatedStanding", seated: 82, standing: 18 },
         energyOptions: [{ label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475 }],
       },
@@ -539,7 +527,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.1,
         powerType: "electric",
-        fleetNumberRange: "60,000s",
         capacity: { kind: "seatedStanding", seated: 80, standing: 18 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 354, unit: "kWh", rangeMiles: 215, priceDeltaGBP: 0 },
@@ -567,11 +554,10 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     topSpeedMph: 50,
     basePriceGBP: 165_000,
     lengths: [
-      { lengthM: 8.9, powerType: "diesel", fleetNumberRange: "30,000s", capacity: { kind: "seatedStanding", seated: 30, standing: 14 }, energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 500 }] },
+      { lengthM: 8.9, powerType: "diesel", capacity: { kind: "seatedStanding", seated: 30, standing: 14 }, energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 500 }] },
       {
         lengthM: 9.7,
         powerType: "diesel",
-        fleetNumberRange: "30,000s",
         capacity: { kind: "seatedStanding", seated: 34, standing: 15 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 490 }],
         priceDeltaGBP: 6_600, // length pricing confirmed 2026-10-18: 0.8m over the 8.9m diesel base, £165,000 x 0.5%/10cm
@@ -579,7 +565,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.8,
         powerType: "diesel",
-        fleetNumberRange: "30,000s",
         capacity: { kind: "seatedStanding", seated: 40, standing: 16 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 475 }],
         priceDeltaGBP: 15_700, // 1.9m over the 8.9m diesel base
@@ -587,7 +572,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.5,
         powerType: "diesel",
-        fleetNumberRange: "20,000s",
         capacity: { kind: "seatedStanding", seated: 43, standing: 17 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 460 }],
         priceDeltaGBP: 21_400, // 2.6m over the 8.9m diesel base — a genuine round-half-to-even tie (21,450), not round-half-up
@@ -595,16 +579,14 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.8,
         powerType: "diesel",
-        fleetNumberRange: "20,000s",
         capacity: { kind: "seatedStanding", seated: 43, standing: 17 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 440 }],
         priceDeltaGBP: 23_900, // 2.9m over the 8.9m diesel base
       },
-      { lengthM: 9.9, powerType: "electric", fleetNumberRange: "70,000s", capacity: { kind: "seatedStanding", seated: 33, standing: 40 }, energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 300 }] },
+      { lengthM: 9.9, powerType: "electric", capacity: { kind: "seatedStanding", seated: 33, standing: 40 }, energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 300 }] },
       {
         lengthM: 10.9,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "seatedStanding", seated: 39, standing: 45 },
         energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 285 }],
         priceDeltaGBP: 14_500, // length pricing confirmed 2026-10-18: 1.0m over the 9.9m electric base, £290,000 (165,000 base + 125,000 electric delta) x 0.5%/10cm
@@ -612,7 +594,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.7,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "seatedStanding", seated: 43, standing: 49 },
         energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 270 }],
         priceDeltaGBP: 26_100, // 1.8m over the 9.9m electric base
@@ -642,7 +623,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12,
         powerType: "hybrid",
-        fleetNumberRange: "20,000s",
         capacity: { kind: "seatedStanding", seated: 38, standing: 62 },
         energyOptions: [{ label: "Standard tank (no options)", capacity: null, unit: "L", rangeMiles: 425 }],
         notes: ["Fuel tank capacity itself not stated in VEHICLE-SPECS.md — only the 425 mile range."],
@@ -650,7 +630,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "seatedStanding", seated: 38, standing: 57 },
         energyOptions: [
           { label: "NCA 280kWh", capacity: 280, unit: "kWh", rangeMiles: 140, priceDeltaGBP: 0 },
@@ -680,7 +659,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.8,
         powerType: "diesel",
-        fleetNumberRange: "30,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 35, standing: 43 }, bayInUse: { seated: 35, standing: 34 } },
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 990 }],
         notes: ["69 + wheelchair space, or 78 total with the bay converted to standing."],
@@ -688,7 +666,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12.9,
         powerType: "diesel",
-        fleetNumberRange: "20,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 47, standing: 46 }, bayInUse: { seated: 47, standing: 38 } },
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 900 }],
         priceDeltaGBP: 16_300, // length pricing confirmed 2026-10-18: 2.1m over the 10.8m base, £155,000 x 0.5%/10cm
@@ -717,7 +694,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.9,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 78, maxSeated: 37, maxStanding: 39 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 442, unit: "kWh", rangeMiles: 300, priceDeltaGBP: 0 },
@@ -727,7 +703,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 11.6,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 79, maxSeated: 41, maxStanding: 44 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 442, unit: "kWh", rangeMiles: 300, priceDeltaGBP: 0 },
@@ -738,7 +713,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12.5,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "maxCapacity", maxCapacity: 82, maxSeated: 45, maxStanding: 51 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 442, unit: "kWh", rangeMiles: 300, priceDeltaGBP: 0 },
@@ -749,7 +723,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12.2,
         powerType: "hydrogen",
-        fleetNumberRange: "67,000",
         capacity: { kind: "maxCapacity", maxCapacity: 79, maxSeated: 41, maxStanding: 41 },
         energyOptions: [
           { label: "Hydrogen tank (small)", capacity: 32, unit: "kg", rangeMiles: 340, priceDeltaGBP: 0 },
@@ -779,7 +752,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 10.9,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "seatedStanding", seated: 29, standing: 37, tipUps: 4 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 350, unit: "kWh", rangeMiles: 230, priceDeltaGBP: 0 },
@@ -790,7 +762,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12.2,
         powerType: "electric",
-        fleetNumberRange: "70,000s",
         capacity: { kind: "seatedStanding", seated: 34, standing: 31, tipUps: 5 },
         energyOptions: [
           { label: "Battery (smaller)", capacity: 350, unit: "kWh", rangeMiles: 225, priceDeltaGBP: 0 },
@@ -831,7 +802,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         lengthM: 7.4,
         powerType: "diesel",
         variantLabel: "Stepped entrance",
-        fleetNumberRange: "40,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 0 }, bayInUse: { seated: 14, standing: 0 } },
         energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
         notes: [
@@ -843,7 +813,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         lengthM: 7.4,
         powerType: "diesel",
         variantLabel: "Low floor",
-        fleetNumberRange: "40,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 8 }, bayInUse: { seated: 16, standing: 4 } },
         energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
       },
@@ -851,7 +820,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         lengthM: 7.4,
         powerType: "electric",
         variantLabel: "Stepped entrance",
-        fleetNumberRange: "40,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 0 }, bayInUse: { seated: 14, standing: 0 } },
         energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
         notes: [
@@ -863,7 +831,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         lengthM: 7.4,
         powerType: "electric",
         variantLabel: "Low floor",
-        fleetNumberRange: "40,000s",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 8 }, bayInUse: { seated: 16, standing: 4 } },
         energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
       },
@@ -883,7 +850,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12.4,
         powerType: "diesel",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 53 },
         energyOptions: [
           { label: "Standard tank", capacity: 480, unit: "L", rangeMiles: 900, priceDeltaGBP: 0 },
@@ -900,7 +866,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 13.1,
         powerType: "diesel",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 65 },
         energyOptions: [
           { label: "Standard tank", capacity: 480, unit: "L", rangeMiles: 900, priceDeltaGBP: 0 },
@@ -917,7 +882,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 13.9,
         powerType: "diesel",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 65 },
         energyOptions: [
           { label: "Standard tank", capacity: 480, unit: "L", rangeMiles: 900, priceDeltaGBP: 0 },
@@ -929,7 +893,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 15,
         powerType: "diesel",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 65 },
         energyOptions: [
           { label: "Standard tank", capacity: 480, unit: "L", rangeMiles: 900, priceDeltaGBP: 0 },
@@ -952,11 +915,10 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       "Both lengths are tri-axle.",
     ],
     lengths: [
-      { lengthM: 13, powerType: "diesel", fleetNumberRange: "50,000s", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
+      { lengthM: 13, powerType: "diesel", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
       {
         lengthM: 14.8,
         powerType: "diesel",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 81 },
         energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }],
         priceDeltaGBP: 37_800, // length pricing confirmed 2026-10-18: 1.8m over the 13m base, £420,000 x 0.5%/10cm — no axle charge, both lengths already tri-axle
@@ -975,7 +937,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 12,
         powerType: "electric",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 50 },
         energyOptions: [
           { label: "GTe12 battery (smaller)", capacity: 399, unit: "kWh", rangeMiles: 320, priceDeltaGBP: 0 },
@@ -986,7 +947,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       {
         lengthM: 14,
         powerType: "electric",
-        fleetNumberRange: "50,000s",
         capacity: { kind: "seatedOnly", seated: 57 },
         // 14m is the real GTe14 length (confirmed over the pricing note's
         // own 15m, which was approximate). The note's +£61,500 figure was

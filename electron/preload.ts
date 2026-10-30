@@ -32,6 +32,9 @@ import type {
   Vehicle,
   BasketItem,
   VehicleOrder,
+  FareZone,
+  FareZoneType,
+  FareZonePoint,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -331,4 +334,19 @@ contextBridge.exposeInMainWorld("basket", {
 contextBridge.exposeInMainWorld("orders", {
   list: () => ipcRenderer.invoke("orders:list") as Promise<VehicleOrder[]>,
   collect: (orderId: number) => ipcRenderer.invoke("orders:collect", orderId) as Promise<Vehicle>,
+});
+
+// Fare zones (DESIGN.md §9) — geometry only, per depot group. See
+// fare_zones' own SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("fareZones", {
+  listForDepotGroup: (depotGroupId: number) =>
+    ipcRenderer.invoke("fareZones:listForDepotGroup", depotGroupId) as Promise<FareZone[]>,
+  listAll: () => ipcRenderer.invoke("fareZones:listAll") as Promise<FareZone[]>,
+  create: (depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string) =>
+    ipcRenderer.invoke("fareZones:create", depotGroupId, name, zoneType, points, colour) as Promise<FareZone>,
+  rename: (zoneId: number, name: string) => ipcRenderer.invoke("fareZones:rename", zoneId, name) as Promise<void>,
+  setType: (zoneId: number, zoneType: FareZoneType) =>
+    ipcRenderer.invoke("fareZones:setType", zoneId, zoneType) as Promise<void>,
+  setColour: (zoneId: number, colour: string) => ipcRenderer.invoke("fareZones:setColour", zoneId, colour) as Promise<void>,
+  delete: (zoneId: number) => ipcRenderer.invoke("fareZones:delete", zoneId) as Promise<void>,
 });

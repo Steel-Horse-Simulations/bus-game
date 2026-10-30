@@ -28,20 +28,22 @@ export function bulkDiscountPercent(count: number): number {
 
 export type PaymentMethod = "buy_outright" | "lease" | "lease_to_own";
 
-// Lease rates and terms are explicitly "not decided yet" (the user's own
-// buy-menu spec) — these are placeholders for the UI to show something
-// plausible, not a real financial product; nothing persists or deducts
-// against them anywhere yet, since there's no finance/balance system
-// (Phase 5) built at all. Only the "about 10% more than buying outright"
-// figure for lease-to-own (OPERATIONS.md §3) is a real confirmed number.
-export const LEASE_TERM_MONTHS_PLACEHOLDER = 48;
-const LEASE_TO_OWN_TOTAL_MULTIPLIER = 1.1; // confirmed: "about 10% more than buying outright"
-const LEASE_MONTHLY_RATE_PLACEHOLDER = 0.025; // not a real rate — placeholder only
+// Real figures confirmed 2026-10-30 (OPERATIONS.md §3 "Buying"), replacing
+// the earlier placeholder rate/term — both leases run 60 months, at a
+// fixed monthly percentage of the vehicle's outright price. Lease: 1.4%/mo
+// (84% of price over the full term, vehicle returned at the end).
+// Lease to own: 1.83%/mo (110% of price, then ownership) — this also
+// confirms the earlier "about 10% more than buying outright" figure as a
+// real rate (1.83% × 60 = 109.8%, rounding to the stated 110%) rather than
+// a rough estimate.
+export const LEASE_TERM_MONTHS = 60;
+const LEASE_MONTHLY_RATE = 0.014;
+const LEASE_TO_OWN_MONTHLY_RATE = 0.0183;
 
 export function leaseToOwnMonthlyGBP(outrightPriceGBP: number): number {
-  return Math.round((outrightPriceGBP * LEASE_TO_OWN_TOTAL_MULTIPLIER) / LEASE_TERM_MONTHS_PLACEHOLDER);
+  return Math.round(outrightPriceGBP * LEASE_TO_OWN_MONTHLY_RATE);
 }
 
 export function leaseMonthlyGBP(outrightPriceGBP: number): number {
-  return Math.round(outrightPriceGBP * LEASE_MONTHLY_RATE_PLACEHOLDER);
+  return Math.round(outrightPriceGBP * LEASE_MONTHLY_RATE);
 }

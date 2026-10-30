@@ -594,8 +594,8 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     const unit = unitPriceGBP();
     const methods: { key: PaymentMethod; title: string; detail: string }[] = [
       { key: "buy_outright", title: "Buy outright", detail: formatGBP(unit) },
-      { key: "lease", title: "Lease", detail: `${formatGBP(leaseMonthlyGBP(unit))}/month (placeholder rate)` },
-      { key: "lease_to_own", title: "Lease to own", detail: `${formatGBP(leaseToOwnMonthlyGBP(unit))}/month (placeholder term)` },
+      { key: "lease", title: "Lease", detail: `${formatGBP(leaseMonthlyGBP(unit))}/month over 60 months` },
+      { key: "lease_to_own", title: "Lease to own", detail: `${formatGBP(leaseToOwnMonthlyGBP(unit))}/month over 60 months` },
     ];
     for (const method of methods) {
       const card = document.createElement("div");

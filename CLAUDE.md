@@ -225,9 +225,11 @@ This phase is a grab-bag and will want splitting once you reach it.
 - **OSM data quality.** Missing turn restrictions and mis-tagged one-ways will
   send buses the wrong way. The override layer must be built once and reused,
   with imported data read-only and always recoverable.
-- **The optimiser's constraints.** The operations manager must respect connected
-  services, locked departures, ferry locks and whole frequencies, and must report
-  rather than improvise when it cannot. Get those guards in before the optimiser.
+- **The optimiser's constraints.** The commercial team's timetable optimiser
+  (moved off the operations manager, 2026-10-30, OPERATIONS.md §13a) must
+  respect connected services, locked departures, ferry locks and whole
+  frequencies, and must report rather than improvise when it cannot. Get
+  those guards in before the optimiser.
 - **Timetable components.** The merged view is read-only and derived; every edit
   lands in a component. Build the merge as a projection, not a copy, or the two
   will drift.

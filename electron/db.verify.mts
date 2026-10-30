@@ -827,10 +827,10 @@ db.close();
   db.close();
 }
 
-// v31 -> v34 (depot_id on duties, the vehicles table, then the buy-menu
-// rebuild's livery_id/basket_items/vehicle_orders), against a copy of the
-// player's own real save — proven against the real shape, not just a
-// synthetic fixture.
+// v31 -> v36 (depot_id on duties, the vehicles table, the buy-menu
+// rebuild's livery_id/basket_items/vehicle_orders, fare_zones, then its own
+// colour column), against a copy of the player's own real save — proven
+// against the real shape, not just a synthetic fixture.
 {
   const realSave = path2.join(process.env.APPDATA ?? "", "bus-game", "save.sqlite");
   if (existsSync(realSave)) {
@@ -841,7 +841,7 @@ db.close();
     const versionCheckDb = new DatabaseSync(copy);
     const { user_version } = versionCheckDb.prepare("PRAGMA user_version").get() as { user_version: number };
     versionCheckDb.close();
-    assert(user_version === 34, `real save migrates to schema v34, got v${user_version}`);
+    assert(user_version === 36, `real save migrates to schema v36, got v${user_version}`);
     const realGroups = listDepotGroups(upgraded);
     if (realGroups.length > 0) {
       const realDepots = listDepots(upgraded);
@@ -863,7 +863,7 @@ db.close();
     upgraded.close();
     unlinkSync(copy);
   } else {
-    console.log("skip real save v31->v34 migration check: no save at", realSave);
+    console.log("skip real save v31->v36 migration check: no save at", realSave);
   }
 }
 

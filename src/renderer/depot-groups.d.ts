@@ -397,12 +397,39 @@ interface OrdersApi {
   collect(orderId: number): Promise<Vehicle>;
 }
 
+type FareZoneType = "city" | "country";
+
+interface FareZonePoint {
+  lon: number;
+  lat: number;
+}
+
+interface FareZone {
+  id: number;
+  depotGroupId: number;
+  name: string;
+  zoneType: FareZoneType;
+  points: FareZonePoint[];
+  colour: string;
+}
+
+interface FareZonesApi {
+  listForDepotGroup(depotGroupId: number): Promise<FareZone[]>;
+  listAll(): Promise<FareZone[]>;
+  create(depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string): Promise<FareZone>;
+  rename(zoneId: number, name: string): Promise<void>;
+  setType(zoneId: number, zoneType: FareZoneType): Promise<void>;
+  setColour(zoneId: number, colour: string): Promise<void>;
+  delete(zoneId: number): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
   vehicles: VehiclesApi;
   basket: BasketApi;
   orders: OrdersApi;
+  fareZones: FareZonesApi;
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

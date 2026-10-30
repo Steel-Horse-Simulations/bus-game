@@ -323,6 +323,36 @@ clear above the 201+ contract range with headroom to spare).
 
 ---
 
+## 9a. Railair (RA-prefix, station-to-airport express)
+
+Added 2026-10-30. A station-to-airport express product the **player
+creates** — any route from a rail station to an airport can be set as
+Railair, not a single fixed contract like AIR (DESIGN.md §10).
+
+- **Coaches only.**
+- **Numbering: RA1, RA2 and so on, counting up across the whole company**
+  — not per depot group or council area, the only route-numbering scheme
+  in the game that works this way (DESIGN.md §6's own prefix table flags
+  this explicitly).
+- **Limited stop, treated as InterCity** for timetabling and fare purposes.
+- **Its own livery**, supplied by the user — use a placeholder badge until
+  then. **Railair can only run in this livery, and this livery can only run
+  on Railair** — a two-way exclusive lock, not the one-way vehicle locks
+  Citylink/Ember/MegaBus already have (`livery-seed-data.mts`).
+- **Needs luggage racks** (airport-spec conversion, VEHICLE-SPECS.md's own
+  "Seats and luggage racks are shippable inventory" system) **and comfier
+  seats**, the same equipment AIR and Express 500 already require
+  (`OPERATIONS.md` §3 "Configurator").
+- **Outside the £2 fare cap** (DESIGN.md §9), the same exclusion AIR and
+  Express 500 already have.
+- **Tickets**: Railair's own ticket, plus a **combined rail-and-bus
+  ticket** that works with the main rail operator at the stations on the
+  route — a ticket **shared with the rail company**, not sold purely by
+  the player. The player receives **about 10% less** revenue from a
+  combined ticket than from an equivalent Railair-only ticket.
+
+---
+
 ## 10. Night bus routes (N-prefix)
 
 **Numbering:** N + the day route's number (e.g. day route 9 → N9). A
@@ -1245,8 +1275,13 @@ This replaces the entire original fleet-number-range convention used
 throughout the project (10,000s double-deckers, 20,000s/30,000s
 full-size/midibus diesel-hybrid single-deck, 40,000s small bus, 50,000s
 coach, 70,000s/67,000 electric/hydrogen single-deck, 80,000s/87,000
-electric/hydrogen double-deck). Any older document or note still using
-"X,000-range" language is superseded by this section.
+electric/hydrogen double-deck, 90,000s support fleet). Any older document
+or note still using "X,000-range" language is superseded by this section.
+**Reconfirmed and fully propagated 2026-10-30** — the user's own
+instruction ("the old X,000-range system is superseded everywhere") after
+finding OPERATIONS.md §3's own fleet-number table and VEHICLE-SPECS.md's
+section headings still hadn't been updated to match this section when it
+was first finalised; both are fixed now.
 
 **Format:** `[category digit][sequential number, 3+ digits][e/h suffix]`
 — e.g. `4001` (diesel double-decker, twin-axle), `3014e` (electric
@@ -1273,6 +1308,7 @@ full-size single-deck), `7002h` (hydrogen coach, tri-axle).
 | 5 | Double-decker, tri-axle | ADL Enviro400 XLB (13.4m — see §14a; replaces the ADL Enviro500) |
 | 6 | Coach, twin-axle | Volvo 9700 at 12.4m; Yutong T12E |
 | 7 | Coach, tri-axle | Volvo 9700 at 13.1m/13.9m/15m; Volvo 9700DD (13m/14.8m); Yutong T15E |
+| 9 | Support vehicles | Pool cars, staff transport and other support vehicles (confirmed 2026-10-30) — not a bus at all, so it sits outside the size-order sequence 1-7 rather than slotting in by length. Still takes the same e/h suffix convention for electric/hydrogen support vehicles. |
 
 Twin-axle vs tri-axle is derived automatically from length (up to 12.9m
 = twin-axle, over 12.9m = tri-axle by law), not a separate selectable
@@ -1280,8 +1316,9 @@ option. Where a size class has both twin- and tri-axle real vehicles
 (double-decker, coach), tri-axle gets its own digit, exactly one higher
 than the twin-axle digit for that same size class.
 
-No live fleet numbers have been issued to any specific vehicle yet —
-this is the category-digit structure only.
+**Live fleet numbers are now being issued** — this stopped being a pure
+category-digit structure once the buy menu (OPERATIONS.md §3) started
+assigning real numbers through `formatFleetNumber()` (`fleet-numbering.mts`).
 
 ### 14a. Vehicle catalogue change — Enviro500 replaced by Enviro400 XLB
 

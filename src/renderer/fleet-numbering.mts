@@ -5,10 +5,13 @@
 // purchase flow and anything that displays an owned vehicle later.
 //
 // UK-EXPANSION.md §14 explicitly supersedes OPERATIONS.md's own original
-// 10,000s/20,000s/... fleet-number-range convention — that range
-// language still appears in VEHICLE-SPECS.md's own section headings and
-// each LengthVariant's own `fleetNumberRange` field (vehicle-catalogue.mts),
-// kept only as a historical/organisational label, never used here.
+// 10,000s/20,000s/... fleet-number-range convention. That old range
+// language is now gone everywhere (2026-10-30, the user's own instruction
+// — "the old X,000-range system is superseded everywhere") — OPERATIONS.md
+// §3's own table, VEHICLE-SPECS.md's section headings, and each
+// LengthVariant's dead `fleetNumberRange` field (vehicle-catalogue.mts,
+// never actually read by this file) have all been updated or removed to
+// match.
 
 export type VehicleBroadClass = "minibus" | "single-deck" | "double-decker" | "coach";
 

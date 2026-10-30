@@ -3,7 +3,7 @@ import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate }
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 34;
+const SCHEMA_VERSION = 36;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -499,6 +499,30 @@ CREATE TABLE IF NOT EXISTS vehicle_orders (
   used_condition REAL,
   ordered_at TEXT NOT NULL
 );
+
+-- Fare zones (DESIGN.md §9, Phase 4 increment 1 of the fares build):
+-- "fare zones are drawn on the map by the player... the depot group is the
+-- unit of ticket validity and of fare capping" — confirmed with the user
+-- (2026-10-18) that each depot group draws and prices its own zone map
+-- independently, not one shared company-wide map, so every zone belongs to
+-- exactly one depot group. "points" is a JSON array of {lon, lat} vertices
+-- in order, an open ring (not repeating the first point) — same convention
+-- as routes' own "points" column. This is geometry only: no pricing lives
+-- here yet (that's increment 2 — a per-depot-group band/ticket-family
+-- table — and increment 3's capping, both separate from this table since
+-- neither is about to be worked out at the same time as the shape of the
+-- zones themselves). "colour" (added 2026-10-30, live user request — "each
+-- one can have a colour") is a per-zone hex override shown on the map,
+-- independent of zone_type; validated the same way as liveries' own
+-- primary/secondary colours (HEX_COLOUR below), not via a SQL CHECK.
+CREATE TABLE IF NOT EXISTS fare_zones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  name TEXT NOT NULL,
+  zone_type TEXT NOT NULL CHECK (zone_type IN ('city', 'country')),
+  points TEXT NOT NULL,
+  colour TEXT NOT NULL DEFAULT '#3b82f6'
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -777,6 +801,16 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN bearing");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 35) {
+    // v35 -> v36: fare_zones gains a per-zone colour override (default
+    // matches the old implicit "city" colour so every existing zone keeps
+    // looking the same until the player changes it).
+    db.exec("ALTER TABLE fare_zones ADD COLUMN colour TEXT NOT NULL DEFAULT '#3b82f6'");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 34) {
+    // v34 -> v35: fare_zones is brand new, created by the CREATE TABLE IF
+    // NOT EXISTS in SCHEMA above, so this only advances the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 33) {
     // v33 -> v34: the buy-menu rebuild (OPERATIONS.md §3) — vehicles
@@ -2458,4 +2492,97 @@ export function collectOrder(db: SaveDb, orderId: number): Vehicle {
   );
   db.prepare("DELETE FROM vehicle_orders WHERE id = ?").run(orderId);
   return vehicle;
+}
+
+// --- Fare zones (DESIGN.md §9) — see fare_zones' own SCHEMA comment above
+// for why this is geometry-only (no pricing) and per depot group.
+export interface FareZonePoint {
+  lon: number;
+  lat: number;
+}
+
+export type FareZoneType = "city" | "country";
+
+export interface FareZone {
+  id: number;
+  depotGroupId: number;
+  name: string;
+  zoneType: FareZoneType;
+  points: FareZonePoint[];
+  colour: string;
+}
+
+interface FareZoneRow {
+  id: number;
+  depot_group_id: number;
+  name: string;
+  zone_type: FareZoneType;
+  points: string;
+  colour: string;
+}
+
+function fareZoneFromRow(row: FareZoneRow): FareZone {
+  return {
+    id: row.id,
+    depotGroupId: row.depot_group_id,
+    name: row.name,
+    zoneType: row.zone_type,
+    points: JSON.parse(row.points) as FareZonePoint[],
+    colour: row.colour,
+  };
+}
+
+// Plain UI default, not real data — matches the colour the map used before
+// per-zone colour existed, so an existing zone looks the same until the
+// player changes it.
+const DEFAULT_ZONE_COLOUR_BY_TYPE: Record<FareZoneType, string> = { city: "#3b82f6", country: "#22c55e" };
+
+export function createFareZone(
+  db: SaveDb,
+  depotGroupId: number,
+  name: string,
+  zoneType: FareZoneType,
+  points: FareZonePoint[],
+  colour: string = DEFAULT_ZONE_COLOUR_BY_TYPE[zoneType],
+): FareZone {
+  if (points.length < 3) throw new Error("createFareZone: a zone needs at least 3 points");
+  if (!HEX_COLOUR.test(colour)) throw new Error("createFareZone: colour must be #rrggbb");
+  const result = db
+    .prepare("INSERT INTO fare_zones (depot_group_id, name, zone_type, points, colour) VALUES (?, ?, ?, ?, ?)")
+    .run(depotGroupId, name, zoneType, JSON.stringify(points), colour);
+  return { id: Number(result.lastInsertRowid), depotGroupId, name, zoneType, points, colour };
+}
+
+export function listFareZonesForDepotGroup(db: SaveDb, depotGroupId: number): FareZone[] {
+  const rows = db
+    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones WHERE depot_group_id = ? ORDER BY id")
+    .all(depotGroupId) as unknown as FareZoneRow[];
+  return rows.map(fareZoneFromRow);
+}
+
+// Across every depot group — used for cross-zone snapping while drawing
+// (DESIGN.md §9's zone map is meant to tile edge-to-edge, including between
+// two different depot groups' own zones, which still share the same map).
+export function listAllFareZones(db: SaveDb): FareZone[] {
+  const rows = db
+    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones ORDER BY id")
+    .all() as unknown as FareZoneRow[];
+  return rows.map(fareZoneFromRow);
+}
+
+export function renameFareZone(db: SaveDb, zoneId: number, name: string): void {
+  db.prepare("UPDATE fare_zones SET name = ? WHERE id = ?").run(name, zoneId);
+}
+
+export function setFareZoneType(db: SaveDb, zoneId: number, zoneType: FareZoneType): void {
+  db.prepare("UPDATE fare_zones SET zone_type = ? WHERE id = ?").run(zoneType, zoneId);
+}
+
+export function setFareZoneColour(db: SaveDb, zoneId: number, colour: string): void {
+  if (!HEX_COLOUR.test(colour)) throw new Error("setFareZoneColour: colour must be #rrggbb");
+  db.prepare("UPDATE fare_zones SET colour = ? WHERE id = ?").run(colour, zoneId);
+}
+
+export function deleteFareZone(db: SaveDb, zoneId: number): void {
+  db.prepare("DELETE FROM fare_zones WHERE id = ?").run(zoneId);
 }

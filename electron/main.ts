@@ -96,6 +96,15 @@ import {
   placeOrder,
   listOrders,
   collectOrder,
+  createFareZone,
+  listFareZonesForDepotGroup,
+  listAllFareZones,
+  renameFareZone,
+  setFareZoneType,
+  setFareZoneColour,
+  deleteFareZone,
+  type FareZoneType,
+  type FareZonePoint,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -523,6 +532,24 @@ function registerLiveryHandlers(): void {
   );
 }
 
+function registerFareZoneHandlers(): void {
+  ipcMain.handle("fareZones:listForDepotGroup", (_e, depotGroupId: number) =>
+    listFareZonesForDepotGroup(save, depotGroupId),
+  );
+  ipcMain.handle("fareZones:listAll", () => listAllFareZones(save));
+  ipcMain.handle(
+    "fareZones:create",
+    (_e, depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour?: string) =>
+      createFareZone(save, depotGroupId, name, zoneType, points, colour),
+  );
+  ipcMain.handle("fareZones:rename", (_e, zoneId: number, name: string) => renameFareZone(save, zoneId, name));
+  ipcMain.handle("fareZones:setType", (_e, zoneId: number, zoneType: FareZoneType) =>
+    setFareZoneType(save, zoneId, zoneType),
+  );
+  ipcMain.handle("fareZones:setColour", (_e, zoneId: number, colour: string) => setFareZoneColour(save, zoneId, colour));
+  ipcMain.handle("fareZones:delete", (_e, zoneId: number) => deleteFareZone(save, zoneId));
+}
+
 function registerStopGroupHandlers(): void {
   ipcMain.handle("stopGroups:create", () => createStopGroup(save));
   ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
@@ -624,6 +651,7 @@ app.whenReady().then(async () => {
   registerDutyHandlers();
   registerVehicleHandlers();
   registerBasketAndOrderHandlers();
+  registerFareZoneHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

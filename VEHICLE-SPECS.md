@@ -172,11 +172,15 @@ given instead):
 
 ---
 
-## 3. Vehicle catalogue, by fleet number range
+## 3. Vehicle catalogue, by fleet number category
+
+Organised by the current category-digit scheme (OPERATIONS.md §3, full
+spec UK-EXPANSION.md §14) rather than the old X,000-range convention
+(superseded everywhere, 2026-10-30).
 
 Every vehicle: **1 wheelchair space additional** to the figures below (§1).
 
-### 10,000s — diesel double-deckers
+### Category 4 — double-deckers, twin-axle (diesel)
 
 **ADL Enviro400 MMC** — built on the **Volvo B5TL chassis**
 | Length | Seated | Standing |
@@ -187,10 +191,11 @@ Every vehicle: **1 wheelchair space additional** to the figures below (§1).
 
 Fuel: standard tank 275L / ~475 miles; smaller tank option 200L / ~350 miles.
 
-**ADL Enviro500** — fixed length **13.8m**. Capacity: 80 fixed seats (25
-lower deck, 55 upper deck) + **3 tip-ups**, 32 standing, 112 total (the
-tip-ups trade off against standing space, not adding to the 112 ceiling).
-Fuel: one tank size, **430L / 660 miles** (Scotland-spec figure).
+**(The ADL Enviro500 that used to be listed here is gone from the
+catalogue — replaced by the ADL Enviro400 XLB, category digit 5,
+tri-axle; see UK-EXPANSION.md §14a for the confirmed replacement spec.
+Leaving it listed under a renamed header would have kept a dropped
+vehicle looking current.)**
 
 **StreetDeck Ultroliner (diesel)** — three lengths, max-seating/max-standing
 pattern applies (§1):
@@ -205,10 +210,23 @@ Fuel: standard tank 245L / 425 miles (all three lengths); smaller tank option
 
 ---
 
-### 20,000s / 30,000s — single-deckers and midibuses
+### Category 5 — double-deckers, tri-axle
 
-**ADL Enviro200 MMC** — one model spanning both ranges by length: 8.9m/9.7m/
-10.8m land in **30,000s**; 11.5m/11.8m land in **20,000s**.
+**ADL Enviro400 XLB** — fixed **13.4m**, diesel only. Replaces the ADL
+Enviro500 above (UK-EXPANSION.md §14a, confirmed final spec). Base price
+**£270,000**. Capacity: **100 fixed seats** (61 upper deck, 36 lower deck)
++ 3 tip-ups, 25 standing (the tip-ups trade off against standing space,
+not adding to the total capacity ceiling). Fuel: one tank size, **250L /
+380 miles**. Airlink 100's own vehicle requirement now points at this XLB
+(it was previously a 13m Volvo 9700DD).
+
+---
+
+### Category 3 / Category 2 — single-deckers and midibuses
+
+**ADL Enviro200 MMC** — one model spanning both categories by length:
+8.9m/9.7m/10.8m land in **category 2 (midibus)**; 11.5m/11.8m land in
+**category 3 (full-size single-deck)**.
 | Length | Seated | Standing |
 |---|---|---|
 | 8.9m | 30 | 14 |
@@ -220,15 +238,15 @@ Fuel: standard tank 245L / 425 miles (all three lengths); smaller tank option
 Fuel: one tank size, 220L. Range: 8.9m=500mi, 9.7m=490mi, 10.8m=475mi,
 11.5m=460mi, 11.8m=440mi.
 
-**Volvo 7900 Hybrid** — fixed **12m**, 20,000s. Only Hybrid and Electric
-variants exist in Scotland (see 70,000s for Electric); plain diesel and the
-10.6m length don't exist here and are dropped from the catalogue.
-Capacity: 38 seated, 62 standing.
+**Volvo 7900 Hybrid** — fixed **12m**, category 3. Only Hybrid and Electric
+variants exist in Scotland (see "Category 3e" below for Electric); plain
+diesel and the 10.6m length don't exist here and are dropped from the
+catalogue. Capacity: 38 seated, 62 standing.
 
 Fuel: one tank size (no options), 425 mile range.
 
-**MCV Evora** — new addition. 10.8m lands in **30,000s**, 12.9m in
-**20,000s** (same threshold as the Enviro200 MMC).
+**MCV Evora** — new addition. 10.8m lands in **category 2**, 12.9m in
+**category 3** (same threshold as the Enviro200 MMC).
 | Length | Seated | Standing | Notes |
 |---|---|---|---|
 | 10.8m | 35 | 34 (wheelchair in use) / 43 (bay converted) | 69+wheelchair / 78 total. Confirmed real figure, no longer provisional |
@@ -238,7 +256,7 @@ Fuel: one tank size, 350L. Range: 10.8m=990mi, 12.9m=900mi.
 
 ---
 
-### 40,000s — minibus
+### Category 1 — minibus
 
 **Mercedes-Benz Sprinter/EVM Cityline** — fixed length **7.4m** (7367mm).
 No toilet ever available (§1's 4-hour rule applies). Low floor is a
@@ -248,7 +266,7 @@ retrofittable option (defaults to steps).
 
 ---
 
-### 50,000s — coaches
+### Category 6 / Category 7 — coaches (twin-axle / tri-axle)
 
 **Volvo 9700** — lengths 12.4m (twin-axle), 13.1m/13.9m/15m (tri-axle).
 Capacity: **twin-axle = 53 seated, tri-axle = 65 seated** (doesn't vary
@@ -256,7 +274,10 @@ further by the specific tri-axle length). Fuel: standard tank 480L / 900
 miles; larger "InterCity" tank option 600L / 1125 miles — only these two
 tank sizes exist.
 
-**Volvo 9700DD** — lengths 13m and 14.8m (both tri-axle — a separate buying
+Both lengths land in category 6 at 12.4m or category 7 at 13.1m/13.9m/15m —
+the twin-/tri-axle digit is derived from length, not chosen directly.
+
+**Volvo 9700DD** — lengths 13m and 14.8m (both tri-axle, category 7 — a separate buying
 menu entry from the 9700, not merged, since single vs double deck is a
 fundamental distinction). Fuel: one tank size in Scotland, 690L. Range:
 13m = 1080 miles, 14.8m = 980 miles. **Airlink 100 requires the 13m
@@ -269,7 +290,7 @@ between two real models:
 
 ---
 
-### 60,000s — specialised (sightseeing, open-top only)
+### Category 4 — open-top double-deckers (sightseeing only)
 
 **ADL Enviro400 open-top** — both power variants **reuse their donor
 vehicle's stats entirely** (base capacity, fuel/battery, chassis), except for
@@ -281,7 +302,7 @@ tour-specific options (tour audio + PA, languages):
 
 ---
 
-### 67,000 — hydrogen single-deckers (sub-range within 70,000s)
+### Category 3h — hydrogen single-deckers
 
 **Wrightbus GB Kite Hydroliner** — fixed length **12.2m**. One buying entry
 shared with the Electroliner below (Electric/Hydrogen selector). Capacity:
@@ -291,7 +312,7 @@ a **fixed 54kWh buffer battery** (doesn't vary with tank size).
 
 ---
 
-### 70,000s — electric single-deckers
+### Category 3e — electric single-deckers
 
 **Volvo 7900 Electric ("7900e")** — fixed **12m**, the electric sibling of
 the 7900 Hybrid above. Capacity: 38 seated, 57 standing (its own figure,
@@ -339,7 +360,7 @@ max capacity 70 minus seats+tip-ups). Battery: 350kWh/225mi or 422kWh/275mi
 
 ---
 
-### 80,000s — electric double-deckers
+### Category 4e — electric double-deckers
 
 **ADL Enviro400EV** — fixed **11.1m**. Capacity: 80 seated (51 upper deck,
 29 lower deck), 18 standing (estimated, interpolated from the diesel
@@ -357,7 +378,7 @@ U11DD/"E12DD" — considered, then removed by choice.)*
 
 ---
 
-### 87,000 — hydrogen double-deckers (sub-range within 80,000s)
+### Category 4h — hydrogen double-deckers
 
 **StreetDeck Hydroliner** — fixed **10.9m**. Capacity: max capacity 90, max
 seated 69, max standing 24 (max-seating/max-standing pattern). Fuel:
@@ -366,7 +387,7 @@ tank size only).
 
 ---
 
-### 90,000s — support fleet
+### Category 9 — support fleet
 
 Unchanged from the existing OPERATIONS.md spec — Ford Transit Custom /
 E-Transit Custom, Mercedes Sprinter crew van (diesel and electric), Skoda
@@ -401,36 +422,14 @@ training bus if fitted out as one:
 
 ## 3b. Depot energy infrastructure
 
-**NOTE: this belongs in OPERATIONS.md §15 (Fuel and energy) alongside the
-existing pantograph charging content — added here for now since a current
-copy of OPERATIONS.md wasn't available. Migrate on next sync.**
-
-**Running cost rule:** electric and hydrogen vehicles cost **less than
-diesel** in both maintenance and recharging/refuelling — a genuine ongoing
-saving, not just an upfront price difference.
-
-**Hydrogen refuelling** — a depot needs hydrogen facilities built before a
-hydrogen bus can be fuelled there, the same one-off build-cost pattern as
-electric chargers. Any depot with facilities can build it. Before a depot
-has its own, a hydrogen bus can refuel at **Volvo** (the universal servicing
-business, already the fallback for maintenance/MOT/parts) at a premium.
-
-**On-site hydrogen production** — an alternative to buying hydrogen in: a
-one-off facility build cost, but cheaper hydrogen afterward than buying it
-in from outside.
-
-**Solar panels and batteries** — separate purchases, not one combined cost:
-- Batteries store solar power generated during the day.
-- Batteries also charge overnight on a **time-of-use cheap-electricity
-  rate** — separate from, and stacking with, the stores director's existing
-  regional volume discount on electricity.
-- Stored energy (solar + cheap overnight charge) powers the depot's own
-  buses during the day.
-- The same infrastructure can also be sold via **charger hire** (existing
-  mechanic, §OPERATIONS.md) to make extra profit charging external
-  companies' vehicles during the day.
-- **Solar generation varies by both season and region** — not a flat
-  year-round figure.
+**Migrated to OPERATIONS.md §15 (Fuel and energy) → "Depot infrastructure",
+2026-10-30** — the note above about a missing OPERATIONS.md copy no longer
+applies. OPERATIONS.md §15 now holds the full, current depot infrastructure
+spec (diesel/hydrogen pumps and tanks, chargers, grid connection tiers,
+solar, battery, workshop bays, inspection pits, wash bays, parking, build
+times, per-tier caps, fuelling-time formulas and hydrogen transport
+logistics) — this duplicate copy is intentionally gone rather than kept in
+sync by hand in two places.
 
 ## 4a. Base prices
 

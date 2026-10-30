@@ -1,7 +1,8 @@
 // Buy menu — Screen 4: Used (the user's own buy-menu spec, 2026-10-18).
-// "Used prices and condition formulae are not decided, so use placeholder
-// data" — see used-vehicle-stock.mts's own header for what that means
-// here. Specification is fixed per listing; "Add to basket" defaults to
+// The used PRICE formula is now real (OPERATIONS.md §3 "Condition",
+// confirmed 2026-10-30) — see used-vehicle-stock.mts's own header for what
+// is and isn't real here (condition itself and the age range are still
+// placeholders). Specification is fixed per listing; "Add to basket" defaults to
 // the first available depot group/depot (changeable afterward in Basket,
 // which already supports editing a basket row's destination) since this
 // screen has no depot picker of its own — the spec doesn't ask for one,
@@ -41,7 +42,7 @@ export function renderUsedScreen(container: HTMLElement, ctx: UsedScreenContext)
   note.style.fontSize = "11px";
   note.style.color = "var(--text-muted)";
   note.style.marginBottom = "10px";
-  note.textContent = "Used prices and condition are placeholder figures — real formulae aren't decided yet.";
+  note.textContent = "Used prices use the real depreciation formula (10%/year to a 20% floor, scaled by condition) — condition itself and the age shown are still placeholder figures.";
   container.appendChild(note);
 
   const table = document.createElement("table");

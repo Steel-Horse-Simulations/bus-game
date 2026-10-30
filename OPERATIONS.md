@@ -224,17 +224,21 @@ buy** — those with two buses or fewer are **free to rent**.
 ### Configurator
 Vehicles are configurable, not fixed catalogue entries. One model appears in the
 list with options for power type, length and equipment; the configuration
-decides price, range, power output, length and **which fleet number range the
-vehicle lands in** once bought.
+decides price, range, power output, length and **which fleet number
+category digit the vehicle lands in** once bought (§3 "Fleet numbers and
+plates").
 
-The Volvo 7900 is the clearest case: one entry, offered as 10.6m diesel, 12m
-diesel, hybrid or electric, landing in the 20,000s or 70,000s accordingly.
+The ADL Enviro200 MMC is the clearest case: one catalogue entry, offered at
+8.9m/9.7m/10.8m (midibus, digit 2) or 11.5m/11.8m (full-size single-deck,
+digit 3) — the length chosen at configuration decides which digit the
+vehicle lands in, in either diesel or electric.
 
 Examples of options: larger fuel tank on diesel coaches (more range, better for
 InterCity), USB and power sockets, Wi-Fi, **comfier seats** (the passenger
-seating upgrade, retrofittable — required on Airlink 100, Express 500 and AIR,
-§10), air conditioning, passenger information with next-stop audio and
-screens, premium driver seat, pantograph charging on electric vehicles.
+seating upgrade, retrofittable — required on Airlink 100, Express 500, AIR
+(§10) and Railair (UK-EXPANSION.md §9a)), air conditioning, passenger
+information with next-stop audio and screens, premium driver seat,
+pantograph charging on electric vehicles.
 
 **Some options are retrofittable later as upgrades**; some are purchase-only.
 
@@ -247,6 +251,12 @@ fifteen-year-old is genuinely better than a neglected five-year-old.
 **Used buses** are therefore not a separate category: any catalogue model can be
 bought used, at a used price and a lower condition. They are very cheap and much
 less reliable, and passengers dislike them — good early, poor long term.
+
+**Used price formula** (confirmed 2026-10-30, replacing the earlier
+placeholder): the new price **falls 10% per year of age**, down to a
+**floor of 20%** of new price, then that figure is **scaled by the
+vehicle's own condition** — two identically-aged buses priced differently
+if one has been better maintained than the other.
 
 ### Delivery and transfers
 New vehicles arrive at the dealer **two or three a day**, a randomised number
@@ -319,67 +329,132 @@ easier to maintain and stock parts for.
 Three ways to pay:
 
 - **Buy outright** — full price now, owned forever.
-- **Lease** — monthly payments, returned to the dealer at the end or the lease
-  extended. At the end there is an option to **buy out the remaining credit** and
-  keep the vehicle.
-- **Lease to own** — a higher monthly payment, then ownership. Total cost is
-  about **10% more than buying outright**.
+- **Lease** — **60 months at 1.4% of the vehicle's price per month** (total
+  **84% of price** over the full term), bus returned to the dealer at the
+  end, or the lease extended. At the end there is an option to **buy out
+  the remaining credit** and keep the vehicle.
+- **Lease to own** — **60 months at 1.83% of price per month** (total
+  **110% of price**), then ownership — confirming the earlier "about 10%
+  more than buying outright" figure as a real rate rather than a rough
+  estimate (2026-10-30).
+
+Real figures confirmed 2026-10-30, replacing the earlier placeholder
+instruction not to hard-code a rate or term.
 
 **Missed payments** add that month's interest to the balance, so the player pays
 more overall. Vehicles are never repossessed.
 
 ### Fleet numbers and plates
-Every vehicle gets a unique five-digit fleet number and a unique registration
-plate based on the area it was bought in. UK plates encode area and age —
+Every vehicle gets a unique fleet number and a unique registration plate
+based on the area it was bought in. UK plates encode area and age —
 Scottish tags run SA–SJ Glasgow, SK–SO Edinburgh, SP–ST Dundee, SU–SW Aberdeen,
 SX–SY Inverness — so the plate doubles as a visible age cue.
 
 Both stay with the vehicle for life, including on transfer between depots.
 
-| Range | Category |
+**Fleet number format**: `[category digit][sequential number, 3+ digits]
+[e/h suffix]` — this fully supersedes the old X,000-range convention
+(reconfirmed 2026-10-30; full spec and worked examples in
+UK-EXPANSION.md §14, already implemented in `fleet-numbering.mts`):
+
+| Digit | Category |
 |---|---|
-| 10,000–19,999 | Diesel double-deckers |
-| 20,000–29,999 | Diesel single-deckers |
-| 30,000–39,999 | Diesel door-forward midibuses |
-| 40,000–49,999 | Diesel or electric minibuses and wheel-forward midibuses |
-| 50,000–59,999 | Coaches |
-| 60,000–69,999 | Electric midibuses, electric coaches and other specialised |
-| 70,000–79,999 | Electric single-deckers |
-| 80,000–89,999 | Electric and other alternative-fuel double-deckers |
-| 90,000–99,999 | Pool cars, staff transport and support vehicles |
+| 1 | Minibus |
+| 2 | Midibus |
+| 3 | Full-size single-deck |
+| 4 | Double-decker, twin-axle |
+| 5 | Double-decker, tri-axle |
+| 6 | Coach, twin-axle |
+| 7 | Coach, tri-axle |
+| 9 | Support vehicles (pool cars, staff transport) |
+
+The digit encodes **size/type only**, never power — an **e** suffix means
+electric, an **h** suffix means hydrogen, and diesel/hybrid take no suffix
+at all. A minibus is digit 1 whether it's diesel or electric; the old range
+convention used to fold power into some ranges and not others (diesel-only
+midibuses, diesel-or-electric minibuses, a separate electric-everything
+60,000s catch-all), which is exactly what this format fixes.
 
 Within a category, **each make starts in its own block** so numbers do not run
-together. Numbers are issued chronologically. When a range fills, warn the
+together. Numbers are issued chronologically. When a category fills, warn the
 player and let them decide.
+
+### Custom number plates
+Added 2026-10-30. A vehicle's **plate** (not its fleet number) can be
+replaced with a custom one, layered on top of the automatic area/age plate
+above rather than replacing that system.
+
+- **Any valid UK plate format**, unique across the whole fleet.
+- **Fixed fees**, not player-adjustable settings:
+  - **£80** to apply a plate to a vehicle for the first time (the DVLA
+    assignment fee).
+  - **£24 (30%)** to move a plate — putting a saved plate on a new vehicle
+    after a sale, or putting a vehicle's original plate back on it.
+- **Takes a few days to update.** The bus keeps running on its old plate
+  throughout and switches automatically once the update completes.
+- **The original plate is always kept**, not discarded — it sits in
+  company plate stock, ready to be put back on the same vehicle later for
+  the £24/30% move fee.
+- **Fitting**: a fitter spends **15 minutes** fitting the plate, then the
+  bonding glue takes **5 hours** to set. The bus **cannot be used** while
+  the glue is setting.
+- **Plates move between vehicles.** Selling a vehicle doesn't lose its
+  plate — the plate is saved to **company plate stock** instead, and can
+  be fitted to a different vehicle later (at the £24/30% move fee).
+
+**Buying the registration itself** (separate from the £80 first-fitting
+fee, which still applies on top):
+
+| Plate length | Price |
+|---|---|
+| 7 characters | £250 |
+| 6 characters | £1,500 |
+| 5 characters | £5,000 |
+| 4 characters | £15,000 |
+| 3 characters | £40,000 |
+| 2 characters | £100,000 |
+| 1 character | £250,000 |
+
+Multipliers stack on top of the base price above:
+- **×3** — reads as a real word, name or set of initials.
+- **×2** — repeated or sequential digits.
+- **×1.5** — matches a real route number or fleet number the company
+  actually uses.
+
+**Bulk buying**: the player types a start plate and an end plate, and every
+valid plate in that range is bought into company plate stock in one go.
+The price is the **sum of each individual plate's own price** (length and
+multipliers computed per plate), with the existing vehicle bulk discount
+(`OPERATIONS.md` §3 "Buying") applied on top — 2% per vehicle for the first
+three, 3% each to six, then +1% each, capped at 25% at 21 or more. Stock
+plates are fitted to vehicles later, as needed, same as any other saved
+plate.
 
 ### Transfers
 Vehicles can be transferred between depots and must **drive to the new depot**,
 collected by anyone at the receiving depot holding the right licence.
 
 ### Catalogue
-Twenty-one buses and coaches, real models with specifications balanced for the
-game. Makes: Volvo, Alexander Dennis, Wrightbus, Mercedes/EVM, Yutong.
+Real models with specifications balanced for the game. Makes: Volvo,
+Alexander Dennis, Wrightbus, Mercedes/EVM, Yutong. **The real, current
+vehicle list lives in `VEHICLE-SPECS.md` and `vehicle-catalogue.mts`** —
+this section no longer keeps its own copy of it. The list that used to be
+here was organised by the old X,000-range convention and had drifted out
+of sync with the real catalogue (it still named vehicles since dropped,
+like the Volvo B8L and Yutong E12DD/U11DD) — rather than hand-patch stale
+vehicle associations onto new category digits, it's removed outright
+(2026-10-30) in favour of the one real source of truth.
 
-- **10,000s** — ADL Enviro400 MMC; Volvo B8L
-- **20,000s** — ADL Enviro200 MMC 11.5m; Volvo 7900 (12m and 10.6m diesel);
-  Volvo 7900 Hybrid
-- **30,000s** — ADL Enviro200 MMC 8.9m
-- **40,000s** — Mercedes-Benz Sprinter, EVM conversion, diesel and electric.
-  Defaults to steps; a low floor variant costs extra at purchase and is
-  retrofittable later at greater expense
-- **50,000s** — Volvo 9700, Volvo 9700DD (from 50,000); Yutong T12E, Yutong T15E
-  (from 55,000). Coaches come in **twin-axle and tri-axle** versions, a
-  configurator choice like power type or length: twin-axle 9700 seats **53**,
-  tri-axle **65**. The 9700DD only exists as tri-axle.
-- **60,000s** — ADL Enviro400 open-top, diesel and electric (sightseeing only); ADL Enviro400 open-top, diesel and
-  electric (sightseeing only)
-- **70,000s** — Yutong E12; Yutong E10; ADL Enviro200EV; Volvo 7900 EV;
-  Wrightbus GB Kite Electroliner
-- **80,000s** — ADL Enviro400EV; Yutong E12DD; Volvo BZL DD (MCV body)
+Coaches come in **twin-axle and tri-axle** versions, a configurator choice
+like power type or length: twin-axle Volvo 9700 seats **53**, tri-axle
+**65**. The 9700DD only exists as tri-axle. A low-floor variant on the EVM
+Cityline costs extra at purchase and is retrofittable later at greater
+expense.
 
-**90,000s support fleet** — Ford Transit Custom (diesel); Ford E-Transit Custom;
-Mercedes Sprinter crew van, diesel and electric; Skoda Octavia Estate; Vauxhall
-Corsa; Vauxhall Corsa Electric; Skoda Enyaq; heavy recovery unit.
+**Support vehicles** (category digit 9, above) — Ford Transit Custom
+(diesel); Ford E-Transit Custom; Mercedes Sprinter crew van, diesel and
+electric; Skoda Octavia Estate; Vauxhall Corsa; Vauxhall Corsa Electric;
+Skoda Enyaq; heavy recovery unit.
 
 The **heavy recovery unit needs an HGV licence**, which engineers gain through
 external training. It lets the player recover a bus themselves instead of paying
@@ -643,6 +718,7 @@ than editing every line.
 | Technician | 0.95 |
 | Relief controller | 1.05 |
 | Marketing assistant | 1.05 |
+| Commercial assistant | 1.05 |
 | Driving instructor | 1.10 |
 | Controller | 1.15 |
 | Revenue inspector | 1.25 |
@@ -650,10 +726,12 @@ than editing every line.
 | Workshop manager | 1.50 |
 | Store manager | 1.55 |
 | Marketing manager | 1.55 |
+| Commercial manager | 1.55 |
 | Depot manager | 1.60 |
 | Operations manager | 1.65 |
 | Stores director | 2.00 |
 | Marketing director | 2.00 |
+| Commercial director | 2.00 |
 | Operations director | 2.20 |
 
 **Fleet elite** is a flat **£20/month** top-up on top of the professional
@@ -701,6 +779,9 @@ an org chart it can't fill.
 | Shunters | At a depot with fuelling facilities |
 | Storekeepers | With the fleet — 1 under 30 buses, 2 at 30 or more |
 | Marketing assistant | From the first depot group |
+| Commercial assistant | At 10 routes in a depot group |
+| Commercial manager | At 2 depots in a region |
+| Commercial director | At 4 depots company-wide |
 | Driving instructor | On owning a training bus |
 | Engineers and technicians | On building maintenance facilities |
 | Stance assistants, other bus station staff | Where the station has staff facilities |
@@ -752,6 +833,9 @@ Four roles are filled by promotion:
 | Marketing assistant | Hired externally | — entry role |
 | Marketing manager (region) | Marketing assistants | No |
 | Marketing director (company) | Marketing managers | No |
+| Commercial assistant | Controllers, bus drivers, or hired externally (less experienced) | No |
+| Commercial manager (region) | Commercial assistants | No |
+| Commercial director (company) | Commercial managers | No |
 | Depot manager | Controllers, workshop managers, store managers | Yes |
 | Tour guide | Travel centre staff, external | Casual |
 | Store manager | Storekeepers only | No — one for the whole company |
@@ -1061,11 +1145,14 @@ at **10 routes** in a depot group.
 Above controllers sit two more tiers, mirroring stores.
 
 **Operations manager — one per region.** Handles punctuality across the region,
-cross-depot driver loans, disruption spanning several depots, and **approving
-route and timetable changes** — approval is automatic, and their skill only
-affects how quickly it happens, so a good one shortens the lead times.
+cross-depot driver loans, disruption and early running, and **approving route
+and timetable changes** — approval is automatic, and their skill only affects
+how quickly it happens, so a good one shortens the lead times.
 
-They also **optimise the timetable**, which is their main job (`DESIGN.md` §7).
+**Timetable optimising and frequency suggestion moved to the commercial
+team (§13a), 2026-10-30** — the operations manager no longer does this at
+all; disruption and early running are what's left of their own hands-on
+timetable work.
 
 **Operations director — one for the company.** Negotiates **better council
 contract terms** and sets company-wide service standards. They also optimise
@@ -1073,10 +1160,12 @@ contract terms** and sets company-wide service standards. They also optimise
 skilled they are, run **cascades**, and negotiate **charger hire** contracts with
 outside companies.
 
-Both only act on their optimisation work when a route is created or modified, and
-their changes take effect on the **Monday of every even-numbered week** —
-fortnightly — with anything decided after a changeover batching into the next one,
-so the timetable doesn't shift under the player daily.
+Their own optimisation work (stand allocation, cascades) still only acts when a
+route is created or modified, and takes effect on the **Monday of every
+even-numbered week** — fortnightly — with anything decided after a changeover
+batching into the next one, so the timetable doesn't shift under the player
+daily. The commercial team's own timetable retiming (§13a) follows the same
+fortnightly batching, for the same reason.
 
 ## 9. Engineering and maintenance
 
@@ -1420,6 +1509,36 @@ Marketing must **never over-advertise**. A route already running full gains
 nothing, so the budget stops helping once the network has no headroom and the
 money is better spent on vehicles.
 
+## 13a. Commercial team
+
+Added 2026-10-30, taking over timetable optimising and frequency suggestion
+from the operations manager (§8b) — that is now this team's main job, not a
+side duty of operations. Looks after **destinations, timing points and
+timetables**.
+
+Three tiers, the same shape as marketing (§13): a **commercial assistant**
+per depot group, a **commercial manager** per region, a **commercial
+director** for the company. Pay ratios 1.05 / 1.55 / 2.00 — identical to
+marketing's own three ratios (§6 "Wages").
+
+**Unlock**: a depot group needs **10 routes** before it gets a commercial
+assistant; a manager needs **2 depots in a region**; a director needs **4
+depots company-wide**.
+
+**Promotion**: managers are promoted from assistants, directors from
+managers — the same shape as every other three-tier staff group. Assistants
+themselves can be promoted from **controllers or bus drivers**, or **hired
+externally** (less experienced than a promoted one).
+
+**The player creates every timetable.** The commercial team only
+**optimises** an existing one — retiming journeys to ease congestion without
+changing any route's own frequency. **Any change to frequency, up or down,
+needs the player's own approval** — the team can propose it, but never
+applies it unilaterally. This mirrors the operations manager's own guard
+rail (§8b, "leaves the timetable alone and tells the player" where it can't
+solve congestion without breaking a locked constraint) — the commercial
+team has the identical constraint, just for a different kind of change.
+
 ## 14. Tour guides
 
 Casual staff paid **per tour**, hired externally or from travel centre staff.
@@ -1466,71 +1585,267 @@ with **spare daytime capacity** can offer it, and **hired chargers are genuinely
 unavailable** to the player's own buses, so it's a decision rather than free
 money.
 
-**Hydrogen refuelling.** A depot needs hydrogen facilities built before a
-hydrogen bus can be fuelled there — the same one-off build-cost pattern as
-electric chargers. Any depot with facilities can build it. Before a depot has
-its own, a hydrogen bus can refuel at **Volvo** (the universal servicing
-business, §9) at a premium.
-
-**On-site hydrogen production** is an alternative to buying hydrogen in: a
-one-off facility build cost, but cheaper hydrogen afterward than buying it in
-from outside.
-
-**Solar panels and batteries** — separate purchases, not one combined cost.
-Batteries store solar power generated during the day, and also charge
-overnight on a **time-of-use cheap-electricity rate** — separate from, and
-stacking with, the stores director's regional volume discount above. Stored
-energy (solar plus cheap overnight charging) powers the depot's own buses
-during the day, and the same infrastructure can be sold via **charger hire**
-to make extra profit charging external companies' vehicles too. **Solar
-generation varies by both season and region** — not a flat year-round
-figure.
-
 **Pantograph battery buffers.** A pantograph charging point (DESIGN.md §5)
 gets a **local battery buffer installed alongside it**, not just at depots —
 needed so a stop can support a fast charge without requiring a full grid
 upgrade. Both the pantograph charger itself and its battery **can only be
 built at a stop, bus station or interchange the player owns** — the same
 ownership rule applies identically across all three site types (DESIGN.md
-§4, §5, §5a).
+§4, §5, §5a). This stop/station-level buffer is separate from a depot's own
+battery storage below, which is priced and capped per depot tier instead.
 
-Battery capacity is **continuous, not fixed tiers** — a smoothly scaling
-amount the player dials in, not small/medium/large packages. Realistic
-sizing bands, for the input range rather than as fixed options:
+### Depot infrastructure
 
-| Site | Realistic capacity |
+Replaces the old hydrogen/on-site-production/solar/battery pricing above
+(2026-10-30) — those were priced on a continuous-capacity formula with no
+depot-tier caps at all; this is a flat price per unit, tiered by depot size,
+and covers every kind of depot capital infrastructure, not just energy.
+
+**Rules:**
+- **Flat price per unit** at every depot, with **hard caps per depot tier**
+  (below) — no continuous scaling, no per-depot haggling.
+- **Bought and upgraded in place.** Nothing installed here **ever breaks**,
+  and anything can be **sold back at 50% of its price**. A **rented** depot
+  **loses everything installed** on leaving — matches the existing rented-
+  depot rule for other installations (§2 "Getting a depot", the 15% rule).
+- **Build times**: pumps, bays and wash bays **2 weeks**; chargers and solar
+  **4 weeks**; grid connections and batteries **8 weeks**; hydrogen (pump and
+  tank) **12 weeks**. The depot **keeps running** throughout — only the
+  specific fuel point being fitted is unavailable, not the whole site.
+- **Charger points share power**, as already established above: when a
+  depot's grid connection limit is reached, more chargers can still be
+  built, but every charger on site shares that same limit, so buses charge
+  slower and some may not finish a full overnight charge.
+
+**Prices** (one-off, per unit, not monthly):
+
+| Item | Price |
 |---|---|
-| A single pantograph point | ~150–300 kWh |
-| A medium terminal (bus station/interchange) | ~0.5–1 MWh |
-| A depot | ~1–4 MWh |
+| Diesel pump | £12,000 |
+| Diesel tank | £8,000 for the 10,000-litre minimum, then **£4,000 per extra 5,000-litre step** |
+| Hydrogen pump | £20,400 (1.7× the diesel pump) |
+| Hydrogen tank | £12,750 for the 1,500kg minimum, then **£4,250 per extra 500kg** (≈£8.50/kg — 1.7× the diesel tank's own per-litre rate, for equivalent bus range) |
+| Charger point | £3,500 |
+| Grid connection — 100kW | £15,000 |
+| Grid connection — 250kW | £40,000 |
+| Grid connection — 500kW | £90,000 |
+| Grid connection — 1MW | £190,000 |
+| Grid connection — 2MW | £400,000 |
+| Solar | £1,100 per kW |
+| Battery | £300 per kWh |
+| Workshop bay | £25,000 (needs staff, §9 "Engineering and maintenance") |
+| Inspection pit | £12,000 |
+| Wash bay | £15,000 |
+| Parking space | £2,500 |
 
-(Real reference: First Bus Aberdeen runs roughly 2MW/4MWh of battery storage
-on site.)
+**Caps per depot tier** (depot tiers themselves are §2 "Depots" → "Types" —
+an outstation has no staff and cannot fuel, clean or maintain anything at
+all, so none of this table applies there beyond its existing overnight
+parking):
 
-**Cost** is deliberately game-balanced — real battery storage costs would be
-far too high for the game's pacing, the same reasoning as the existing 20%
-discount on property capital (DESIGN.md's economy targets):
-- Base connection cost: **£7,500** (wiring, inverter, groundworks — the same
-  regardless of size).
-- First 300kWh: **£60/kWh**.
-- Next 700kWh (300–1,000kWh): **£37.50/kWh**.
-- Beyond 1,000kWh: **£22.50/kWh**.
+| Tier | Caps |
+|---|---|
+| Tiny depot | Parking 10, wash bay 1, **nothing else** |
+| Small depot | Parking 40, diesel pump 1, hydrogen pump 1, charger points uncapped, grid up to 500kW, workshop bay 2, inspection pit 1, wash bay 1 |
+| Main depot | Parking uncapped, diesel pumps 12, hydrogen pumps uncapped, charger points uncapped, grid up to 2MW, workshop bays 12, inspection pits 6, wash bays 4 |
 
-Worked examples at these rates: a 200kWh pantograph-point battery costs
-about **£19,500**; a 750kWh terminal battery about **£42,375**; a 2,500kWh
-depot battery about **£85,500**.
+Solar, battery, diesel tanks and hydrogen tanks have **no cap at any tier
+except tiny**, which can have **none** of them at all.
 
-**Financing.** Deposit plus instalments only — no pure lease option, unlike
-vehicles (which have both): a battery isn't something you'd want to hand
-back at the end of a lease. The deposit percentage, term length and interest
-premium are meant to match vehicle finance's own figures (§3 above) —
-**flagged as an open question rather than invented**: §3 doesn't currently
-specify a deposit, a term length, or an interest rate for vehicle leasing,
-only that lease-to-own totals about 10% more than buying outright overall.
-There's nothing concrete there yet to reuse (OPEN-ITEMS.md Q12).
+**Fuelling time** depends on tank size and how full the tank already is:
+
+> time = amount added ÷ pump rate
+
+- **Diesel pump rate: 40 litres/minute.**
+- **Hydrogen pump rate: 2.25kg/minute.**
+- These rates are calibrated to two real reference points: an average
+  300-litre diesel tank going from 10% to 100% takes **7 minutes**; an
+  average 30kg hydrogen tank going from 10% to 100% takes **12 minutes**. A
+  bus going from 50% to 100% takes roughly half as long as the same bus
+  from 10%. A 660-litre coach tank from 10% to 100% takes about **15
+  minutes** of diesel.
+
+**Hydrogen supply.** Hydrogen is **bought in**, not produced on site, by
+default. Before a depot has its own hydrogen pump, its buses refuel at
+**Volvo** (the universal servicing business, §9) at a premium — unchanged
+from before.
+
+**Hydrogen transport between depots**: the player can pay to move hydrogen
+from one of their own depots to another.
+- **£4.50 per mile**, minimum **100kg** and maximum **500kg** per trip. The
+  sending depot's own hydrogen tank empties by the amount moved.
+- The lorry follows **UK driver's hours**: a 45-minute break after 4.5
+  hours of driving, 9 hours of driving in a day, then 11 hours of rest.
+  Average speed **45mph**.
+- Loading at the sending depot and unloading at the receiving depot both
+  run at the **hydrogen pump rate** (2.25kg/minute) and each **occupies a
+  pump** at that depot while it happens.
+- **Arrival time = loading time + driving time (including any breaks/rest)
+  + unloading time.**
+
+**On-site hydrogen production is a LATER option**, deliberately left out of
+this pass. When it is added: it will need at least a **500kW grid
+connection**, will make hydrogen **about 40% cheaper** than buying it in,
+**stops producing once the hydrogen tanks are full**, and **overnight bus
+charging takes priority over it for power**. Its build price is not set
+yet.
 
 **Facility electricity.** Depots and bus stations the player owns also
 consume electricity themselves — lighting, facilities, offices — not just
 vehicle charging. This scales with the size of the site and is set **slightly
 below real-world figures**, matching the pattern used elsewhere in the
 economy (e.g. property capital at 20% below real-world).
+
+---
+
+## 16. Bus stop displays
+
+Added 2026-10-30. Two real display types, **replacing the old generic
+"real-time departure screen" stop upgrade entirely** (`DESIGN.md` §4) — a
+stop gets one of these two, or neither, never the old generic screen.
+
+### E-ink (lesser-used stops)
+- Updates **once a minute**.
+- Install **£1,200 per stop**, **£15/month** maintenance.
+- **Always fitted with solar and battery** — E-ink stops aren't always
+  near mains power, unlike LED below.
+- **Timetable add-on**: one-off **£200**, no monthly charge. Adds route
+  maps showing where the bus stops (a satisfaction boost).
+- **Colour add-on**: one-off **£200**, no change to monthly cost. A small
+  satisfaction boost on its own, and **only works where buses on that
+  route have colour destination displays** (§17) — with both, the map
+  shows the real route colours.
+
+### LED (busy stops)
+- Full colour, updates **much more often** and shows more information
+  than E-ink.
+- Install **£4,500 per stop**, **£45/month**.
+- **Mains power is the default.** A **solar and battery option** costs
+  **+£1,000 install** and actually **lowers** the monthly cost by £10 (to
+  **£35/month**), rather than adding to it.
+- **No-mains version**: a smaller, cheaper screen at **£3,500**, plus the
+  same £1,000 solar option (**£4,500 total**) — limited to showing **4
+  buses** at once, rather than LED's usual fuller display.
+- With **colour destinations** (§17) fitted on a route, its LED stop
+  displays show the real route colour **instead of black**.
+
+### Which stop gets which
+Decided by a stop's own **busiest-hour** bus and boarding counts, not daily
+totals:
+
+| Busy-hour buses | Busy-hour boardings | Display |
+|---|---|---|
+| Under 2 | Under 10 | None |
+| Up to 6 | 10–40 | E-ink |
+| Over 6 **or** over 40 | — | LED |
+
+**Bus stations, interchanges, railway and airport stops, and city-centre
+stops always get LED**, regardless of what the counts above would
+otherwise say.
+
+### Effects
+- **E-ink**: a small satisfaction boost; the timetable add-on gives a
+  little more at low-frequency stops specifically.
+- **LED**: a bigger satisfaction boost, plus a small marketing boost.
+- **A satisfaction penalty** applies at any stop whose busy-hour counts
+  cross the LED boundary above but which only has E-ink, or nothing at
+  all — being under-provisioned for real demand is worse than having no
+  display at a quiet stop.
+- **Without the £60,000 upgraded AVL data** (company-wide one-off, shared
+  with the mobile app's own live data — `TICKETING.md`), displays show
+  **scheduled times only**. **With it**, they show **live times** and get
+  the **full** satisfaction/marketing boost, not the scheduled-only
+  partial one.
+- Displays can **push passengers to the mobile app** once the live bus
+  data app upgrade (`TICKETING.md`) is bought.
+
+**LED service promotion.** A larger LED can use its spare display space to
+**advertise a service**, giving that service **3% more boardings** at that
+stop specifically. Limited to **the route that actually stops there**, and
+only usable at a stop that's **restricted to one service or one type of
+service** — a reserved or branded stop (`DESIGN.md` §4 "Stop reservation
+and branding"), not an ordinary multi-route stop.
+
+### Fitting (shared by every stop upgrade, not just displays)
+- Work **starts 14 days after ordering**.
+- **1 hour on site per E-ink, 3 hours per LED.**
+- Fitters work **0800–1700**, which includes travel time between stops,
+  not just time on site.
+- **Contractors are a shared pool per council region** (§1a — real OSM
+  council areas, not depot groups): **2 fitters per region**, **3 for
+  councils with over roughly 1,000 stops**. They only work within their
+  own council area, and jobs **queue** once every fitter in that area is
+  busy. **The same contractor pool does every stop upgrade in this spec**,
+  not just displays.
+- **Highland Council is split into six areas** for this pool specifically
+  (its real area is too large for one 2-fitter pool to cover sensibly),
+  following the old districts: **Caithness, Sutherland, Ross and
+  Cromarty, Skye and Lochalsh, Lochaber, Inverness/Nairn/Badenoch and
+  Strathspey** — **2 fitters each**. This is the one exception to "one
+  pool per real council area" above.
+
+### Bulk menu
+Stop upgrades are bought through a **bulk menu**: every stop in a chosen
+group (a village, or a whole route) gets the **same upgrades at the same
+time**, so no stop in the group ends up better-equipped than another.
+**A group's upgrades only start working once every stop in it is fitted**
+— a partially-fitted group gets nothing yet. **5% off installation** for
+orders of **10 or more stops**.
+
+---
+
+## 17. Bus destination displays
+
+Added 2026-10-30. A real vehicle option — available **both when buying new
+and as a retrofit** on an owned bus — built as two drop-downs in the buy
+menu, the same shape as every other dropdown option (§3 "Configurator"):
+
+1. **Colour tier**: standard white / route colour / full colour.
+2. **Density**: standard / high density.
+
+**Prices, buying new** (added to the vehicle's own price):
+- Route colour: **+£200** over standard.
+- Full colour: **+£550** over standard.
+- High density: **+£300** on top of whichever colour tier is chosen.
+
+**Prices, retrofitting an owned bus:**
+- Route colour: **£1,800**.
+- Full colour: **£2,600**.
+- High density: **+£750** on top of whichever colour tier is chosen.
+
+**Wireless destination updates** (lets destinations update over the air
+rather than needing a controller or depot visit): **£75/bus** when bought
+new, **£90** as a retrofit (£75 plus a **£15** fitting charge) — retrofitting
+takes **30 minutes** of a fitter's time.
+
+### Effects
+- **Every tier** gives a small satisfaction boost plus a small marketing
+  boost.
+- **Route colour** unlocks the colour E-ink stop-display boost and adds a
+  boost to LED stop displays (§16) — those boosts only apply once the
+  bus's own destinations are actually coloured, not from the stop display
+  alone.
+- **Full colour** adds a small **company-wide** marketing boost — but only
+  while the bus is **out of service**, showing the company logo or a
+  service name (e.g. "AIR") rather than a passenger destination. This is
+  not a per-service boost, unlike LED's own service-promotion mechanic
+  (§16).
+
+### Fitting and rollout
+- **Retrofitting takes 2 hours per bus, for every display type** — done
+  by the **company's own fitters only**; unlike the stop-display
+  contractor pool (§16), the **supplier does not fit these**.
+- **Colour rollout is per route, not per bus.** A route needs its own
+  "colour destinations" option turned on. Colour only actually **shows
+  once every bus working that route is fitted** — turned on **one route
+  at a time**. Until then the route keeps the plain white style, even on
+  buses that already have a coloured display fitted. **High density has
+  no such rollout gating** — it's used as soon as a bus has it.
+- **Overnight update**: a controller updates a bus's destinations at
+  **5 minutes per bus** worked into their shift. **Wireless-equipped buses
+  update themselves automatically overnight**, needing no controller time
+  at all.
+- **Delivery**: **2 weeks per order**, for every destination-display
+  upgrade. Ordering is **bulk and cart-based**, the same shape as buying
+  buses (`OPERATIONS.md` §3 "Buying") — buses in a depot group are added
+  to a cart and bought from one menu, rather than ordered one at a time.

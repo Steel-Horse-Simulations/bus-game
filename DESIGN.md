@@ -172,8 +172,8 @@ the point of simulating real roads.
 
 Speeds are **1x, 4x, 10x, 20x and 60x**. At 60x a day passes in about 2.4 real
 minutes and a 28-day month in roughly an hour, so the monthly cycle — wages, rent,
-contract reviews, the operations manager's changes — comes round several times in a
-session rather than once.
+contract reviews, the operations manager's and commercial team's changes — comes
+round several times in a session rather than once.
 
 Note the simulation must **step properly at 60x** rather than teleporting vehicles:
 ten game minutes pass per real second, and a naive update will skip buses past
@@ -248,7 +248,7 @@ uses. **Not yet wired into route-drawing itself** — DESIGN.md's own "a
 route selects the group as a single stop then picks the shelter" doesn't
 exist as a real interactive step yet (route-draw.ts has no group-aware
 placement logic), and there's no automated group-member swap either (that's
-the "operations manager" optimiser, Phase 7+, CLAUDE.md's own hard part on
+the commercial team's optimiser, Phase 7+, CLAUDE.md's own hard part on
 respecting real-world constraints) — informational only for now, same
 "store/surface the data now, wire up the behaviour once the mechanism
 exists" precedent as Connection stop and Long stop.
@@ -270,8 +270,12 @@ on.
 A stop can be **bought** for a one-off price plus a smaller ongoing monthly fee,
 which allows the player to add upgrades.
 
-**Stop upgrades:** shelter, real-time departure screen, seating, lighting, and
-route advertising (which raises awareness — §10).
+**Stop upgrades:** shelter, seating, lighting, and route advertising (which
+raises awareness — §10). The old generic "real-time departure screen" upgrade
+is gone, replaced entirely by the two real display types in `OPERATIONS.md`
+§16 (E-ink and LED stop displays, assigned automatically by a stop's own
+busy-hour bus and boarding counts, not bought freely like the other
+upgrades here).
 
 ### Station, airport and park-and-ride stop linking
 Railway stations, airports and park-and-ride sites get stops linked to
@@ -720,14 +724,14 @@ the day.
 - Can name the **onward route** it feeds, so duty building always chains it
   correctly, and the same on the return.
 - Can start later or finish earlier along a route than the full journey.
-- Adjusts automatically when the operations manager retimes the main route — if
-  service 7's timings are extended, the service 12 journey departs later; if
-  service 1 keeps arriving late, its departure is moved **earlier** while the
-  arrival is held. Shifting a service by an hour moves its positioning journeys
-  with it.
+- Adjusts automatically when the commercial team retimes the main route
+  (`OPERATIONS.md` §13a) — if service 7's timings are extended, the service
+  12 journey departs later; if service 1 keeps arriving late, its departure
+  is moved **earlier** while the arrival is held. Shifting a service by an
+  hour moves its positioning journeys with it.
 
 Peak positioning journeys — extra runs to get buses to the start of routes for a
-higher rush hour frequency — can be added by hand, and the operations manager works
+higher rush hour frequency — can be added by hand, and the commercial team works
 out any the player doesn't. It also **suggests dead runs that could be worked in
 service**.
 
@@ -764,7 +768,7 @@ can therefore mark roads as unsuitable.
   liberties where nobody is watching.
 - Roads can also be banned **by vehicle type**, either as a maximum size or by
   ticking allowed types. A single decker might be fine where a decker isn't; some
-  places take only 40,000-range vehicles.
+  places take only minibus-sized vehicles (OPERATIONS.md §3's category digit 1).
 - Cars and vans are allowed anywhere sensible to drive.
 
 A route's **permitted vehicles are derived from the roads it uses**, and assigning
@@ -805,10 +809,12 @@ A badly sited terminus is therefore visibly expensive: no turning point nearby
 means a long loop on every journey, and it shows up in the mileage.
 
 ### What the optimiser may not touch
-The operations manager retimes services to spread congestion, both at bus stations
-and along **corridors** — defined as two routes sharing **multiple stops on the
-same stretch of road**, and only where the same depot works both. It also nudges
-timing points and can extend a layover beyond the player's minimum.
+**Moved from the operations manager to the commercial team, 2026-10-30**
+(`OPERATIONS.md` §13a) — the commercial team retimes services to spread
+congestion, both at bus stations and along **corridors** — defined as two
+routes sharing **multiple stops on the same stretch of road**, and only
+where the same depot works both. It also nudges timing points and can
+extend a layover beyond the player's minimum.
 
 Four things constrain it:
 - **Connected services** are left alone; others are moved instead.
@@ -841,7 +847,13 @@ Prefixes say what a working is before you read the number:
 | **S** | School |
 | **T** | Sightseeing tour, then the city letter — TE1, TG1, TS1 |
 | **C** | Cruise |
+| **RA** | Railair (station-to-airport express, UK-EXPANSION.md §9a) |
 | *player-set* | Event routes, a short code per venue |
+
+**Railair numbering is its own sequence**, unlike every other prefix above:
+RA1, RA2 and so on count up across the **whole company**, not per depot
+group or council area — there is no separate underlying number a Railair
+route "decorates." Full spec in UK-EXPANSION.md §9a.
 
 **School numbering.** S plus digits. Where a school run follows another route for
 most of its length it takes that route's number — route 13 becomes S13 — and where
@@ -1301,9 +1313,10 @@ serves as both start and terminus (§6).
   day** (4 dead legs total, each up to 5 miles). Beyond that distance or
   that many journeys, the player pays their own dead mileage.
 
-**Vehicle.** Must be ScotRail liveried, electric, single deck, in the
-70,000 fleet range — a strict requirement, not a preference. (Corrected
-from an earlier 30,000 — the player caught their own mistake.)
+**Vehicle.** Must be ScotRail liveried, electric, single deck (OPERATIONS.md
+§3's category digit 3, "e" suffix) — a strict requirement, not a
+preference. (Corrected from an earlier, wrong size class — the player
+caught their own mistake.)
 
 **Route number and colour.** Fixed at **398**, colour fixed at
 **#002664**, neither changeable. Central Station Forecourt (the combined
@@ -1356,9 +1369,10 @@ Street. **Contract held by Edinburgh Airport.**
 - **No dead mileage is paid at all** — the operator bears 100% of it,
   unlike 398's partial allowance.
 
-**Vehicle.** Not a strict requirement — any coach is allowed, but only the
-**Volvo 9700DD (low floor)** carries full demand; a different coach means
-some passengers get left behind.
+**Vehicle.** Not a strict requirement — any double-decker is allowed, but
+only the **ADL Enviro400 XLB** carries full demand (UK-EXPANSION.md §14a —
+replaces the Volvo 9700DD this requirement used to name); a different
+vehicle means some passengers get left behind.
 
 **Ticketing** — its own dedicated ticket type, real fares:
 - Single: Adult £6, Child £3.
@@ -1429,7 +1443,8 @@ Glasgow Airport.**
   the operator bears 100% of it.
 
 **Vehicle.** Must carry the Glasgow Airport livery (below), double deck,
-electric, in the **80,000 fleet range**, and **airport-specification**
+electric (OPERATIONS.md §3's category digit 4 or 5, "e" suffix, whichever
+axle class the chosen length lands in), and **airport-specification**
 (reduced seating, increased luggage capacity, §10 below) — a strict
 requirement, not a preference (matching 398's approach, not Airlink's softer
 one). Same fines as Route 398 for running the wrong vehicle.
@@ -1502,7 +1517,7 @@ Express 500 becomes available.
 - Offered once the player has at least **3 routes running both into and
   out of Buchanan Bus Station** — the same condition Express 500 originally
   had on its own.
-- **Vehicle.** Electric, single deck, **70,000 fleet range**.
+- **Vehicle.** Electric, single deck (OPERATIONS.md §3's category digit 3, "e" suffix).
 - **Livery.** Carries the Glasgow Airport livery family (shared with
   Express 500, above) rather than a livery of its own.
 - **Colour.** Fixed at **#93318e**.
@@ -1563,8 +1578,8 @@ from the three fixed real contracts above.
 - **Manually flagged** by the player — not auto-detected from OSM.
 - The **airport-specification vehicle** (reduced seating, increased luggage
   capacity) is **mandatory on Express 500**, stacking with its other fixed
-  requirements (double deck, electric, 80,000 range, Glasgow Airport
-  livery — see above) rather than replacing any of them. On a player-built
+  requirements (double deck, electric, Glasgow Airport livery — see
+  above) rather than replacing any of them. On a player-built
   airport route it's optional instead — free vehicle choice otherwise.
 - **Cannot use stop reservation** — that stays exclusive to the fixed real
   contracts. A deliberate carve-out from the general stop reservation
@@ -1844,8 +1859,11 @@ rather than as separate bonuses:
 ### Starting the game
 The council sets the player up rather than leaving them with a blank map:
 
-- **Four used buses** from the 30,000 range — three contracts' worth plus a
-  spare, which matters because used buses break down.
+- **Four used diesel midibuses** (OPERATIONS.md §3's category digit 2, no
+  suffix — confirmed 2026-10-30 as staying diesel-only rather than opening
+  up to the electric equivalent, matching the flavour of an older, used
+  starting fleet) — three contracts' worth plus a spare, which matters
+  because used buses break down.
 - **Two or three contracts** offered immediately, depending on the area, on
   simple routes linking two or three small villages so the buses are nowhere near
   capacity.

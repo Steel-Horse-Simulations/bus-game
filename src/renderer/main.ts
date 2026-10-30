@@ -19,6 +19,7 @@ import { mountDutyPanel } from "./duty-panel";
 import { mountDepotPlacement } from "./depot-placement";
 import { mountDealerPlacement } from "./dealer-placement";
 import { mountDealerReferencePins, seedRealDealers } from "./dealer-reference-pins";
+import { mountFareZones } from "./fare-zone-drawing";
 import { loadRouter } from "./router";
 import { setLoadingProgress } from "./loading-progress";
 
@@ -134,6 +135,7 @@ init().then(async () => {
   mountVehicleBuyMenu();
   await mountDealerReferencePins(map);
   await mountRepaintShops(map);
+  await mountFareZones(map);
   await mountDeadMileagePreview(map, router);
   await mountDutyPanel(router);
   setLoadingProgress(1, "Ready");
