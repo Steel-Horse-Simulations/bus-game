@@ -523,6 +523,51 @@ CREATE TABLE IF NOT EXISTS fare_zones (
   points TEXT NOT NULL,
   colour TEXT NOT NULL DEFAULT '#3b82f6'
 );
+
+-- Fare pricing (DESIGN.md §9, Phase 4 increment 2) — see fare-pricing.mts
+-- for the pure calculation layer this feeds, and why amounts are stored
+-- as whole pence (penny-precision currency, avoiding the float-rounding
+-- bug class this project already hit once, T99). One row per depot
+-- group, every field nullable — a depot group can be partially
+-- configured (the player fills these in one at a time), and each
+-- calculation function throws rather than silently treating an unset
+-- fare as free. The Return multiplier is NOT stored here — it's a fixed
+-- game constant (RETURN_MULTIPLIER in fare-pricing.mts), not a setting.
+CREATE TABLE IF NOT EXISTS fare_configs (
+  depot_group_id INTEGER PRIMARY KEY REFERENCES depot_groups(id),
+  city_single_gbp_pence INTEGER,
+  beyond_depot_group_per_mile_gbp_pence INTEGER,
+  long_distance_base_gbp_pence INTEGER,
+  long_distance_per_mile_gbp_pence INTEGER,
+  special_service_single_gbp_pence INTEGER,
+  night_extra_base_gbp_pence INTEGER,
+  night_extra_per_zone_gbp_pence INTEGER,
+  late_gbp_pence INTEGER,
+  network_gbp_pence INTEGER,
+  city_day_gbp_pence INTEGER,
+  city_weekly_gbp_pence INTEGER,
+  city_28day_gbp_pence INTEGER,
+  country_day_gbp_pence INTEGER,
+  country_weekly_gbp_pence INTEGER,
+  country_28day_gbp_pence INTEGER,
+  combined_day_gbp_pence INTEGER,
+  combined_weekly_gbp_pence INTEGER,
+  combined_28day_gbp_pence INTEGER
+);
+
+-- The country-zone single-fare band table (DESIGN.md §9 "banded by zone
+-- count, bands set by the player") — a flexible player-entered table
+-- rather than a formula, confirmed 2026-10-18, since the real Lothian
+-- reference has an irregular band that doesn't reduce to one. Keyed by
+-- exact zone count, not a range — see fare-pricing.mts's own header for
+-- why the real "or 2 if a specific zone pair" exception isn't
+-- representable by this (it depends on which zones, not a count).
+CREATE TABLE IF NOT EXISTS fare_country_zone_bands (
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  zone_count INTEGER NOT NULL CHECK (zone_count > 0),
+  price_gbp_pence INTEGER NOT NULL,
+  PRIMARY KEY (depot_group_id, zone_count)
+);
 `;
 
 export function openSave(path: string): SaveDb {

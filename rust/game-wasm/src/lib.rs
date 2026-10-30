@@ -132,6 +132,21 @@ pub struct Router {
     /// transit-link grid) for consistency, not because the exact figure
     /// matters here.
     edge_grid: HashMap<(i32, i32), Vec<u32>>,
+    /// Mirrors `adjacency`/`adjacency_offsets`, but built from **every**
+    /// edge in the graph, not just bus-legal ones (`edge_is_routable`) —
+    /// for `find_any_road_route` (fare zone boundaries that follow a road,
+    /// DESIGN.md §9, 2026-10-30), which traces road geometry rather than
+    /// simulating a legal bus journey. Every edge is recorded as traversable
+    /// in BOTH directions here regardless of its real `oneway` tag — a
+    /// zone's drawn boundary isn't a vehicle obeying traffic law, it's just
+    /// following the physical road's own shape, so a one-way street still
+    /// has two physical sides to trace along.
+    adjacency_all: Vec<Hop>,
+    adjacency_offsets_all: Vec<u32>,
+    /// Same shape as `edge_grid`, but over every edge — see
+    /// `adjacency_all`'s own doc comment for why a second copy exists
+    /// instead of reusing `edge_grid`.
+    edge_grid_all: HashMap<(i32, i32), Vec<u32>>,
 }
 
 /// Same cell size as stops-layer.ts's own `LINK_GRID_CELL_DEG` (0.002
@@ -589,6 +604,56 @@ impl Router {
             }
         }
 
+        // Any-road adjacency (see its own struct field doc comment) — same
+        // two-pass CSR construction as the bus-legal `adjacency` above, but
+        // unconditionally both-directions per edge (no `edge_is_routable`
+        // filter, no `oneway` branching).
+        let mut hop_counts_all: Vec<u32> = vec![0; graph.nodes.len()];
+        for edge in &graph.edges {
+            hop_counts_all[edge.from as usize] += 1;
+            hop_counts_all[edge.to as usize] += 1;
+        }
+        let mut adjacency_offsets_all: Vec<u32> = Vec::with_capacity(graph.nodes.len() + 1);
+        let mut running_offset_all = 0u32;
+        adjacency_offsets_all.push(0);
+        for &count in &hop_counts_all {
+            running_offset_all += count;
+            adjacency_offsets_all.push(running_offset_all);
+        }
+        let mut write_cursor_all = adjacency_offsets_all[..graph.nodes.len()].to_vec();
+        let mut adjacency_all: Vec<Hop> = vec![Hop { edge: 0, to_node: 0 }; running_offset_all as usize];
+        for (idx, edge) in graph.edges.iter().enumerate() {
+            let edge_idx = idx as u32;
+            let pos_fwd = write_cursor_all[edge.from as usize] as usize;
+            adjacency_all[pos_fwd] = Hop { edge: edge_idx, to_node: edge.to };
+            write_cursor_all[edge.from as usize] += 1;
+            let pos_rev = write_cursor_all[edge.to as usize] as usize;
+            adjacency_all[pos_rev] = Hop { edge: edge_idx, to_node: edge.from };
+            write_cursor_all[edge.to as usize] += 1;
+        }
+
+        // Any-road spatial grid — same cell-walking technique as `edge_grid`
+        // above, over every edge rather than just routable ones.
+        let mut edge_grid_all: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for (idx, edge) in graph.edges.iter().enumerate() {
+            let from = &graph.nodes[edge.from as usize];
+            let to = &graph.nodes[edge.to as usize];
+            let mut touched: HashSet<(i32, i32)> = HashSet::new();
+            let mut prev = (from.lon_e7, from.lat_e7);
+            for &next in graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                let prev_cell = nearest_node_grid_key(prev.0, prev.1);
+                let next_cell = nearest_node_grid_key(next.0, next.1);
+                for cell in cells_along_segment(prev_cell.0, prev_cell.1, next_cell.0, next_cell.1) {
+                    touched.insert(cell);
+                }
+                prev = next;
+            }
+            let edge_idx = idx as u32;
+            for cell in touched {
+                edge_grid_all.entry(cell).or_default().push(edge_idx);
+            }
+        }
+
         Router {
             graph,
             adjacency,
@@ -601,6 +666,9 @@ impl Router {
             has_incoming,
             psv_override_way_ids,
             edge_grid,
+            adjacency_all,
+            adjacency_offsets_all,
+            edge_grid_all,
         }
     }
 
@@ -611,6 +679,131 @@ impl Router {
         let start = self.adjacency_offsets[node as usize] as usize;
         let end = self.adjacency_offsets[node as usize + 1] as usize;
         &self.adjacency[start..end]
+    }
+
+    /// `node_adjacency`'s any-road counterpart — see `adjacency_all`'s own
+    /// struct field doc comment.
+    fn node_adjacency_all(&self, node: u32) -> &[Hop] {
+        let start = self.adjacency_offsets_all[node as usize] as usize;
+        let end = self.adjacency_offsets_all[node as usize + 1] as usize;
+        &self.adjacency_all[start..end]
+    }
+
+    /// `nearest_node`'s any-road counterpart, deliberately simpler: no
+    /// needs_outgoing/needs_incoming distinction (every edge here is
+    /// already traversable both ways — see `adjacency_all`'s own doc
+    /// comment), just "the nearer endpoint of the nearest edge, preferring
+    /// one with at least one hop if the nearer one happens to have none at
+    /// all" (a true isolated node is vanishingly rare but not impossible).
+    /// Same ring-expanding grid search as `nearest_node`, over
+    /// `edge_grid_all` instead of `edge_grid`.
+    fn nearest_node_any_road(&self, lon_e7: i32, lat_e7: i32) -> Option<u32> {
+        let mut best_dist = f64::INFINITY;
+        let mut best_edge: Option<u32> = None;
+        let (center_x, center_y) = nearest_node_grid_key(lon_e7, lat_e7);
+        let mut seen_edges: HashSet<u32> = HashSet::new();
+
+        for ring in 0..=200i32 {
+            for cx in (center_x - ring)..=(center_x + ring) {
+                for cy in (center_y - ring)..=(center_y + ring) {
+                    if ring > 0
+                        && cx != center_x - ring
+                        && cx != center_x + ring
+                        && cy != center_y - ring
+                        && cy != center_y + ring
+                    {
+                        continue;
+                    }
+                    let Some(edge_idxs) = self.edge_grid_all.get(&(cx, cy)) else {
+                        continue;
+                    };
+                    for &edge_idx in edge_idxs {
+                        if !seen_edges.insert(edge_idx) {
+                            continue;
+                        }
+                        let edge = &self.graph.edges[edge_idx as usize];
+                        let from = &self.graph.nodes[edge.from as usize];
+                        let to = &self.graph.nodes[edge.to as usize];
+                        let mut prev = (from.lon_e7, from.lat_e7);
+                        for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                            let (d, _, _) = point_to_segment_closest(lon_e7, lat_e7, prev.0, prev.1, next.0, next.1);
+                            if d < best_dist {
+                                best_dist = d;
+                                best_edge = Some(edge_idx);
+                            }
+                            prev = next;
+                        }
+                    }
+                }
+            }
+            if best_edge.is_some() && (ring as f64) * (NEAREST_NODE_GRID_CELL_E7 as f64 * 1e-7).to_radians() * 6_371_000.0 > best_dist {
+                break;
+            }
+        }
+
+        let edge_idx = best_edge?;
+        let edge = &self.graph.edges[edge_idx as usize];
+        let from = &self.graph.nodes[edge.from as usize];
+        let to = &self.graph.nodes[edge.to as usize];
+        let d_from = approx_distance_m(lon_e7, lat_e7, from.lon_e7, from.lat_e7);
+        let d_to = approx_distance_m(lon_e7, lat_e7, to.lon_e7, to.lat_e7);
+        let from_has_hops = !self.node_adjacency_all(edge.from).is_empty();
+        let to_has_hops = !self.node_adjacency_all(edge.to).is_empty();
+        Some(match (from_has_hops, to_has_hops) {
+            (true, false) => edge.from,
+            (false, true) => edge.to,
+            _ => if d_from <= d_to { edge.from } else { edge.to },
+        })
+    }
+
+    /// `dijkstra`'s any-road counterpart: plain distance cost (`length_m`),
+    /// no turn penalties or junction delays — those model real bus driving
+    /// behaviour, which doesn't apply to tracing a zone boundary's shape
+    /// along connected road geometry. Returns each step as
+    /// `(edge_idx, arrived_at_node)`, the same shape `dijkstra` returns,
+    /// so callers can reconstruct coordinates the same way.
+    fn dijkstra_any_road(&self, start: u32, goal: u32) -> Option<Vec<(u32, u32)>> {
+        let n = self.graph.nodes.len();
+        let mut best_cost_m = vec![f64::INFINITY; n];
+        let mut prev: Vec<Option<(u32, u32)>> = vec![None; n];
+        let mut visited = vec![false; n];
+
+        best_cost_m[start as usize] = 0.0;
+        let mut queue = BinaryHeap::new();
+        queue.push(QueueEntry { cost_s: 0.0, node: start });
+
+        while let Some(QueueEntry { cost_s: cost_m, node }) = queue.pop() {
+            if visited[node as usize] {
+                continue;
+            }
+            visited[node as usize] = true;
+            if node == goal {
+                break;
+            }
+            for hop in self.node_adjacency_all(node) {
+                let edge = &self.graph.edges[hop.edge as usize];
+                let next_cost = cost_m + edge.length_m as f64;
+                if next_cost < best_cost_m[hop.to_node as usize] {
+                    best_cost_m[hop.to_node as usize] = next_cost;
+                    prev[hop.to_node as usize] = Some((node, hop.edge));
+                    queue.push(QueueEntry { cost_s: next_cost, node: hop.to_node });
+                }
+            }
+        }
+
+        if !visited[goal as usize] {
+            return None;
+        }
+
+        let mut steps = Vec::new();
+        let mut current = goal;
+        while current != start {
+            let (p, edge) = prev[current as usize]?;
+            steps.push((edge, current));
+            current = p;
+        }
+        steps.reverse();
+        Some(steps)
     }
 
     pub fn node_count(&self) -> usize {
@@ -1069,6 +1262,76 @@ impl Router {
             return Vec::new();
         };
         vec![foot_lon_e7 as f64 * 1e-7, foot_lat_e7 as f64 * 1e-7]
+    }
+
+    /// A path along connected road geometry between two points, over
+    /// **every** road regardless of bus legality or `oneway` direction —
+    /// for a fare zone boundary that follows a road between two
+    /// consecutively-drawn, road-snapped points (DESIGN.md §9,
+    /// 2026-10-30). Not a vehicle route: `find_route` (bus-legal only,
+    /// real driving-time cost with turn penalties and junction delays) is
+    /// the wrong tool here on both counts — a zone boundary can run along
+    /// any physical road, and it's tracing a shape, not simulating a
+    /// journey, so plain shortest distance is the right cost function, not
+    /// time. Returns a flattened `[lon, lat, lon, lat, ...]` array the same
+    /// shape `find_route` returns (full edge geometry between the two
+    /// snapped endpoints, not just junctions), or an empty array if no
+    /// path exists between them at all (the two points are on disconnected
+    /// parts of the road network).
+    ///
+    /// Deliberately simpler than `find_route`'s own coordinate
+    /// reconstruction: this snaps each endpoint to the nearest *node*
+    /// (`nearest_node_any_road`), not the exact mid-edge point the way
+    /// `find_route` does — a small, acceptable overshoot to the nearest
+    /// junction at each end for a feature whose own click-to-snap
+    /// tolerance is already an approximation, rather than replicating
+    /// `find_route`'s own intricate mid-edge-truncation precision
+    /// engineering (built for exact passenger-stop positions, not needed
+    /// here).
+    pub fn find_any_road_route(&self, from_lon: f64, from_lat: f64, to_lon: f64, to_lat: f64) -> Vec<f64> {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (Some(start), Some(goal)) = (
+            self.nearest_node_any_road(to_e7(from_lon), to_e7(from_lat)),
+            self.nearest_node_any_road(to_e7(to_lon), to_e7(to_lat)),
+        ) else {
+            return Vec::new();
+        };
+        if start == goal {
+            let n = &self.graph.nodes[start as usize];
+            return vec![n.lon_e7 as f64 * 1e-7, n.lat_e7 as f64 * 1e-7];
+        }
+        let Some(steps) = self.dijkstra_any_road(start, goal) else {
+            return Vec::new();
+        };
+
+        let push_e7 = |coords: &mut Vec<f64>, lon_e7: i32, lat_e7: i32| {
+            coords.push(lon_e7 as f64 * 1e-7);
+            coords.push(lat_e7 as f64 * 1e-7);
+        };
+
+        let mut coords = Vec::new();
+        let start_pos = &self.graph.nodes[start as usize];
+        push_e7(&mut coords, start_pos.lon_e7, start_pos.lat_e7);
+
+        let mut current = start;
+        for (edge_idx, next_node) in steps {
+            let edge = &self.graph.edges[edge_idx as usize];
+            let forward = edge.from == current;
+            if forward {
+                for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge) {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+            } else {
+                for &(lon_e7, lat_e7) in self.graph.edge_geometry(edge).iter().rev() {
+                    push_e7(&mut coords, lon_e7, lat_e7);
+                }
+            }
+            let n = &self.graph.nodes[next_node as usize];
+            push_e7(&mut coords, n.lon_e7, n.lat_e7);
+            current = next_node;
+        }
+
+        coords
     }
 
     /// For a depot **entrance** specifically (OPERATIONS.md §2): a click
@@ -2305,6 +2568,65 @@ mod tests {
         let router_with_override = Router::new(&bytes, vec![999.0]);
         let coords = router_with_override.find_route(0.0, 0.0, 0.0, 0.1);
         assert!(!coords.is_empty(), "flagging the way id as a psv override should make it routable");
+    }
+
+    /// `find_any_road_route` must succeed on a road `find_route` refuses —
+    /// the whole reason it exists (fare zone boundaries, DESIGN.md §9,
+    /// 2026-10-30, following any physical road, not just bus-legal ones).
+    /// Same access-restricted edge as the psv-override test above, but
+    /// with no override given at all.
+    #[test]
+    fn find_any_road_route_follows_an_access_restricted_road_find_route_would_refuse() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut restricted_edge = edge(0, 1, 999, 11, 100.0);
+        restricted_edge.access_restricted = true;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![restricted_edge], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        assert!(router.find_route(0.0, 0.0, 0.0, 0.1).is_empty(), "sanity check: find_route still refuses it");
+        let coords = router.find_any_road_route(0.0, 0.0, 0.0, 0.1);
+        assert!(!coords.is_empty(), "find_any_road_route should trace the same road regardless of bus legality");
+        assert_eq!(coords.len(), 4, "should run straight from node 0 to node 1, 2 points");
+        assert!((coords[0] - 0.0).abs() < 1e-6 && (coords[1] - 0.0).abs() < 1e-6, "first point is node 0");
+        assert!((coords[2] - 0.0).abs() < 1e-6 && (coords[3] - 0.1).abs() < 1e-6, "second point is node 1");
+    }
+
+    /// `find_any_road_route` treats every edge as traversable in both
+    /// directions regardless of its real `oneway` tag — confirmed by
+    /// routing from node 1 back to node 0 along an edge tagged Forward
+    /// (0->1 only), which `find_route` would refuse outright.
+    #[test]
+    fn find_any_road_route_ignores_oneway_direction() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut forward_only = edge(0, 1, 1, 11, 100.0);
+        forward_only.oneway = OnewayDirection::Forward;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![forward_only], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_any_road_route(0.0, 0.1, 0.0, 0.0);
+        assert_eq!(coords.len(), 4, "should trace the edge in reverse, node 1 back to node 0, 2 points");
+        assert!((coords[0] - 0.0).abs() < 1e-6 && (coords[1] - 0.1).abs() < 1e-6, "first point is node 1");
+        assert!((coords[2] - 0.0).abs() < 1e-6 && (coords[3] - 0.0).abs() < 1e-6, "second point is node 0");
+    }
+
+    /// Two disconnected edges (no shared node, no edge between the two
+    /// components) — `find_any_road_route` should return empty rather than
+    /// inventing a path, the same "no route exists" contract `find_route`
+    /// already has.
+    #[test]
+    fn find_any_road_route_returns_empty_when_genuinely_disconnected() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 10_000_000, 10_000_000),
+            graph_node(4, 10_000_000, 11_000_000),
+        ];
+        let edges = vec![edge(0, 1, 1, 11, 100.0), edge(2, 3, 2, 11, 100.0)];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_any_road_route(0.0, 0.0, 1.0, 1.0);
+        assert!(coords.is_empty(), "two genuinely disconnected road components should not produce a path");
     }
 
     /// The goal-side mirror of the existing `needs_outgoing` dead-end fix —

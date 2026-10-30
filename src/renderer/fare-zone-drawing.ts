@@ -6,14 +6,30 @@
 // depot group draws and prices its own zone map independently.
 //
 // Freeform polygon drawing has no existing precedent in this codebase —
-// route-draw.ts and dead-mileage-preview.ts both snap to the road graph,
-// which a fare zone boundary has no reason to do (a zone edge is an
-// administrative/commercial boundary, not a road). This is a new, simple
-// click-to-add-vertex tool instead, following the same toggle+panel shell
-// and cross-tool isPlacing/isDrawing guard convention as every other map
-// tool (routeDrawState/placeStopState/placeDepotState/placeDealerState).
+// route-draw.ts and dead-mileage-preview.ts both snap to the BUS-LEGAL road
+// graph via find_route, which a fare zone boundary has no reason to use (a
+// zone edge is an administrative/commercial boundary, not a bus route).
+// This is a new click-to-add-vertex tool, following the same toggle+panel
+// shell and cross-tool isPlacing/isDrawing guard convention as every other
+// map tool (routeDrawState/placeStopState/placeDepotState/placeDealerState).
+//
+// Road-following snapping (added 2026-10-30, live user request — "when
+// snapping to a road it should follow the road until the next point if it
+// is also on a road") needed genuinely new Rust/WASM work: the only
+// existing pathfinding (`find_route`) is bus-legal-only, and a zone
+// boundary should be able to follow ANY road. `Router::find_any_road_route`
+// (rust/game-wasm/src/lib.rs) is a new, simpler Dijkstra variant over a
+// second "every edge, both directions regardless of oneway" adjacency
+// buffer — plain shortest distance, no turn penalties or junction delays
+// (those model real driving behaviour, irrelevant to tracing a shape). The
+// requested 10m outside-edge offset is deliberately NOT built yet — agreed
+// with the user to ship road-following first, offset as a separate
+// follow-up, since properly buffering a polyline (mitred corners, no
+// existing geometry library in this project) carries real self-
+// intersection risk worth not rushing.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
+import type { Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
@@ -51,9 +67,13 @@ function otherToolActive(): boolean {
 
 // Snaps a raw click to the nearest existing zone vertex within
 // SNAP_RADIUS_PX, then (if no vertex was close enough) the nearest point on
-// any existing zone's edge, checked in screen space. Falls back to the
-// unmodified click if nothing is close enough.
-function snapToExistingZones(map: maplibregl.Map, lngLat: maplibregl.LngLat, zones: FareZone[]): FareZonePoint {
+// any existing zone's edge, checked in screen space. Returns null (rather
+// than falling back to the raw click) when nothing is close enough, so the
+// caller can fall through to road-snapping instead — zone-to-zone snapping
+// takes priority over road-snapping when both are plausible, since
+// matching an existing zone's own exact boundary matters more than
+// generically following a road.
+function snapToExistingZones(map: maplibregl.Map, lngLat: maplibregl.LngLat, zones: FareZone[]): FareZonePoint | null {
   const clickPx = map.project(lngLat);
   let bestVertex: { px: maplibregl.Point; point: FareZonePoint } | null = null;
   let bestEdge: { px: maplibregl.Point; point: FareZonePoint } | null = null;
@@ -86,17 +106,69 @@ function snapToExistingZones(map: maplibregl.Map, lngLat: maplibregl.LngLat, zon
 
   if (bestVertex && clickPx.dist(bestVertex.px) <= SNAP_RADIUS_PX) return bestVertex.point;
   if (bestEdge && clickPx.dist(bestEdge.px) <= SNAP_RADIUS_PX) return bestEdge.point;
-  return { lon: lngLat.lng, lat: lngLat.lat };
+  return null;
 }
 
+// Snaps a raw click to the nearest road, any road (not just bus-legal),
+// via the WASM router's own `snap_to_any_road` — the same mechanism
+// depot/dealer placement already use for exactly this reason ("the
+// nearest point on any road, for a site that doesn't need to be bus-
+// legal"). Returns null if genuinely nothing is nearby (no road data at
+// all near this point), in which case the caller falls back to the raw
+// click, mirroring every other map tool's own `snap_to_any_road` fallback
+// pattern (depot-placement.ts, dealer-placement.ts).
+function snapToRoad(router: Router, lngLat: maplibregl.LngLat): FareZonePoint | null {
+  const snapped = router.snap_to_any_road(lngLat.lng, lngLat.lat);
+  return snapped.length === 2 ? { lon: snapped[0], lat: snapped[1] } : null;
+}
+
+// Plain ray-casting point-in-polygon test (odd-even rule) — no geometry
+// library exists in this project (checked, see the 10m-offset note above),
+// and this is simple enough not to need one.
+function pointInRing(point: FareZonePoint, ring: FareZonePoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i];
+    const b = ring[j];
+    const intersects = a.lat > point.lat !== b.lat > point.lat && point.lon < ((b.lon - a.lon) * (point.lat - a.lat)) / (b.lat - a.lat) + a.lon;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+// Whether `outer` fully contains `inner` — every one of `inner`'s own
+// vertices sits inside `outer`'s ring. An approximate/practical test (it
+// doesn't also check that none of `inner`'s edges cross `outer`'s edges
+// between vertices), good enough for "one zone was drawn entirely inside
+// another," the real case this exists for (2026-10-30: "when a zone
+// completely surrounds another zone, the bit in the middle should be left
+// blank so the 2 zones don't overlap").
+function fullyContains(outer: FareZone, inner: FareZone): boolean {
+  return inner.points.every((p) => pointInRing(p, outer.points));
+}
+
+// Renders each zone as a Polygon whose own interior rings (holes) are
+// every OTHER zone it fully contains — a zone drawn around another one
+// shows the inner zone's own fill through the gap, rather than the two
+// overlapping. Layering multiple zones this way (each only punching holes
+// for zones it DIRECTLY contains) also renders a deeper nesting (A around
+// B around C) correctly without any extra work: B's own hole for C already
+// shows C's fill through it, and that whole B-with-a-C-hole shape is what
+// shows through A's own hole for B.
 function zonesToGeojson(zones: FareZone[]): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: zones.map((z) => ({
-      type: "Feature",
-      properties: { id: z.id, name: z.name, zoneType: z.zoneType, colour: z.colour },
-      geometry: { type: "Polygon", coordinates: [[...z.points.map((p) => [p.lon, p.lat]), [z.points[0].lon, z.points[0].lat]]] },
-    })),
+    features: zones.map((z) => {
+      const ring = [...z.points.map((p) => [p.lon, p.lat]), [z.points[0].lon, z.points[0].lat]];
+      const holes = zones
+        .filter((other) => other.id !== z.id && fullyContains(z, other))
+        .map((other) => [...other.points.map((p) => [p.lon, p.lat]), [other.points[0].lon, other.points[0].lat]]);
+      return {
+        type: "Feature",
+        properties: { id: z.id, name: z.name, zoneType: z.zoneType, colour: z.colour },
+        geometry: { type: "Polygon", coordinates: [ring, ...holes] },
+      };
+    }),
   };
 }
 
@@ -119,7 +191,7 @@ function draftPointsGeojson(points: FareZonePoint[]): GeoJSON.FeatureCollection 
   };
 }
 
-export async function mountFareZones(map: maplibregl.Map): Promise<void> {
+export async function mountFareZones(map: maplibregl.Map, router: Router): Promise<void> {
   map.addSource(ZONES_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: ZONES_FILL_LAYER_ID,
@@ -177,7 +249,11 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
   panel.style.top = "8px";
   panel.style.left = "330px";
   panel.style.zIndex = "2";
-  panel.style.width = "360px";
+  // Widened from 360px (2026-10-30) — fixing the type dropdown and colour
+  // swatch to their real protected widths (above) left too little room for
+  // the Rename/Delete buttons in the same row, clipping them off the
+  // panel's own right edge (confirmed visually, not assumed).
+  panel.style.width = "440px";
   panel.style.maxHeight = "75vh";
   panel.style.overflowY = "auto";
   panel.style.flexDirection = "column";
@@ -203,6 +279,17 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
   let allZones: FareZone[] = [];
   let errorMessage = "";
   let draftPoints: FareZonePoint[] = [];
+  // How many entries in `draftPoints` each click added — usually 1, but a
+  // road-following click can insert several intermediate points at once.
+  // "Undo point" pops a whole click's worth via this, not just the last
+  // array entry, so undoing a road-followed stretch removes the whole
+  // stretch in one go, matching what the player actually did.
+  const draftClickPointCounts: number[] = [];
+  // Whether the most recently added point was snapped to a road — checked
+  // on the NEXT click to decide whether to road-follow between the two
+  // ("follow the road until the next point if it is also on a road",
+  // 2026-10-30). Reset whenever drawing starts/stops/undoes.
+  let lastPointWasRoadSnapped = false;
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
 
@@ -272,6 +359,7 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       row.style.padding = "4px 0";
 
       const nameInput = document.createElement("input");
+      nameInput.className = "field";
       nameInput.value = zone.name;
       nameInput.style.flex = "1";
       row.appendChild(nameInput);
@@ -281,13 +369,34 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
         await reloadZones();
         render();
       });
-      typeDropdown.el.style.width = "110px";
+      // `.dropdown`'s own CSS sets `min-width: 0` (theme.css), which is
+      // exactly what's needed to let it shrink gracefully when space is
+      // tight elsewhere — but inside this row, with `nameInput` on
+      // `flex: 1` competing for space, the DEFAULT `flex-shrink: 1` with
+      // no floor let the dropdown get squeezed down to ~2px, effectively
+      // invisible and unclickable (confirmed by measuring its real
+      // rendered width live, not assumed) — a real layout bug, not just a
+      // style mismatch. `flex: "0 0 110px"` gives it a protected width
+      // that the row's flex layout can't steal.
+      typeDropdown.el.style.flex = "0 0 110px";
       row.appendChild(typeDropdown.el);
 
+      // Native `<input type=color>` renders as a small square by default
+      // (~12px in this row) — easy to miss entirely, which is almost
+      // certainly why "the colour can only be set when the zone is made"
+      // was reported even though this editor already existed. Sized up
+      // and given its own flex-shrink guard for the same reason as the
+      // dropdown above.
       const colourInput = document.createElement("input");
       colourInput.type = "color";
       colourInput.value = zone.colour;
       colourInput.title = "Zone colour";
+      colourInput.style.flex = "0 0 32px";
+      colourInput.style.height = "24px";
+      colourInput.style.padding = "0";
+      colourInput.style.border = "1px solid var(--border-strong)";
+      colourInput.style.borderRadius = "4px";
+      colourInput.style.cursor = "pointer";
       colourInput.addEventListener("change", async () => {
         await window.fareZones.setColour(zone.id, colourInput.value);
         await reloadZones();
@@ -338,8 +447,11 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
     if (pendingZone) {
       const form = document.createElement("div");
       const nameInput = document.createElement("input");
+      nameInput.className = "field";
       nameInput.placeholder = "Zone name";
       nameInput.style.display = "block";
+      nameInput.style.width = "100%";
+      nameInput.style.boxSizing = "border-box";
       nameInput.style.marginBottom = "4px";
       let zoneType: FareZoneType = "city";
       const typeDropdown = createDropdown(["city", "country"], zoneType, (value) => {
@@ -352,6 +464,13 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
           colourInput.value = pendingZoneColour;
         }
       });
+      // Full-width to match the name input above it — with no width set
+      // at all a plain `.dropdown` shrinks to fit just its own "city"/
+      // "country" text, which is what looked visually inconsistent next
+      // to the full-width name field (not the same invisible-collapse bug
+      // as the zone-list row above, since there's no competing flex
+      // sibling here, but still wrong).
+      typeDropdown.el.style.width = "100%";
       typeDropdown.el.style.marginBottom = "4px";
 
       let colourTouched = false;
@@ -366,6 +485,12 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       const colourInput = document.createElement("input");
       colourInput.type = "color";
       colourInput.value = pendingZoneColour;
+      colourInput.style.width = "48px";
+      colourInput.style.height = "26px";
+      colourInput.style.padding = "0";
+      colourInput.style.border = "1px solid var(--border-strong)";
+      colourInput.style.borderRadius = "4px";
+      colourInput.style.cursor = "pointer";
       colourInput.addEventListener("input", () => {
         colourTouched = true;
         pendingZoneColour = colourInput.value;
@@ -386,6 +511,7 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
         try {
           await window.fareZones.create(selectedDepotGroupId, name, zoneType, draftPoints, pendingZoneColour);
           draftPoints = [];
+          draftClickPointCounts.length = 0;
           pendingZone = false;
           pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
           errorMessage = "";
@@ -401,6 +527,7 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       cancel.textContent = "Discard";
       cancel.addEventListener("click", () => {
         draftPoints = [];
+        draftClickPointCounts.length = 0;
         pendingZone = false;
         pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
         errorMessage = "";
@@ -425,7 +552,13 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       undo.textContent = "Undo point";
       undo.disabled = draftPoints.length === 0;
       undo.addEventListener("click", () => {
-        draftPoints.pop();
+        // Pops a whole CLICK's worth, not just one array entry — a
+        // road-following click can have inserted several intermediate
+        // points at once, and undoing should remove that whole stretch in
+        // one go, matching what the player actually did.
+        const countToRemove = draftClickPointCounts.pop() ?? 1;
+        draftPoints.splice(draftPoints.length - countToRemove, countToRemove);
+        lastPointWasRoadSnapped = false;
         updateDraftLayers();
         render();
       });
@@ -449,6 +582,8 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       cancel.addEventListener("click", () => {
         fareZoneDrawState.isDrawing = false;
         draftPoints = [];
+        draftClickPointCounts.length = 0;
+        lastPointWasRoadSnapped = false;
         toggle.classList.remove("is-active");
         updateDraftLayers();
         render();
@@ -464,6 +599,8 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
       draw.addEventListener("click", () => {
         fareZoneDrawState.isDrawing = true;
         draftPoints = [];
+        draftClickPointCounts.length = 0;
+        lastPointWasRoadSnapped = false;
         errorMessage = "";
         toggle.classList.add("is-active");
         updateDraftLayers();
@@ -484,7 +621,52 @@ export async function mountFareZones(map: maplibregl.Map): Promise<void> {
 
   map.on("click", (e) => {
     if (!fareZoneDrawState.isDrawing || otherToolActive()) return;
-    draftPoints.push(snapToExistingZones(map, e.lngLat, allZones));
+
+    // Zone-to-zone snapping wins outright when it applies (see
+    // snapToExistingZones's own comment) — no road-following in that case,
+    // since the point is deliberately matching an existing zone's own
+    // boundary, not a road.
+    const zoneSnap = snapToExistingZones(map, e.lngLat, allZones);
+    if (zoneSnap) {
+      draftPoints.push(zoneSnap);
+      draftClickPointCounts.push(1);
+      lastPointWasRoadSnapped = false;
+      updateDraftLayers();
+      render();
+      return;
+    }
+
+    const roadSnap = snapToRoad(router, e.lngLat);
+    const previousPoint = draftPoints[draftPoints.length - 1];
+    // Road-following (2026-10-30, "when snapping to a road it should
+    // follow the road until the next point if it is also on a road"):
+    // only when BOTH this click and the previous point landed on a road —
+    // a single road-snapped point with no road-snapped predecessor has
+    // nothing to follow from yet.
+    if (roadSnap && lastPointWasRoadSnapped && previousPoint) {
+      const pathCoords = router.find_any_road_route(previousPoint.lon, previousPoint.lat, roadSnap.lon, roadSnap.lat);
+      // pathCoords includes the previous point's own position again as its
+      // first pair (find_any_road_route always starts from the snapped
+      // start node) — skip that one pair, since previousPoint is already
+      // in draftPoints, then push every following point including the
+      // final destination.
+      const newPoints: FareZonePoint[] = [];
+      for (let i = 2; i + 1 < pathCoords.length; i += 2) {
+        newPoints.push({ lon: pathCoords[i], lat: pathCoords[i + 1] });
+      }
+      // An empty/too-short path (genuinely disconnected roads, or the two
+      // points snapped to the very same node) falls back to just the
+      // single road-snapped point, same as a normal click — never silently
+      // drops the click entirely.
+      if (newPoints.length === 0) newPoints.push(roadSnap);
+      draftPoints.push(...newPoints);
+      draftClickPointCounts.push(newPoints.length);
+    } else {
+      const point = roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
+      draftPoints.push(point);
+      draftClickPointCounts.push(1);
+    }
+    lastPointWasRoadSnapped = roadSnap !== null;
     updateDraftLayers();
     render();
   });

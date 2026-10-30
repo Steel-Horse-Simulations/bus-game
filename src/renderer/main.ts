@@ -135,7 +135,7 @@ init().then(async () => {
   mountVehicleBuyMenu();
   await mountDealerReferencePins(map);
   await mountRepaintShops(map);
-  await mountFareZones(map);
+  await mountFareZones(map, router);
   await mountDeadMileagePreview(map, router);
   await mountDutyPanel(router);
   setLoadingProgress(1, "Ready");
