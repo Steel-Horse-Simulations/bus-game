@@ -105,6 +105,12 @@ import {
   deleteFareZone,
   type FareZoneType,
   type FareZonePoint,
+  getFareConfig,
+  setFareConfigFields,
+  type FareConfig,
+  setCountryZoneBand,
+  deleteCountryZoneBand,
+  listCountryZoneBands,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -550,6 +556,20 @@ function registerFareZoneHandlers(): void {
   ipcMain.handle("fareZones:delete", (_e, zoneId: number) => deleteFareZone(save, zoneId));
 }
 
+function registerFarePricingHandlers(): void {
+  ipcMain.handle("farePricing:getConfig", (_e, depotGroupId: number) => getFareConfig(save, depotGroupId));
+  ipcMain.handle("farePricing:setConfigFields", (_e, depotGroupId: number, fields: Partial<Omit<FareConfig, "depotGroupId">>) =>
+    setFareConfigFields(save, depotGroupId, fields),
+  );
+  ipcMain.handle("farePricing:listCountryZoneBands", (_e, depotGroupId: number) => listCountryZoneBands(save, depotGroupId));
+  ipcMain.handle("farePricing:setCountryZoneBand", (_e, depotGroupId: number, zoneCount: number, priceGBPPence: number) =>
+    setCountryZoneBand(save, depotGroupId, zoneCount, priceGBPPence),
+  );
+  ipcMain.handle("farePricing:deleteCountryZoneBand", (_e, depotGroupId: number, zoneCount: number) =>
+    deleteCountryZoneBand(save, depotGroupId, zoneCount),
+  );
+}
+
 function registerStopGroupHandlers(): void {
   ipcMain.handle("stopGroups:create", () => createStopGroup(save));
   ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
@@ -652,6 +672,7 @@ app.whenReady().then(async () => {
   registerVehicleHandlers();
   registerBasketAndOrderHandlers();
   registerFareZoneHandlers();
+  registerFarePricingHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

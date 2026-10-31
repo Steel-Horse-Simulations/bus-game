@@ -52,6 +52,13 @@ const DRAFT_POINTS_LAYER_ID = "fare-zone-draft-points";
 // own "colour" column) is what actually renders from here on.
 const DEFAULT_ZONE_COLOUR: Record<FareZoneType, string> = { city: "#3b82f6", country: "#22c55e" };
 
+// Display-only capitalisation for the type dropdowns below (2026-10-31,
+// live user request) — the stored value stays lowercase ("city"/
+// "country", fare_zones' own CHECK constraint), only the dropdown's own
+// label text is capitalised.
+const ZONE_TYPE_LABELS: Record<FareZoneType, string> = { city: "City", country: "Country" };
+const ZONE_TYPE_BY_LABEL: Record<string, FareZoneType> = { City: "city", Country: "country" };
+
 // How close (in screen pixels, not degrees of lon/lat) a click needs to be
 // to an existing zone's vertex or edge to snap to it, so adjacent zones can
 // share an exact boundary — DESIGN.md's "in the style of Lothian's" implies
@@ -252,8 +259,11 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // Widened from 360px (2026-10-30) — fixing the type dropdown and colour
   // swatch to their real protected widths (above) left too little room for
   // the Rename/Delete buttons in the same row, clipping them off the
-  // panel's own right edge (confirmed visually, not assumed).
-  panel.style.width = "440px";
+  // panel's own right edge (confirmed visually, not assumed). 440px still
+  // clipped Delete by ~21px (measured live, same live user report) —
+  // widened again to 480px, which also matches fare-pricing-panel.ts's
+  // own width.
+  panel.style.width = "480px";
   panel.style.maxHeight = "75vh";
   panel.style.overflowY = "auto";
   panel.style.flexDirection = "column";
@@ -364,8 +374,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       nameInput.style.flex = "1";
       row.appendChild(nameInput);
 
-      const typeDropdown = createDropdown(["city", "country"], zone.zoneType, async (value) => {
-        await window.fareZones.setType(zone.id, value as FareZoneType);
+      const typeDropdown = createDropdown(Object.values(ZONE_TYPE_LABELS), ZONE_TYPE_LABELS[zone.zoneType], async (label) => {
+        await window.fareZones.setType(zone.id, ZONE_TYPE_BY_LABEL[label]);
         await reloadZones();
         render();
       });
@@ -454,8 +464,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       nameInput.style.boxSizing = "border-box";
       nameInput.style.marginBottom = "4px";
       let zoneType: FareZoneType = "city";
-      const typeDropdown = createDropdown(["city", "country"], zoneType, (value) => {
-        zoneType = value as FareZoneType;
+      const typeDropdown = createDropdown(Object.values(ZONE_TYPE_LABELS), ZONE_TYPE_LABELS[zoneType], (label) => {
+        zoneType = ZONE_TYPE_BY_LABEL[label];
         // Only follows the type while the player hasn't picked a colour of
         // their own — once they touch the colour input directly, their
         // choice sticks regardless of type.

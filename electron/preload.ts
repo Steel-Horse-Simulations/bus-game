@@ -35,6 +35,8 @@ import type {
   FareZone,
   FareZoneType,
   FareZonePoint,
+  FareConfig,
+  CountryZoneBand,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -349,4 +351,18 @@ contextBridge.exposeInMainWorld("fareZones", {
     ipcRenderer.invoke("fareZones:setType", zoneId, zoneType) as Promise<void>,
   setColour: (zoneId: number, colour: string) => ipcRenderer.invoke("fareZones:setColour", zoneId, colour) as Promise<void>,
   delete: (zoneId: number) => ipcRenderer.invoke("fareZones:delete", zoneId) as Promise<void>,
+});
+
+// Fare pricing config (DESIGN.md §9, Phase 4 increment 2b) — see
+// fare_configs' own SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("farePricing", {
+  getConfig: (depotGroupId: number) => ipcRenderer.invoke("farePricing:getConfig", depotGroupId) as Promise<FareConfig>,
+  setConfigFields: (depotGroupId: number, fields: Partial<Omit<FareConfig, "depotGroupId">>) =>
+    ipcRenderer.invoke("farePricing:setConfigFields", depotGroupId, fields) as Promise<void>,
+  listCountryZoneBands: (depotGroupId: number) =>
+    ipcRenderer.invoke("farePricing:listCountryZoneBands", depotGroupId) as Promise<CountryZoneBand[]>,
+  setCountryZoneBand: (depotGroupId: number, zoneCount: number, priceGBPPence: number) =>
+    ipcRenderer.invoke("farePricing:setCountryZoneBand", depotGroupId, zoneCount, priceGBPPence) as Promise<void>,
+  deleteCountryZoneBand: (depotGroupId: number, zoneCount: number) =>
+    ipcRenderer.invoke("farePricing:deleteCountryZoneBand", depotGroupId, zoneCount) as Promise<void>,
 });

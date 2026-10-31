@@ -2631,3 +2631,120 @@ export function setFareZoneColour(db: SaveDb, zoneId: number, colour: string): v
 export function deleteFareZone(db: SaveDb, zoneId: number): void {
   db.prepare("DELETE FROM fare_zones WHERE id = ?").run(zoneId);
 }
+
+// --- Fare pricing config (DESIGN.md §9, Phase 4 increment 2b) — see
+// fare_configs' own SCHEMA comment above for why every field is nullable
+// and amounts are stored in pence. Field order here matches the SCHEMA's
+// own column order.
+export interface FareConfig {
+  depotGroupId: number;
+  citySingleGBPPence: number | null;
+  beyondDepotGroupPerMileGBPPence: number | null;
+  longDistanceBaseGBPPence: number | null;
+  longDistancePerMileGBPPence: number | null;
+  specialServiceSingleGBPPence: number | null;
+  nightExtraBaseGBPPence: number | null;
+  nightExtraPerZoneGBPPence: number | null;
+  lateGBPPence: number | null;
+  networkGBPPence: number | null;
+  cityDayGBPPence: number | null;
+  cityWeeklyGBPPence: number | null;
+  city28DayGBPPence: number | null;
+  countryDayGBPPence: number | null;
+  countryWeeklyGBPPence: number | null;
+  country28DayGBPPence: number | null;
+  combinedDayGBPPence: number | null;
+  combinedWeeklyGBPPence: number | null;
+  combined28DayGBPPence: number | null;
+}
+
+// Maps every FareConfig field (except depotGroupId) to its own column —
+// used by both the row-to-object reader and the dynamic partial-update
+// writer below, so the two can never silently drift apart.
+const FARE_CONFIG_COLUMNS: Record<Exclude<keyof FareConfig, "depotGroupId">, string> = {
+  citySingleGBPPence: "city_single_gbp_pence",
+  beyondDepotGroupPerMileGBPPence: "beyond_depot_group_per_mile_gbp_pence",
+  longDistanceBaseGBPPence: "long_distance_base_gbp_pence",
+  longDistancePerMileGBPPence: "long_distance_per_mile_gbp_pence",
+  specialServiceSingleGBPPence: "special_service_single_gbp_pence",
+  nightExtraBaseGBPPence: "night_extra_base_gbp_pence",
+  nightExtraPerZoneGBPPence: "night_extra_per_zone_gbp_pence",
+  lateGBPPence: "late_gbp_pence",
+  networkGBPPence: "network_gbp_pence",
+  cityDayGBPPence: "city_day_gbp_pence",
+  cityWeeklyGBPPence: "city_weekly_gbp_pence",
+  city28DayGBPPence: "city_28day_gbp_pence",
+  countryDayGBPPence: "country_day_gbp_pence",
+  countryWeeklyGBPPence: "country_weekly_gbp_pence",
+  country28DayGBPPence: "country_28day_gbp_pence",
+  combinedDayGBPPence: "combined_day_gbp_pence",
+  combinedWeeklyGBPPence: "combined_weekly_gbp_pence",
+  combined28DayGBPPence: "combined_28day_gbp_pence",
+};
+
+function emptyFareConfig(depotGroupId: number): FareConfig {
+  const config = { depotGroupId } as FareConfig;
+  for (const key of Object.keys(FARE_CONFIG_COLUMNS) as (keyof typeof FARE_CONFIG_COLUMNS)[]) {
+    config[key] = null;
+  }
+  return config;
+}
+
+// Always returns a fully-shaped FareConfig, even if the depot group has no
+// row at all yet (every field null, same as a row that exists but is
+// entirely unset) — callers never need to handle "no config exists" as a
+// separate case from "config exists but nothing in it is set yet".
+export function getFareConfig(db: SaveDb, depotGroupId: number): FareConfig {
+  const columns = Object.values(FARE_CONFIG_COLUMNS);
+  const row = db
+    .prepare(`SELECT ${columns.join(", ")} FROM fare_configs WHERE depot_group_id = ?`)
+    .get(depotGroupId) as Record<string, number | null> | undefined;
+  if (!row) return emptyFareConfig(depotGroupId);
+  const config = { depotGroupId } as FareConfig;
+  for (const [key, column] of Object.entries(FARE_CONFIG_COLUMNS)) {
+    config[key as keyof typeof FARE_CONFIG_COLUMNS] = row[column];
+  }
+  return config;
+}
+
+// Merges only the given fields — the player fills these in one at a time
+// (fare_configs' own SCHEMA comment), so this is never a full-row
+// replacement. `INSERT ... ON CONFLICT DO UPDATE` with only the touched
+// columns in the UPDATE clause, since every other column must keep
+// whatever it already held (plain `INSERT OR REPLACE` would null them
+// out). A no-op (empty `fields`) still ensures a row exists, for a depot
+// group that's never been configured at all.
+export function setFareConfigFields(db: SaveDb, depotGroupId: number, fields: Partial<Omit<FareConfig, "depotGroupId">>): void {
+  const entries = Object.entries(fields) as [keyof typeof FARE_CONFIG_COLUMNS, number | null][];
+  db.prepare("INSERT INTO fare_configs (depot_group_id) VALUES (?) ON CONFLICT(depot_group_id) DO NOTHING").run(depotGroupId);
+  for (const [key, value] of entries) {
+    const column = FARE_CONFIG_COLUMNS[key];
+    db.prepare(`UPDATE fare_configs SET ${column} = ? WHERE depot_group_id = ?`).run(value, depotGroupId);
+  }
+}
+
+// --- Country-zone single-fare bands (fare_country_zone_bands' own SCHEMA
+// comment above) ---
+export interface CountryZoneBand {
+  zoneCount: number;
+  priceGBPPence: number;
+}
+
+export function setCountryZoneBand(db: SaveDb, depotGroupId: number, zoneCount: number, priceGBPPence: number): void {
+  if (zoneCount <= 0) throw new Error("setCountryZoneBand: zoneCount must be > 0");
+  db.prepare(
+    `INSERT INTO fare_country_zone_bands (depot_group_id, zone_count, price_gbp_pence) VALUES (?, ?, ?)
+     ON CONFLICT(depot_group_id, zone_count) DO UPDATE SET price_gbp_pence = excluded.price_gbp_pence`,
+  ).run(depotGroupId, zoneCount, priceGBPPence);
+}
+
+export function deleteCountryZoneBand(db: SaveDb, depotGroupId: number, zoneCount: number): void {
+  db.prepare("DELETE FROM fare_country_zone_bands WHERE depot_group_id = ? AND zone_count = ?").run(depotGroupId, zoneCount);
+}
+
+export function listCountryZoneBands(db: SaveDb, depotGroupId: number): CountryZoneBand[] {
+  const rows = db
+    .prepare("SELECT zone_count, price_gbp_pence FROM fare_country_zone_bands WHERE depot_group_id = ? ORDER BY zone_count")
+    .all(depotGroupId) as unknown as { zone_count: number; price_gbp_pence: number }[];
+  return rows.map((r) => ({ zoneCount: r.zone_count, priceGBPPence: r.price_gbp_pence }));
+}

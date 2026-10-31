@@ -423,11 +423,47 @@ interface FareZonesApi {
   delete(zoneId: number): Promise<void>;
 }
 
+interface FareConfig {
+  depotGroupId: number;
+  citySingleGBPPence: number | null;
+  beyondDepotGroupPerMileGBPPence: number | null;
+  longDistanceBaseGBPPence: number | null;
+  longDistancePerMileGBPPence: number | null;
+  specialServiceSingleGBPPence: number | null;
+  nightExtraBaseGBPPence: number | null;
+  nightExtraPerZoneGBPPence: number | null;
+  lateGBPPence: number | null;
+  networkGBPPence: number | null;
+  cityDayGBPPence: number | null;
+  cityWeeklyGBPPence: number | null;
+  city28DayGBPPence: number | null;
+  countryDayGBPPence: number | null;
+  countryWeeklyGBPPence: number | null;
+  country28DayGBPPence: number | null;
+  combinedDayGBPPence: number | null;
+  combinedWeeklyGBPPence: number | null;
+  combined28DayGBPPence: number | null;
+}
+
+interface CountryZoneBand {
+  zoneCount: number;
+  priceGBPPence: number;
+}
+
+interface FarePricingApi {
+  getConfig(depotGroupId: number): Promise<FareConfig>;
+  setConfigFields(depotGroupId: number, fields: Partial<Omit<FareConfig, "depotGroupId">>): Promise<void>;
+  listCountryZoneBands(depotGroupId: number): Promise<CountryZoneBand[]>;
+  setCountryZoneBand(depotGroupId: number, zoneCount: number, priceGBPPence: number): Promise<void>;
+  deleteCountryZoneBand(depotGroupId: number, zoneCount: number): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
   vehicles: VehiclesApi;
   basket: BasketApi;
+  farePricing: FarePricingApi;
   orders: OrdersApi;
   fareZones: FareZonesApi;
   repaintShops: RepaintShopsApi;
