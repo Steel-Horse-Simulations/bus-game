@@ -6,10 +6,10 @@
 // than re-deriving timing here.
 //
 // Deliberate simplifications, flagged rather than silently assumed away:
-//  - No pause/speed control UI yet (DESIGN.md §3's 1x/4x/10x/20x/60x) — the
-//    game clock here just runs continuously at the spec's base rate (1
-//    real second = 10 game seconds). Add the control surface once there's
-//    a reason to pause (there's nothing to manage mid-simulation yet).
+//  - Pause/speed now come from the real game clock (game-clock-engine.ts,
+//    DESIGN.md §3's 1x/4x/10x/20x/60x, confirmed 2026-11-01) rather than
+//    running continuously off Date.now() — this module reads the shared
+//    gameClockState instead of computing its own "now".
 //  - No real in-game calendar/date screen exists, so there's no way to
 //    derive "today is a Tuesday" from game time. A manual Mon-Fri/Sat/Sun
 //    selector stands in for it — also more useful for testing, since it
@@ -32,12 +32,11 @@ import type { GeoJSON } from "geojson";
 import type { Router } from "./wasm/game_wasm.js";
 import { generateDepartureMinutesForBands } from "./route-timetable.mts";
 import { computeVehiclePosition, type RouteLeg, type JourneyPointTiming } from "./vehicle-position.mts";
+import { gameClockState } from "./game-clock-engine";
 
 const DAY_TYPES: DayType[] = ["monday_friday", "saturday", "sunday"];
 const DAY_TYPE_LABELS: Record<DayType, string> = { monday_friday: "Mon-Fri", saturday: "Sat", sunday: "Sun" };
 
-// DESIGN.md §3: "one real second is ten game seconds."
-const GAME_SECONDS_PER_REAL_SECOND = 10;
 const SECONDS_PER_DAY = 86400;
 const REFRESH_INTERVAL_MS = 30_000;
 const TICK_INTERVAL_MS = 250;
@@ -45,6 +44,7 @@ const TICK_INTERVAL_MS = 250;
 interface CachedRoute {
   route: Route;
   legs: RouteLeg[];
+  pointsKey: string;
 }
 
 export async function mountVehicleSimulation(map: maplibregl.Map, router: Router): Promise<void> {
@@ -80,11 +80,30 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     return legs;
   };
 
+  // Rebuilds only what actually changed, rather than discarding and
+  // recomputing every route's full path on every tick of this timer (found
+  // live, 2026-10-31: this was the real cause of persistent in-game lag
+  // scaling with route count/length — "routes only compute once at draw
+  // time" was wrong, this 30-second interval recomputed everything,
+  // unconditionally, for as long as the game stayed open). Mirrors the
+  // existing `pointsKey` diffing already used for the same reason in
+  // route-panel.ts's `syncShownRoutes` — a route's own points changing is
+  // the only thing that can change its legs, so a cheap string-equality
+  // check on them is enough to skip re-routing anything untouched.
   const refresh = async (): Promise<void> => {
     const [routes, timetables] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
-    routeCache = new Map(
-      routes.filter((r) => r.points.length >= 2).map((r) => [r.id, { route: r, legs: buildLegs(r.points) }]),
-    );
+    const next = new Map<number, CachedRoute>();
+    for (const route of routes) {
+      if (route.points.length < 2) continue;
+      const pointsKey = JSON.stringify(route.points);
+      const cached = routeCache.get(route.id);
+      if (cached && cached.pointsKey === pointsKey) {
+        next.set(route.id, { ...cached, route });
+      } else {
+        next.set(route.id, { route, legs: buildLegs(route.points), pointsKey });
+      }
+    }
+    routeCache = next;
     timetablesByRoute = new Map();
     for (const tt of timetables) {
       const list = timetablesByRoute.get(tt.routeId) ?? [];
@@ -166,7 +185,7 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   }
 
   const activeVehicleFeatures = (): GeoJSON.Feature[] => {
-    const nowSeconds = (Date.now() / 1000) * GAME_SECONDS_PER_REAL_SECOND;
+    const nowSeconds = gameClockState.accumulatedGameSeconds;
     const gameSecondsOfDay = nowSeconds % SECONDS_PER_DAY;
     const features: GeoJSON.Feature[] = [];
 

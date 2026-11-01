@@ -105,6 +105,99 @@ body {
   color: var(--text-danger);
 }
 
+/* Main screen nav bar (bottom-bar.ts) — full viewport width, flush
+   against the bottom edge. overflow:visible (unlike .panel, which clips)
+   so each item's icon circle can stick up above the bar's own top edge. */
+.bottom-bar {
+  background: var(--bg-surface-2);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.45);
+  overflow: visible;
+  font: 12px/1.4 var(--font);
+  color: var(--text-primary);
+  /* The bar stays full width; the button group inside it is centred
+     (2026-11-01, live user request — was stretched edge-to-edge
+     before). */
+  justify-content: center;
+  gap: 48px;
+}
+.bottom-bar-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+  width: 72px;
+  height: 100%;
+  background: none;
+  border: none;
+  padding: 0 0 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.bottom-bar-item:hover {
+  color: var(--text-primary);
+}
+.bottom-bar-circle {
+  /* Bigger (2026-11-01, live user request — was 44px) */
+  width: 58px;
+  height: 58px;
+  margin-top: -20px;
+  border-radius: 50%;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bottom-bar-item span {
+  font-size: 11px;
+}
+.bottom-bar-item.is-active {
+  color: var(--text-accent);
+}
+.bottom-bar-item.is-active .bottom-bar-circle {
+  background: var(--bg-accent);
+  border-color: var(--border-accent);
+}
+
+/* The live game-clock cluster, docked to the bar's own left edge via
+   absolute positioning so it doesn't fight the centred nav-button
+   group's own flex layout (bottom-bar.ts's buildClockCluster). */
+.bottom-bar-clock {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.bottom-bar-clock-speeds {
+  display: flex;
+  gap: 2px;
+}
+.bottom-bar-clock-speeds .btn {
+  padding: 3px 6px;
+  font-size: 10px;
+}
+.bottom-bar-clock-datetime {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 108px;
+}
+.bottom-bar-clock-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.bottom-bar-clock-time {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .field {
   font: 12px var(--font);
   color: var(--text-primary);

@@ -16,6 +16,7 @@ import { createDropdown } from "./dropdown";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 export const placeDepotState = { isPlacing: false };
 
@@ -138,7 +139,7 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   toggle.className = "btn";
   toggle.textContent = "Place depot";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   toggle.style.left = "440px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);
@@ -146,7 +147,7 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   const draftPanel = document.createElement("div");
   draftPanel.className = "panel";
   draftPanel.style.position = "absolute";
-  draftPanel.style.bottom = "44px";
+  draftPanel.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
   draftPanel.style.left = "440px";
   draftPanel.style.zIndex = "2";
   draftPanel.style.width = "300px";

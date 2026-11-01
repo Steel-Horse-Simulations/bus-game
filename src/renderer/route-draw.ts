@@ -25,12 +25,72 @@ import {
   type DiversionSource,
   type CombinePoint,
 } from "./route-combine-variations.mts";
+import { resolveSegments, type RouteSegment as ResolvedRouteSegment, type SectionSource } from "./long-distance-sections.mts";
 
 // Shared with stops-layer.ts: while drawing, a click on a stop or station
 // builds the route instead of opening its usual assignment popup. A plain
 // mutable object rather than an event emitter — there's only ever one
 // reader and it only needs the current value at click time.
 export const routeDrawState = { isDrawing: false };
+
+// Shared long-distance sections (live design discussion, 2026-10-31) — the
+// draft UI tracks section usage as a flat list of "a section's own points
+// occupy draftPoints[startPointIndex..endPointIndex]" markers
+// (sectionInsertions, see its own declaration below) rather than threading
+// real custom/section segment boundaries through every point-add code path
+// in this file, which would mean touching the whole click/addPoint/remove/
+// cut machinery. Both bounds are recorded exactly at insertion time (see
+// "Insert section" below), so converting back into the route's real,
+// stored `segments` shape (db.mts's RouteSegment) never has to guess where
+// a section's own span starts or ends.
+function buildSegmentsFromInsertions<P>(
+  points: readonly P[],
+  insertions: readonly { sectionId: number; startPointIndex: number; endPointIndex: number }[],
+): ({ kind: "custom"; points: P[] } | { kind: "section"; sectionId: number })[] {
+  const sorted = [...insertions].sort((a, b) => a.startPointIndex - b.startPointIndex);
+  const segments: ({ kind: "custom"; points: P[] } | { kind: "section"; sectionId: number })[] = [];
+  let cursor = 0;
+  for (const { sectionId, startPointIndex, endPointIndex } of sorted) {
+    if (startPointIndex < cursor || endPointIndex >= points.length || endPointIndex < startPointIndex) continue; // a stale/invalid marker left over from a manual edit — skip rather than corrupt the sequence
+    const customSlice = points.slice(cursor, startPointIndex);
+    if (customSlice.length > 0) segments.push({ kind: "custom", points: [...customSlice] });
+    segments.push({ kind: "section", sectionId });
+    cursor = endPointIndex + 1;
+  }
+  if (cursor < points.length) segments.push({ kind: "custom", points: [...points.slice(cursor)] });
+  return segments;
+}
+
+// The inverse of buildSegmentsFromInsertions — reconstructs the draft's own
+// insertion markers from a route's real stored `segments`, so editing an
+// existing route that uses sections starts the draft with "Insert section"
+// already reflecting what's actually there, rather than looking like a
+// plain hand-drawn route. `sections` supplies each referenced section's own
+// CURRENT point count, since a "section" segment carries only its id, not
+// its length — consistent with sections being a live reference, not a
+// frozen copy (the draft seeds from whatever the section currently is).
+// A reference to a section that's since been deleted is skipped — the
+// same "last known-good shape" treatment resolveSegments itself already
+// gives a dangling reference, rather than this function throwing partway
+// through reconstructing the draft.
+function insertionsFromSegments(
+  segments: readonly RouteSegment[],
+  sections: readonly { id: number; points: readonly unknown[] }[],
+): { sectionId: number; startPointIndex: number; endPointIndex: number }[] {
+  const insertions: { sectionId: number; startPointIndex: number; endPointIndex: number }[] = [];
+  let cursor = 0;
+  for (const segment of segments) {
+    if (segment.kind === "custom") {
+      cursor += segment.points.length;
+      continue;
+    }
+    const section = sections.find((s) => s.id === segment.sectionId);
+    if (!section) continue;
+    insertions.push({ sectionId: segment.sectionId, startPointIndex: cursor, endPointIndex: cursor + section.points.length - 1 });
+    cursor += section.points.length;
+  }
+  return insertions;
+}
 
 // A route is a sequence of points: real stops (named, poppable, listed) and
 // waypoints (DESIGN.md §6: "force a specific path where the router picks
@@ -111,8 +171,10 @@ export interface RouteDrawController {
   // *new* one — re-entering drawing mode picks up where it left off, same
   // as the old toggle button re-opening did — but does clear a previous
   // *edit*, since resuming "new route" mode with another route's points
-  // still loaded would be confusing).
-  startDrawing(): void;
+  // still loaded would be confusing). `routeType` is chosen by the
+  // caller's own "what type of route?" step (route-panel.ts) before this
+  // is called — route types, 2026-10-31.
+  startDrawing(routeType: RouteType): void;
   // Loads an existing saved route's points, terminus/start flags, number
   // and depot group back into the draft state for editing. Saving while in
   // this mode updates the route in place (and clears its own timetables,
@@ -138,6 +200,17 @@ export async function mountRouteDrawTool(
   const settlementsBytes = new Uint8Array(await settlementsRes.arrayBuffer());
   const settlements = decode_settlements(settlementsBytes) as DecodedSettlement[];
 
+  // Shared long-distance sections (live design discussion, 2026-10-31) —
+  // unlike settlements, these can genuinely change while this panel stays
+  // open (the player can create/edit one in its own menu mid-draw), so
+  // this is refreshed on demand (refreshAvailableSections, called when the
+  // "Insert section" picker is rendered) rather than fetched only once.
+  let availableSections: LongDistanceSection[] = [];
+  async function refreshAvailableSections(): Promise<void> {
+    availableSections = await window.longDistanceSections.list();
+  }
+  await refreshAvailableSections();
+
   let draftPoints: DraftPoint[] = [];
   // Which other routes' own diversions the current draft was built from via
   // "Build from existing variations" (DESIGN.md §6 "Combining variations") —
@@ -149,6 +222,20 @@ export async function mountRouteDrawTool(
   // when a reused diversion changes, which only makes sense while nothing
   // else has touched the result since.
   let draftComposedFromRouteIds: number[] = [];
+  // Shared long-distance sections (live design discussion, 2026-10-31) —
+  // where in the current draft an existing section's own points were
+  // spliced in via "Insert section" below, recorded as the start/end
+  // indexes into draftPoints the section's own points occupy. Converted
+  // into the route's real `segments` field only at save time
+  // (buildSegmentsFromInsertions, defined above routeDrawState) — unlike
+  // draftComposedFromRouteIds' all-or-nothing replace-the-draft model, a
+  // route can freely mix several sections with hand-drawn bits in between,
+  // so there's no single "was this draft built this way" flag to clear on
+  // a manual edit the way composing does; buildSegmentsFromInsertions
+  // itself discards any marker that no longer fits the current draftPoints
+  // shape (a point removed/inserted before it) rather than corrupting the
+  // save.
+  let sectionInsertions: { sectionId: number; startPointIndex: number; endPointIndex: number }[] = [];
   let routeCoords: [number, number][] = [];
   let warning: string | null = null;
   // `legEndIndices[i]` is the index into `routeCoords` where the leg from
@@ -193,6 +280,12 @@ export async function mountRouteDrawTool(
   // Set by startEditing(), null for a genuinely new route — the save
   // handler branches on this to update the existing route rather than
   // creating a duplicate.
+  // The current draft's route type (route types, 2026-10-31) — set by
+  // startDrawing's own caller-chosen value, or inherited unprompted from
+  // the source route for startEditing/startVariation (a variation is
+  // still logically the same service as its parent; editing a route
+  // doesn't re-ask its type).
+  let draftRouteType: RouteType = "ordinary";
   let editingRouteId: number | null = null;
   // Set by startVariation(), null otherwise — the route this draft is a
   // lettered variation of (DESIGN.md §6). Never combined with
@@ -369,6 +462,7 @@ export async function mountRouteDrawTool(
 
     warning = null;
     draftComposedFromRouteIds = [];
+    sectionInsertions = [];
 
     if (insertAfterIndex !== null) {
       const insertedAt = insertAfterIndex + 1;
@@ -400,6 +494,7 @@ export async function mountRouteDrawTool(
   const clear = () => {
     draftPoints = [];
     draftComposedFromRouteIds = [];
+    sectionInsertions = [];
     routeCoords = [];
     legEndIndices = [];
     warning = null;
@@ -634,6 +729,13 @@ export async function mountRouteDrawTool(
       saveStatusEl.textContent = "Enter a route number first.";
       return;
     }
+    // UK-EXPANSION.md §10's own numbering convention ("N + the day
+    // route's number") made mandatory, not just a suggestion (confirmed
+    // 2026-11-01, live user instruction: "this should not be optional").
+    if (draftRouteType === "night" && !number.startsWith("N")) {
+      saveStatusEl.textContent = `A Night-type route's number must start with "N" (e.g. N${number}).`;
+      return;
+    }
     const name = nameInput.value.trim() || null;
     if (draftPoints.length < 2) {
       saveStatusEl.textContent = "Draw at least two points first.";
@@ -689,6 +791,7 @@ export async function mountRouteDrawTool(
         ? { kind: "stop", osmId: p.osmId, lon: p.lon, lat: p.lat }
         : { kind: "waypoint", lon: p.lon, lat: p.lat },
     );
+    const savedSegments = buildSegmentsFromInsertions(savedPoints, sectionInsertions) as RouteSegment[];
     // Carries across a re-save of the same in-progress variation too (the
     // "second Save updates instead of duplicating" path below), not just
     // its first save — the variation relationship shouldn't disappear just
@@ -718,6 +821,8 @@ export async function mountRouteDrawTool(
         variationLetter,
         draftComposedFromRouteIds,
         hailRideSections,
+        savedSegments,
+        draftRouteType,
       );
       savedRouteId = editingRouteId;
       saveStatusEl.style.color = "var(--text-secondary)";
@@ -736,6 +841,8 @@ export async function mountRouteDrawTool(
         variationLetter,
         draftComposedFromRouteIds,
         hailRideSections,
+        savedSegments,
+        draftRouteType,
       );
       savedRouteId = created.id;
       // A second Save click without leaving drawing mode now updates this
@@ -772,6 +879,85 @@ export async function mountRouteDrawTool(
   saveSection.appendChild(saveButton);
   saveSection.appendChild(saveStatusEl);
   body.appendChild(saveSection);
+
+  // Shared long-distance sections (live design discussion, 2026-10-31) —
+  // appends an existing section's own current points to the end of the
+  // draft, the same way any other click-to-add does, and records where
+  // they landed in sectionInsertions so the save handler can translate the
+  // draft back into the route's own real `segments` field. Deliberately
+  // append-only (no mid-draft insertion the way "Rejoin at" has for
+  // variations) — keeps this additive to the existing draft machinery
+  // rather than needing it to understand section boundaries at every
+  // point-insertion site; available for any route, not just variations or
+  // long-distance ones specifically, since there's no existing "is this a
+  // long-distance route" flag on a route to gate it against.
+  const sectionInsertHeading = document.createElement("div");
+  sectionInsertHeading.className = "label-muted";
+  sectionInsertHeading.textContent = "Shared long-distance sections:";
+  const sectionInsertRow = document.createElement("div");
+  sectionInsertRow.style.display = "flex";
+  sectionInsertRow.style.alignItems = "center";
+  sectionInsertRow.style.gap = "6px";
+  let sectionDropdown: Dropdown | null = null;
+  let selectedSectionId: number | null = null;
+  const sectionInsertStatus = document.createElement("div");
+  sectionInsertStatus.style.fontSize = "11px";
+  sectionInsertStatus.style.color = "var(--text-muted)";
+
+  function renderSectionDropdown(): void {
+    sectionInsertRow.replaceChildren();
+    if (availableSections.length === 0) {
+      sectionInsertStatus.textContent = "No sections created yet — see the \"Long-distance sections\" menu.";
+      return;
+    }
+    sectionInsertStatus.textContent = "";
+    selectedSectionId = availableSections.some((s) => s.id === selectedSectionId) ? selectedSectionId : availableSections[0].id;
+    sectionDropdown = createDropdown(
+      availableSections.map((s) => s.name),
+      availableSections.find((s) => s.id === selectedSectionId)!.name,
+      (label) => {
+        selectedSectionId = availableSections.find((s) => s.name === label)?.id ?? null;
+      },
+    );
+    const insertButton = document.createElement("button");
+    insertButton.type = "button";
+    insertButton.className = "btn";
+    insertButton.textContent = "Insert at end";
+    insertButton.addEventListener("click", () => {
+      const section = availableSections.find((s) => s.id === selectedSectionId);
+      if (!section || section.points.length === 0) return;
+      const startPointIndex = draftPoints.length;
+      insertAfterIndex = draftPoints.length - 1;
+      for (const p of section.points) {
+        const point: DraftPoint =
+          p.kind === "stop" ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat } : { kind: "waypoint", lon: p.lon, lat: p.lat };
+        addPoint(point);
+      }
+      insertAfterIndex = null;
+      sectionInsertions.push({ sectionId: section.id, startPointIndex, endPointIndex: draftPoints.length - 1 });
+      updateStatus();
+      renderStopList();
+    });
+    sectionInsertRow.append(sectionDropdown.el, insertButton);
+  }
+  void refreshAvailableSections().then(renderSectionDropdown);
+
+  const sectionInsertSection = document.createElement("div");
+  sectionInsertSection.className = "panel-section";
+  sectionInsertSection.appendChild(sectionInsertHeading);
+  sectionInsertSection.appendChild(sectionInsertRow);
+  sectionInsertSection.appendChild(sectionInsertStatus);
+  body.appendChild(sectionInsertSection);
+
+  // Shared long-distance sections only make sense on a Long-distance
+  // route (confirmed 2026-11-01, live user instruction) — hidden
+  // entirely for every other type rather than just discouraged, called
+  // wherever draftRouteType is set (startDrawing/startEditing/
+  // startVariation, and the variation-type dropdown above).
+  function updateSectionInsertVisibility(): void {
+    sectionInsertSection.style.display = draftRouteType === "long_distance" ? "" : "none";
+  }
+  updateSectionInsertVisibility();
 
   // The list of every point picked so far, stops and waypoints alike. Click
   // a row to arm it as an insertion point (highlighted); the next map
@@ -824,6 +1010,36 @@ export async function mountRouteDrawTool(
   variationLetterRow.appendChild(variationLetterLabel);
   variationLetterRow.appendChild(variationLetterInput);
 
+  // Varying an Ordinary route can also make a Night-service variation
+  // (2026-11-01, user request) — every other parent type still just
+  // inherits silently (draftRouteType = parent.routeType in
+  // startVariation below), since only Ordinary->Night is a real in-place
+  // choice worth asking about here. Reset to "Ordinary" by
+  // renderVariationSection on every fresh startVariation() call, matching
+  // draftRouteType's own default for an Ordinary parent.
+  const variationTypeRow = document.createElement("div");
+  variationTypeRow.style.display = "flex";
+  variationTypeRow.style.alignItems = "center";
+  variationTypeRow.style.gap = "6px";
+  const variationTypeLabel = document.createElement("span");
+  variationTypeLabel.className = "label-muted";
+  variationTypeLabel.textContent = "Variation type:";
+  const variationTypeDropdown = createDropdown(["Ordinary", "Night service"], "Ordinary", (label) => {
+    draftRouteType = label === "Night service" ? "night" : "ordinary";
+    // Night routes must be N-prefixed (UK-EXPANSION.md §10, "N + the day
+    // route's number") — not optional, confirmed 2026-11-01. Re-derived
+    // from the parent's own number each time rather than prepending "N"
+    // to whatever's currently typed, so switching back to Ordinary
+    // cleanly restores the parent's plain number instead of leaving a
+    // stray "N".
+    if (variationParentRoute) {
+      numberInput.value = draftRouteType === "night" ? `N${variationParentRoute.number}` : variationParentRoute.number;
+    }
+    updateSectionInsertVisibility();
+  });
+  variationTypeRow.appendChild(variationTypeLabel);
+  variationTypeRow.appendChild(variationTypeDropdown.el);
+
   const divergeButton = document.createElement("button");
   divergeButton.className = "btn";
   divergeButton.textContent = "Diverge from here";
@@ -834,6 +1050,7 @@ export async function mountRouteDrawTool(
     if (cutFrom >= draftPoints.length) return;
     draftPoints.splice(cutFrom);
     draftComposedFromRouteIds = [];
+    sectionInsertions = [];
     if (terminusIndex !== null && terminusIndex >= cutFrom) terminusIndex = null;
     if (startIndex !== null && startIndex >= cutFrom) startIndex = null;
     rebuildRoute();
@@ -947,6 +1164,12 @@ export async function mountRouteDrawTool(
     variationSection.style.display = "flex";
     variationSection.innerHTML = "";
     variationSection.appendChild(variationLetterRow);
+
+    if (variationParentRoute.routeType === "ordinary") {
+      variationTypeDropdown.value = "Ordinary";
+      draftRouteType = "ordinary";
+      variationSection.appendChild(variationTypeRow);
+    }
 
     if (parentSiblingRoutes.length > 0) {
       buildFromSiblingsList.innerHTML = "";
@@ -1118,6 +1341,7 @@ export async function mountRouteDrawTool(
   const removePoint = (index: number) => {
     draftPoints.splice(index, 1);
     draftComposedFromRouteIds = [];
+    sectionInsertions = [];
     if (insertAfterIndex !== null) {
       if (insertAfterIndex === index) insertAfterIndex = null;
       else if (insertAfterIndex > index) insertAfterIndex -= 1;
@@ -1377,7 +1601,7 @@ export async function mountRouteDrawTool(
 
   return {
     el: panel,
-    startDrawing: () => {
+    startDrawing: (routeType: RouteType) => {
       // A previous session left an *edit* or *variation* in progress, or
       // there's nothing drawn yet at all (e.g. the very first "+ New
       // route" after boot) — either way there's a genuinely new route
@@ -1388,6 +1612,8 @@ export async function mountRouteDrawTool(
       // alone, unaffected — re-entering drawing mode picks up where it
       // left off, same as before.
       if (editingRouteId !== null || variationParentRoute !== null || draftPoints.length === 0) clear();
+      draftRouteType = routeType;
+      updateSectionInsertVisibility();
       setDrawing(true);
     },
     startEditing: async (route: Route) => {
@@ -1398,18 +1624,29 @@ export async function mountRouteDrawTool(
       // every possible staleness. Editing it should always start from the
       // true current shape.
       const allRoutes = await window.routes.list();
-      const livePoints = resolveRoutePoints(route, allRoutes) as readonly RoutePoint[];
+      // Shared long-distance sections take priority over the older
+      // composed-variation mechanism when a route uses both — in practice
+      // a route only ever uses one or the other, but this keeps whichever
+      // is actually populated as the source of truth for what the draft
+      // starts from.
+      const livePoints: readonly RoutePoint[] =
+        route.segments.length > 0
+          ? (resolveSegments(route.segments as ResolvedRouteSegment[], availableSections as SectionSource[]) as readonly RoutePoint[])
+          : (resolveRoutePoints(route, allRoutes) as readonly RoutePoint[]);
       draftPoints = livePoints.map((p): DraftPoint =>
         p.kind === "stop"
           ? { kind: "stop", osmId: p.osmId as number, lon: p.lon, lat: p.lat }
           : { kind: "waypoint", lon: p.lon, lat: p.lat },
       );
       draftComposedFromRouteIds = [...route.composedFromRouteIds];
+      sectionInsertions = insertionsFromSegments(route.segments, availableSections);
       terminusIndex = route.terminusIndex;
       startIndex = route.startIndex;
       hailRideSections = route.hailAndRideSections.map((s) => ({ ...s }));
       hailRideArmedStart = null;
       editingRouteId = route.id;
+      draftRouteType = route.routeType;
+      updateSectionInsertVisibility();
       variationParentRoute = null;
       parentSiblingRoutes = [];
       insertAfterIndex = null;
@@ -1435,8 +1672,11 @@ export async function mountRouteDrawTool(
       hailRideSections = parent.hailAndRideSections.map((s) => ({ ...s }));
       hailRideArmedStart = null;
       editingRouteId = null;
+      draftRouteType = parent.routeType;
+      updateSectionInsertVisibility();
       variationParentRoute = parent;
       draftComposedFromRouteIds = [];
+    sectionInsertions = [];
       insertAfterIndex = null;
       warning = null;
       nameInput.value = "";

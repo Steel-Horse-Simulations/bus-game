@@ -16,6 +16,11 @@ import {
   listRoutes,
   updateRoute,
   deleteRoute,
+  createLongDistanceSection,
+  listLongDistanceSections,
+  renameLongDistanceSection,
+  setLongDistanceSectionPoints,
+  deleteLongDistanceSection,
   setRoutePickupDropoffOverride,
   upsertRouteTimetable,
   listRouteTimetablesForRoute,
@@ -56,6 +61,9 @@ import {
   placeOrder,
   listOrders,
   collectOrder,
+  getGameClock,
+  setGameClock,
+  SCHEMA_VERSION,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -409,6 +417,84 @@ assert(
   "the variation itself survives its parent's deletion — only the link is cleared",
 );
 
+// --- Shared long-distance sections (T, live design discussion,
+// 2026-10-31) — real CRUD plus the core "live reference, not a frozen
+// copy" behaviour: a route's own `segments` field stores a reference, not
+// a snapshot, so editing the section must be reflected the next time
+// something resolves the route's live points (the actual resolution logic
+// itself — resolveSegments/findRoutesUsingSectionId — is unit-tested
+// independently in long-distance-sections.verify.mts; this proves the DB
+// layer round-trips everything resolveSegments needs). ---
+const section = createLongDistanceSection(db, "Glasgow-Carlisle", [
+  { kind: "stop", osmId: 9001, lon: -4.25, lat: 55.86 },
+  { kind: "stop", osmId: 9002, lon: -2.94, lat: 54.89 },
+]);
+assert(section.id > 0, "a section is created with a real id");
+assert(listLongDistanceSections(db).some((s) => s.id === section.id && s.name === "Glasgow-Carlisle"), "the new section is listed");
+
+let sectionRejected = false;
+try {
+  createLongDistanceSection(db, "Too short", [{ kind: "stop", osmId: 1, lon: 0, lat: 0 }]);
+} catch {
+  sectionRejected = true;
+}
+assert(sectionRejected, "a section with fewer than 2 points is rejected");
+
+renameLongDistanceSection(db, section.id, "Glasgow-Carlisle (A74M)");
+assert(listLongDistanceSections(db).find((s) => s.id === section.id)?.name === "Glasgow-Carlisle (A74M)", "renameLongDistanceSection updates the name");
+
+const sectionUsingRoute = createRoute(
+  db,
+  g1.id,
+  "923",
+  [
+    { kind: "waypoint", lon: -4.25, lat: 55.86 },
+    { kind: "waypoint", lon: -2.94, lat: 54.89 },
+  ],
+  "outbound",
+  null,
+  null,
+  "#000000",
+  null,
+  null,
+  null,
+  [],
+  [],
+  [{ kind: "section", sectionId: section.id }],
+);
+assert(
+  JSON.stringify(sectionUsingRoute.segments) === JSON.stringify([{ kind: "section", sectionId: section.id }]),
+  "segments (a reference to a shared section) round-trips through createRoute",
+);
+assert(
+  listRoutes(db).find((r) => r.id === sectionUsingRoute.id)?.segments[0]?.kind === "section",
+  "the route's own segments survive a plain listRoutes read",
+);
+
+// Editing the section's own points, then confirming a fresh read of the
+// section reflects the change immediately — the real "live reference"
+// proof at the DB layer (the renderer's own resolveSegments is what
+// actually recomputes a route's resolved points from this, proven
+// separately in long-distance-sections.verify.mts).
+setLongDistanceSectionPoints(db, section.id, [
+  { kind: "stop", osmId: 9001, lon: -4.25, lat: 55.86 },
+  { kind: "waypoint", lon: -3.5, lat: 55.3 },
+  { kind: "stop", osmId: 9002, lon: -2.94, lat: 54.89 },
+]);
+assert(listLongDistanceSections(db).find((s) => s.id === section.id)?.points.length === 3, "setLongDistanceSectionPoints updates the section's own points");
+assert(
+  JSON.stringify(listRoutes(db).find((r) => r.id === sectionUsingRoute.id)?.segments) === JSON.stringify([{ kind: "section", sectionId: section.id }]),
+  "the route's own segments still just reference the section by id after the section is edited — nothing was frozen into the route at creation time",
+);
+
+deleteLongDistanceSection(db, section.id);
+assert(!listLongDistanceSections(db).some((s) => s.id === section.id), "deleteLongDistanceSection removes it");
+assert(
+  listRoutes(db).find((r) => r.id === sectionUsingRoute.id)?.segments[0]?.kind === "section",
+  "deleting a section leaves a route's own dangling reference in place rather than silently rewriting the route (resolveSegments is what treats it as contributing nothing — db.mts itself does no cascading here)",
+);
+deleteRoute(db, sectionUsingRoute.id);
+
 db.close();
 
 // --- reopen: confirm real persistence, not just in-memory ---
@@ -700,6 +786,21 @@ db.close();
   removeDutyPiece(db, piece.id);
   assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 0, "piece removed");
 
+  // Real bug (2026-10-31): deleting a route with a duty_piece still
+  // pointing at it threw "FOREIGN KEY constraint failed", silently
+  // swallowed by the renderer's delete button with no visible error —
+  // reported as "the button lights up but does nothing." deleteRoute now
+  // clears duty_pieces first, the same treatment as route_timetables.
+  const deletableRoute = createRoute(db, dutyGroup.id, "100", [], "outbound", null, null, "#00ff00", null, null, null, []);
+  addDutyPiece(db, dutyB1.id, deletableRoute.id, 500);
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added for the route about to be deleted");
+  deleteRoute(db, deletableRoute.id);
+  assert(!listRoutes(db).some((r) => r.id === deletableRoute.id), "the route itself is gone");
+  assert(
+    listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 0,
+    "deleting a route also removes any duty_piece built against it, rather than throwing",
+  );
+
   deleteDuty(db, dutyB1.id);
   assert(!listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").some((d) => d.id === dutyB1.id), "deleteDuty also removes it from the listing");
   db.close();
@@ -824,6 +925,22 @@ db.close();
   }
   assert(threwOnBadOrder, "collecting a non-existent order throws rather than silently doing nothing");
 
+  // --- Game clock (game_clock, DESIGN.md §3) ---
+  const defaultClock = getGameClock(db);
+  assert(
+    defaultClock.accumulatedGameSeconds === 0 && defaultClock.speedMultiplier === 1 && defaultClock.isPaused === false,
+    "a never-set game clock defaults to second 0, 1x, unpaused",
+  );
+  setGameClock(db, { accumulatedGameSeconds: 123456, speedMultiplier: 20, isPaused: true });
+  const afterSet = getGameClock(db);
+  assert(
+    afterSet.accumulatedGameSeconds === 123456 && afterSet.speedMultiplier === 20 && afterSet.isPaused === true,
+    "setGameClock round-trips every field",
+  );
+  setGameClock(db, { accumulatedGameSeconds: 999, speedMultiplier: 1, isPaused: false });
+  const afterSecondSet = getGameClock(db);
+  assert(afterSecondSet.accumulatedGameSeconds === 999 && afterSecondSet.isPaused === false, "a second setGameClock updates in place, not a second row");
+
   db.close();
 }
 
@@ -841,7 +958,7 @@ db.close();
     const versionCheckDb = new DatabaseSync(copy);
     const { user_version } = versionCheckDb.prepare("PRAGMA user_version").get() as { user_version: number };
     versionCheckDb.close();
-    assert(user_version === 36, `real save migrates to schema v36, got v${user_version}`);
+    assert(user_version === SCHEMA_VERSION, `real save migrates to schema v${SCHEMA_VERSION}, got v${user_version}`);
     const realGroups = listDepotGroups(upgraded);
     if (realGroups.length > 0) {
       const realDepots = listDepots(upgraded);

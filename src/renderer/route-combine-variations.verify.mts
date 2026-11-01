@@ -219,4 +219,61 @@ function route(id: number, points: CombinePoint[], parentRouteId: number | null,
   assert(JSON.stringify(deps.sort()) === JSON.stringify([3, 4]), `both 1C and transitively 1D should depend on 1A, got ${JSON.stringify(deps)}`);
 }
 
+// Minor variations (2026-11-01, DESIGN.md §6 — the Skye 56/Bernisdale
+// example): always live-linked to the parent, no explicit composedFromRouteIds
+// opt-in needed. The minor variation's OWN stored points carry its one real
+// diversion from the parent (same shape a major variation's full path would
+// have if it were ever reused as a diversion source).
+function minorVariation(id: number, points: CombinePoint[], parentRouteId: number): ComposableRoute {
+  return { id, points, parentRouteId, composedFromRouteIds: [], isMinorVariation: true };
+}
+
+// resolveRoutePoints: a minor variation resolves to its own diversion
+// spliced onto the parent's CURRENT trunk — live, with no composedFromRouteIds
+// needed at all (unlike a major/composed variation).
+{
+  const trunk = route(1, [stop(1), stop(2), stop(3), stop(4), stop(5)], null, []);
+  const skip3 = minorVariation(2, [stop(1), stop(2), waypoint(1), stop(4), stop(5)], 1); // skips stop 3
+  const resolved = resolveRoutePoints(skip3, [trunk, skip3]);
+  assert(JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, "wp", 4, 5]), `a minor variation resolves to its own diversion against the parent, got ${JSON.stringify(osmIds(resolved))}`);
+}
+
+// resolveRoutePoints: the live part — if the parent's own shared (non-
+// diverging) stretch changes, the minor variation picks it up automatically,
+// with nothing re-saved on the variation itself.
+{
+  const trunkOld = route(1, [stop(1), stop(2), stop(3), stop(4), stop(5)], null, []);
+  const skip3 = minorVariation(2, [stop(1), stop(2), waypoint(1), stop(4), stop(5)], 1);
+  const resolvedOld = resolveRoutePoints(skip3, [trunkOld, skip3]);
+  assert(JSON.stringify(osmIds(resolvedOld)) === JSON.stringify([1, 2, "wp", 4, 5]), "sanity: resolves against the old trunk first");
+
+  // The parent's own path between 4 and 5 is redrawn with a new waypoint —
+  // nothing about the minor variation's own saved points changes.
+  const trunkNew = route(1, [stop(1), stop(2), stop(3), stop(4), waypoint(99), stop(5)], null, []);
+  const resolvedNew = resolveRoutePoints(skip3, [trunkNew, skip3]);
+  assert(
+    JSON.stringify(osmIds(resolvedNew)) === JSON.stringify([1, 2, "wp", 4, "wp", 5]),
+    `a minor variation must reflect the parent's latest edit automatically, got ${JSON.stringify(osmIds(resolvedNew))}`,
+  );
+}
+
+// resolveRoutePoints: falls back to the stored cache if the parent no
+// longer exists, same "last known-good shape" treatment as a major variation.
+{
+  const orphanMinor = minorVariation(9, [stop(1), stop(2), stop(3)], 999);
+  const resolved = resolveRoutePoints(orphanMinor, [orphanMinor]);
+  assert(JSON.stringify(osmIds(resolved)) === JSON.stringify([1, 2, 3]), "a minor variation with a deleted parent falls back to its own cache");
+}
+
+// findDependentRouteIds: a minor variation is ALWAYS a dependent of its
+// parent — unlike a plain (non-composed, non-minor) major variation, which
+// is never live and so is never a dependent at all.
+{
+  const trunk = route(1, [], null, []);
+  const minor = minorVariation(2, [], 1);
+  const plainMajorVariation = route(3, [], 1, []); // a child of 1, but not minor and not composed
+  const deps = findDependentRouteIds(1, [trunk, minor, plainMajorVariation]);
+  assert(JSON.stringify(deps) === JSON.stringify([2]), `only the minor variation should depend on its parent, got ${JSON.stringify(deps)}`);
+}
+
 console.log("\nAll route-combine-variations checks passed.");

@@ -145,6 +145,15 @@ export interface ComposableRoute {
   points: readonly CombinePoint[];
   parentRouteId: number | null;
   composedFromRouteIds: readonly number[];
+  // A minor variation (DESIGN.md §6, confirmed 2026-11-01 — the user's own
+  // real example: the Skye 56 skipping Bernisdale on certain school runs)
+  // always shares its parent's exact route number, with no letter suffix,
+  // and is ALWAYS live-linked to its parent's current path — unlike a
+  // major variation, which is only live if the player explicitly composed
+  // it from a sibling's diversion (composedFromRouteIds). Optional so
+  // every existing call site/test building a plain ComposableRoute
+  // literal doesn't need updating — undefined behaves as false.
+  isMinorVariation?: boolean;
 }
 
 // The live, current point list for a route — DESIGN.md §6 "Combining
@@ -166,9 +175,30 @@ export interface ComposableRoute {
 // last known-good shape is safer than the route vanishing from the map
 // entirely.
 export function resolveRoutePoints<T extends ComposableRoute>(route: T, allRoutes: readonly T[], seen: ReadonlySet<number> = new Set()): CombinePoint[] {
-  if (route.composedFromRouteIds.length === 0) return route.points as CombinePoint[];
   if (seen.has(route.id)) return route.points as CombinePoint[];
   const nextSeen = new Set(seen).add(route.id);
+
+  // A minor variation is always live-linked to its parent, with no player
+  // action needed to opt in (unlike composedFromRouteIds below, which only
+  // applies once the player has explicitly combined siblings). Its own
+  // stored `points` are treated exactly like a major variation's full
+  // drawn path would be if reused as a diversion source — findDiversion
+  // anchors on shared stops either side of wherever it actually differs
+  // from the parent, so a parent edit to the shared (non-diverging)
+  // stretch flows straight through, the same mechanism composeVariation
+  // already proves for major variations.
+  if (route.isMinorVariation && route.parentRouteId !== null) {
+    const parent = allRoutes.find((r) => r.id === route.parentRouteId);
+    if (!parent) return route.points as CombinePoint[];
+    const trunkPoints = resolveRoutePoints(parent, allRoutes, nextSeen);
+    try {
+      return composeVariation(trunkPoints, [{ siblingId: route.id, points: route.points }]).points;
+    } catch {
+      return route.points as CombinePoint[];
+    }
+  }
+
+  if (route.composedFromRouteIds.length === 0) return route.points as CombinePoint[];
 
   const parent = route.parentRouteId === null ? undefined : allRoutes.find((r) => r.id === route.parentRouteId);
   if (!parent) return route.points as CombinePoint[];
@@ -203,7 +233,10 @@ export function findDependentRouteIds<T extends ComposableRoute>(savedRouteId: n
     for (const id of frontier) {
       for (const r of allRoutes) {
         if (dependents.has(r.id) || r.id === savedRouteId) continue;
-        const dependsDirectly = r.composedFromRouteIds.includes(id) || (r.parentRouteId === id && r.composedFromRouteIds.length > 0);
+        const dependsDirectly =
+          r.composedFromRouteIds.includes(id) ||
+          (r.parentRouteId === id && r.composedFromRouteIds.length > 0) ||
+          (r.parentRouteId === id && r.isMinorVariation === true);
         if (dependsDirectly) {
           dependents.add(r.id);
           next.push(r.id);

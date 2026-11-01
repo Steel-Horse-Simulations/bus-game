@@ -316,6 +316,64 @@ pub fn decode_settlements(bytes: &[u8]) -> SettlementData {
         .0
 }
 
+/// A real sailing line, extracted from a single `route=ferry`-tagged OSM
+/// way (`pipeline/src/ferry_routes.rs`'s own doc comment has the full
+/// scoping reasoning) — the real geometry, not a centroid, since the whole
+/// point is an exact distance for fare/timing use (T107/T108,
+/// OPEN-ITEMS.md), not just a marker.
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct FerryRoute {
+    pub osm_id: i64,
+    pub name: Option<String>,
+    pub geometry: Vec<(i32, i32)>,
+    /// Precomputed at pipeline build time (sum of each consecutive leg's
+    /// haversine distance) so no consumer needs to redo that work, and so
+    /// every consumer — map rendering, a future fare calculation — reads
+    /// the exact same figure.
+    pub distance_m: f64,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct FerryRouteData {
+    pub routes: Vec<FerryRoute>,
+}
+
+pub fn encode_ferry_routes(data: &FerryRouteData) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode ferry route data")
+}
+
+pub fn decode_ferry_routes(bytes: &[u8]) -> FerryRouteData {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode ferry route data")
+        .0
+}
+
+/// One continuous stretch of real coastline, assembled at pipeline build
+/// time from one or more joined OSM `natural=coastline` ways
+/// (`pipeline/src/coastline.rs`'s own doc comment has the full scoping
+/// reasoning). Consumed client-side by `fare-zone-drawing.ts` to clip a
+/// drawn fare zone's own straight (Shift-click) water-crossing segments
+/// back to the real shore.
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct CoastlineChain {
+    pub geometry: Vec<(i32, i32)>,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct CoastlineData {
+    pub chains: Vec<CoastlineChain>,
+}
+
+pub fn encode_coastline(data: &CoastlineData) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode coastline data")
+}
+
+pub fn decode_coastline(bytes: &[u8]) -> CoastlineData {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode coastline data")
+        .0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

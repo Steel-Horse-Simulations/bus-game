@@ -13,7 +13,7 @@ import { mountVehicleSimulation } from "./vehicle-simulation";
 import { mountVehicleBuyMenu } from "./vehicle-buy-menu";
 import { seedRealLiveries } from "./livery-seed-data.mts";
 import { mountLiveryPanel } from "./livery-panel";
-import { mountRepaintShops } from "./repaint-shop-panel";
+import { mountRepaintShops, seedRealRepaintShops } from "./repaint-shop-panel";
 import { mountDeadMileagePreview } from "./dead-mileage-preview";
 import { mountDutyPanel } from "./duty-panel";
 import { mountDepotPlacement } from "./depot-placement";
@@ -21,6 +21,9 @@ import { mountDealerPlacement } from "./dealer-placement";
 import { mountDealerReferencePins, seedRealDealers } from "./dealer-reference-pins";
 import { mountFareZones } from "./fare-zone-drawing";
 import { mountFarePricingPanel } from "./fare-pricing-panel";
+import { mountLongDistanceSectionsTool } from "./long-distance-sections-panel";
+import { mountBottomBar } from "./bottom-bar";
+import { startGameClock } from "./game-clock-engine";
 import { loadRouter } from "./router";
 import { setLoadingProgress } from "./loading-progress";
 
@@ -102,6 +105,8 @@ async function waitForStyleLoad(m: maplibregl.Map): Promise<void> {
 }
 
 init().then(async () => {
+  setLoadingProgress(0.01, "Starting the game clock…");
+  await startGameClock();
   setLoadingProgress(0.02, "Loading map style…");
   await waitForStyleLoad(map);
   setLoadingProgress(0.05, "Loading road network…");
@@ -135,11 +140,16 @@ init().then(async () => {
   await seedRealLiveries();
   mountVehicleBuyMenu();
   await mountDealerReferencePins(map);
-  await mountRepaintShops(map);
+  await seedRealRepaintShops();
+  await mountRepaintShops(map, router);
   await mountFareZones(map, router);
   await mountFarePricingPanel();
+  await mountLongDistanceSectionsTool(map, router);
   await mountDeadMileagePreview(map, router);
   await mountDutyPanel(router);
+  // Visual shell only for now (bottom-bar.ts) — switching what's actually
+  // shown for each section is a deliberate follow-up, not guessed at here.
+  mountBottomBar();
   setLoadingProgress(1, "Ready");
   document.getElementById("loading-overlay")?.remove();
 });

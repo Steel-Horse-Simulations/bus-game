@@ -32,6 +32,14 @@ interface RouteHailAndRideSection {
   toIndex: number;
 }
 
+// Confirmed 2026-10-31, live user request: chosen when a route is made
+// ("+ New route" asks before drawing starts), mutually exclusive. Drives
+// the fare-pricing panel's gating (Night/Sightseeing/Airport Express/
+// Long-distance fields only show once the depot group has a route of that
+// type) and, for "night", limits that route's own timetable to UK-
+// EXPANSION.md §10's real window (2345-0400).
+type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance";
+
 interface Route {
   id: number;
   depotGroupId: number;
@@ -47,6 +55,26 @@ interface Route {
   variationLetter: string | null;
   composedFromRouteIds: number[];
   hailAndRideSections: RouteHailAndRideSection[];
+  segments: RouteSegment[];
+  routeType: RouteType;
+}
+
+// A route's own build sequence (shared long-distance sections) — see
+// long_distance_sections' own SCHEMA comment in db.mts.
+type RouteSegment = { kind: "custom"; points: RoutePoint[] } | { kind: "section"; sectionId: number };
+
+interface LongDistanceSection {
+  id: number;
+  name: string;
+  points: RoutePoint[];
+}
+
+interface LongDistanceSectionsApi {
+  list(): Promise<LongDistanceSection[]>;
+  create(name: string, points: RoutePoint[]): Promise<LongDistanceSection>;
+  rename(id: number, name: string): Promise<void>;
+  setPoints(id: number, points: RoutePoint[]): Promise<void>;
+  delete(id: number): Promise<void>;
 }
 
 interface RoutesApi {
@@ -63,8 +91,11 @@ interface RoutesApi {
     variationLetter: string | null,
     composedFromRouteIds: number[],
     hailAndRideSections: RouteHailAndRideSection[],
+    segments: RouteSegment[],
+    routeType: RouteType,
   ): Promise<Route>;
   list(): Promise<Route[]>;
+  depotGroupHasRouteType(depotGroupId: number, routeType: RouteType): Promise<boolean>;
   update(
     id: number,
     depotGroupId: number,
@@ -79,6 +110,8 @@ interface RoutesApi {
     variationLetter: string | null,
     composedFromRouteIds: number[],
     hailAndRideSections: RouteHailAndRideSection[],
+    segments: RouteSegment[],
+    routeType: RouteType,
   ): Promise<Route>;
   refreshComposedPoints(id: number, points: RoutePoint[]): Promise<void>;
   delete(id: number): Promise<void>;
@@ -186,6 +219,7 @@ interface Dealer {
   manufacturer: DealerManufacturer;
   lon: number;
   lat: number;
+  isEntrancesComplete: boolean;
 }
 
 interface DealerEntrance {
@@ -206,6 +240,7 @@ interface DealersApi {
   setEntranceMode(id: number, mode: DealerEntranceMode): Promise<void>;
   deleteEntrance(id: number): Promise<void>;
   delete(id: number): Promise<void>;
+  setEntrancesComplete(id: number, isComplete: boolean): Promise<void>;
 }
 
 interface StopGroupsApi {
@@ -241,14 +276,28 @@ interface RepaintShop {
   name: string;
   lon: number;
   lat: number;
-  weeklyCapacity: number;
+  concurrentCapacity: number;
+  turnaroundDays: number;
+}
+
+interface RepaintShopEntrance {
+  id: number;
+  repaintShopId: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
 }
 
 interface RepaintShopsApi {
   list(): Promise<RepaintShop[]>;
-  create(name: string, lon: number, lat: number, weeklyCapacity: number): Promise<RepaintShop>;
-  setWeeklyCapacity(id: number, weeklyCapacity: number): Promise<void>;
+  create(name: string, lon: number, lat: number, concurrentCapacity: number, turnaroundDays: number): Promise<RepaintShop>;
+  setConcurrentCapacity(id: number, concurrentCapacity: number): Promise<void>;
+  setTurnaroundDays(id: number, turnaroundDays: number): Promise<void>;
   delete(id: number): Promise<void>;
+  listAllEntrances(): Promise<RepaintShopEntrance[]>;
+  addEntrance(repaintShopId: number, lon: number, lat: number, mode: DealerEntranceMode): Promise<RepaintShopEntrance>;
+  setEntranceMode(id: number, mode: DealerEntranceMode): Promise<void>;
+  deleteEntrance(id: number): Promise<void>;
 }
 
 interface DeadMileageBranch {
@@ -397,7 +446,7 @@ interface OrdersApi {
   collect(orderId: number): Promise<Vehicle>;
 }
 
-type FareZoneType = "city" | "country";
+type FareZoneType = "city" | "country" | "island" | "town";
 
 interface FareZonePoint {
   lon: number;
@@ -411,16 +460,18 @@ interface FareZone {
   zoneType: FareZoneType;
   points: FareZonePoint[];
   colour: string;
+  parentZoneId: number | null;
 }
 
 interface FareZonesApi {
   listForDepotGroup(depotGroupId: number): Promise<FareZone[]>;
   listAll(): Promise<FareZone[]>;
-  create(depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string): Promise<FareZone>;
+  create(depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string, parentZoneId?: number | null): Promise<FareZone>;
   rename(zoneId: number, name: string): Promise<void>;
-  setType(zoneId: number, zoneType: FareZoneType): Promise<void>;
+  setType(zoneId: number, zoneType: FareZoneType, parentZoneId?: number | null): Promise<void>;
   setColour(zoneId: number, colour: string): Promise<void>;
   delete(zoneId: number): Promise<void>;
+  merge(sourceZoneId: number, targetZoneId: number): Promise<void>;
 }
 
 interface FareConfig {
@@ -429,23 +480,31 @@ interface FareConfig {
   beyondDepotGroupPerMileGBPPence: number | null;
   longDistanceBaseGBPPence: number | null;
   longDistancePerMileGBPPence: number | null;
-  specialServiceSingleGBPPence: number | null;
+  airportExpressSingleGBPPence: number | null;
+  airportExpressReturnGBPPence: number | null;
   nightExtraBaseGBPPence: number | null;
   nightExtraPerZoneGBPPence: number | null;
   lateGBPPence: number | null;
-  networkGBPPence: number | null;
+  networkMarkupPercent: number | null;
+  sightseeingDayGBPPence: number | null;
+  sightseeingSingleGBPPence: number | null;
   cityDayGBPPence: number | null;
   cityWeeklyGBPPence: number | null;
-  city28DayGBPPence: number | null;
   countryDayGBPPence: number | null;
   countryWeeklyGBPPence: number | null;
-  country28DayGBPPence: number | null;
   combinedDayGBPPence: number | null;
   combinedWeeklyGBPPence: number | null;
-  combined28DayGBPPence: number | null;
+  islandDayGBPPence: number | null;
+  islandWeeklyGBPPence: number | null;
+  islandLateGBPPence: number | null;
 }
 
 interface CountryZoneBand {
+  zoneCount: number;
+  priceGBPPence: number;
+}
+
+interface IslandZoneBand {
   zoneCount: number;
   priceGBPPence: number;
 }
@@ -456,6 +515,20 @@ interface FarePricingApi {
   listCountryZoneBands(depotGroupId: number): Promise<CountryZoneBand[]>;
   setCountryZoneBand(depotGroupId: number, zoneCount: number, priceGBPPence: number): Promise<void>;
   deleteCountryZoneBand(depotGroupId: number, zoneCount: number): Promise<void>;
+  listIslandZoneBands(depotGroupId: number): Promise<IslandZoneBand[]>;
+  setIslandZoneBand(depotGroupId: number, zoneCount: number, priceGBPPence: number): Promise<void>;
+  deleteIslandZoneBand(depotGroupId: number, zoneCount: number): Promise<void>;
+}
+
+interface GameClock {
+  accumulatedGameSeconds: number;
+  speedMultiplier: 1 | 4 | 10 | 20 | 60;
+  isPaused: boolean;
+}
+
+interface GameClockApi {
+  get(): Promise<GameClock>;
+  set(clock: GameClock): Promise<void>;
 }
 
 interface Window {
@@ -469,10 +542,12 @@ interface Window {
   repaintShops: RepaintShopsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
+  longDistanceSections: LongDistanceSectionsApi;
   routeTimetables: RouteTimetablesApi;
   playerStops: PlayerStopsApi;
   depots: DepotsApi;
   dealers: DealersApi;
   stopGroups: StopGroupsApi;
   liveries: LiveriesApi;
+  gameClock: GameClockApi;
 }

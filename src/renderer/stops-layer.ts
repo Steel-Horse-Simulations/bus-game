@@ -13,6 +13,7 @@ import {
 } from "./wasm/game_wasm.js";
 import { routeDrawState } from "./route-draw";
 import { createDropdown } from "./dropdown";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropoff";
 import {
   computeStopCallingServices,
@@ -1935,7 +1936,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     // occupies the full left-hand height, which would otherwise sit under
     // this corner.
     hiddenToggle.style.position = "absolute";
-    hiddenToggle.style.bottom = "8px";
+    hiddenToggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
     hiddenToggle.style.right = "8px";
     hiddenToggle.style.zIndex = "2";
     document.body.appendChild(hiddenToggle);
@@ -1943,7 +1944,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     const hiddenPanel = document.createElement("div");
     hiddenPanel.className = "panel";
     hiddenPanel.style.position = "absolute";
-    hiddenPanel.style.bottom = "44px";
+    hiddenPanel.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
     hiddenPanel.style.right = "8px";
     hiddenPanel.style.zIndex = "2";
     hiddenPanel.style.width = "300px";
@@ -2057,7 +2058,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     placeStopToggle.className = "btn";
     placeStopToggle.textContent = "Place stop";
     placeStopToggle.style.position = "absolute";
-    placeStopToggle.style.bottom = "8px";
+    placeStopToggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
     placeStopToggle.style.right = "128px";
     placeStopToggle.style.zIndex = "2";
     document.body.appendChild(placeStopToggle);
@@ -2065,7 +2066,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     const placeStopStatus = document.createElement("div");
     placeStopStatus.className = "panel";
     placeStopStatus.style.position = "absolute";
-    placeStopStatus.style.bottom = "44px";
+    placeStopStatus.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
     placeStopStatus.style.right = "128px";
     placeStopStatus.style.zIndex = "2";
     placeStopStatus.style.padding = "8px 12px";

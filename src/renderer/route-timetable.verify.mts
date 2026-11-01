@@ -15,6 +15,8 @@ import {
   DEFAULT_TIME_BANDS,
   applyExcludedDepartures,
   mergeCustomDepartures,
+  validateNightWindow,
+  validateNightFinishTime,
   type TimeBand,
 } from "./route-timetable.mts";
 
@@ -27,7 +29,6 @@ function assert(cond: boolean, msg: string): void {
 assert(validateFrequency(360, 1140, 30) === null, "a normal 06:00-19:00 every-30-minutes service is valid");
 assert(validateFrequency(360, 1140, 0) !== null, "a zero interval is rejected");
 assert(validateFrequency(360, 1140, -5) !== null, "a negative interval is rejected");
-assert(validateFrequency(1140, 360, 30) !== null, "end before start is rejected");
 assert(validateFrequency(-1, 100, 30) !== null, "a negative start time is rejected");
 assert(validateFrequency(0, 24 * 60, 30) !== null, "a start/end at or past 24:00 is rejected (single-day only)");
 
@@ -38,11 +39,19 @@ assert(
 assert(generateDepartureMinutes(360, 360, 30).length === 1, "a start equal to end still generates one departure");
 let threw = false;
 try {
-  generateDepartureMinutes(420, 360, 30);
+  generateDepartureMinutes(360, 1140, 0);
 } catch {
   threw = true;
 }
 assert(threw, "generateDepartureMinutes throws on an invalid frequency rather than silently returning nothing");
+
+// --- midnight-wrapping bands (2026-11-01, live user report: a night
+// service needs one band like 23:45->03:45, not two same-day bands) ---
+assert(validateFrequency(1425, 225, 30) === null, "end < start is now valid: it means the band wraps past midnight");
+assert(
+  JSON.stringify(generateDepartureMinutes(1425, 225, 30)) === JSON.stringify([1425, 15, 45, 75, 105, 135, 165, 195, 225]),
+  `a wrapping 23:45->03:45 every-30 band generates past midnight and wraps each minute back into 0-1439, got ${JSON.stringify(generateDepartureMinutes(1425, 225, 30))}`,
+);
 
 // --- validateTimingPoints ---
 const stopStopWaypoint = [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "waypoint" as const }];
@@ -208,7 +217,12 @@ assert(journeyTimeAtPoint(360, 90) === 361.5, "a departure plus a 90-second offs
 assert(journeyTimeAtPoint(1430, 3600) === 1490, "an offset can legitimately push a journey past midnight (1490 > 1440)");
 
 // --- validateTimeBands / generateDepartureMinutesForBands ---
-assert(validateTimeBands([]) !== null, "an empty band list is rejected");
+// Confirmed 2026-10-31: an empty band list is now a valid shape on its own
+// (a timetable built entirely from custom departures, no generator band at
+// all) — the combined "needs a band or a custom departure" rule is the
+// save flow's own job, not this pure function's.
+assert(validateTimeBands([]) === null, "an empty band list is valid on its own — custom departures can cover a timetable alone");
+assert(generateDepartureMinutesForBands([]).length === 0, "an empty band list generates no departures, rather than throwing");
 assert(
   validateTimeBands([{ startMinutes: 480, endMinutes: 540, intervalMinutes: 0 }]) !== null,
   "a band with an invalid frequency (zero interval) is rejected the same way validateFrequency would",
@@ -231,6 +245,42 @@ assert(
     { startMinutes: 480, endMinutes: 1439, intervalMinutes: 30 },
   ];
   assert(validateTimeBands(overlapping) !== null, "genuinely overlapping bands are rejected");
+}
+
+// A wrapping band (2026-11-01) correctly overlaps a same-day band that
+// falls in its post-midnight half, even though a plain sort-by-start
+// would otherwise put the wrapping band's two real halves at opposite
+// ends of the list and never compare them.
+{
+  const wrappingOverlapsEarlyMorning: TimeBand[] = [
+    { startMinutes: 1425, endMinutes: 225, intervalMinutes: 30 }, // 23:45->03:45
+    { startMinutes: 180, endMinutes: 360, intervalMinutes: 30 }, // 03:00->06:00
+  ];
+  assert(
+    validateTimeBands(wrappingOverlapsEarlyMorning) !== null,
+    "a wrapping night band overlapping a 03:00-06:00 band (both cover 03:00-03:45) is rejected",
+  );
+}
+{
+  const wrappingThenMorning: TimeBand[] = [
+    { startMinutes: 1425, endMinutes: 225, intervalMinutes: 30 }, // 23:45->03:45
+    { startMinutes: 225, endMinutes: 360, intervalMinutes: 30 }, // 03:45->06:00, touching not overlapping
+  ];
+  assert(
+    validateTimeBands(wrappingThenMorning) === null,
+    "a wrapping night band touching (not overlapping) the next morning's band is accepted",
+  );
+  assert(
+    JSON.stringify(generateDepartureMinutesForBands(wrappingThenMorning)).includes("225"),
+    "the shared boundary minute (03:45) is generated once, not dropped",
+  );
+}
+{
+  const twoWrapping: TimeBand[] = [
+    { startMinutes: 1425, endMinutes: 100, intervalMinutes: 30 }, // 23:45->01:40
+    { startMinutes: 1430, endMinutes: 200, intervalMinutes: 30 }, // 23:50->03:20, overlaps the first
+  ];
+  assert(validateTimeBands(twoWrapping) !== null, "two wrapping bands that genuinely overlap each other are rejected");
 }
 
 // Departures merge across bands, in order, regardless of input order.
@@ -302,5 +352,32 @@ assert(
   const merged = mergeCustomDepartures([], [15, 5]);
   assert(JSON.stringify(merged) === JSON.stringify([5, 15]), `custom times alone should still sort, got ${JSON.stringify(merged)}`);
 }
+
+// --- validateNightWindow (route types, 2026-10-31, tightened 2026-11-01
+// to a 03:45 latest departure instead of 04:00) ---
+assert(validateNightWindow([1425, 1439, 0, 120, 225]) === null, "every minute inside 23:45-03:45 (wrapping midnight) is accepted");
+assert(validateNightWindow([]) === null, "an empty list has nothing outside the window, so it's accepted");
+assert(validateNightWindow([1200]) !== null, "20:00, well before the window opens, is rejected");
+assert(validateNightWindow([300]) !== null, "05:00, after the window closes, is rejected");
+assert(validateNightWindow([1424]) !== null, "23:44, one minute before the window opens, is rejected");
+assert(validateNightWindow([226]) !== null, "03:46, one minute after the window closes, is rejected");
+assert(validateNightWindow([1425, 1200]) !== null, "one valid and one invalid minute together is still rejected");
+
+// --- validateNightFinishTime (2026-11-01): the last service may depart
+// as late as 03:45 but must actually arrive by 04:15 — a separate, later
+// cutoff that depends on the route's own running time. ---
+assert(validateNightFinishTime([], 9999) === null, "no departures at all has nothing to check");
+assert(validateNightFinishTime([225], 30 * 60) === null, "a 03:45 departure with a 30-minute run finishes exactly at 04:15, which is accepted");
+assert(validateNightFinishTime([225], 31 * 60) !== null, "a 03:45 departure with a 31-minute run finishes at 04:16, which is rejected");
+assert(validateNightFinishTime([0], 4 * 60 * 60 + 15 * 60) === null, "a 00:00 departure with a 4h15m run finishes exactly at 04:15, which is accepted");
+assert(validateNightFinishTime([0], 4 * 60 * 60 + 16 * 60) !== null, "a 00:00 departure with a 4h16m run finishes at 04:16, which is rejected");
+assert(
+  validateNightFinishTime([1425, 0, 225], 10 * 60) === null,
+  "only the latest departure (03:45) matters — a short 10-minute run from it is fine even though earlier departures are also present",
+);
+assert(
+  validateNightFinishTime([1425], 20 * 60) === null,
+  "a lone 23:45 departure with a 20-minute run finishes at 00:05, well inside the window",
+);
 
 console.log("\nAll checks passed.");

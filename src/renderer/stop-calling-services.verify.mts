@@ -30,6 +30,8 @@ function route(
     variationLetter: null,
     composedFromRouteIds: [],
     hailAndRideSections: [],
+    segments: [],
+    routeType: "ordinary",
   };
 }
 

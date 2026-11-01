@@ -18,6 +18,7 @@ import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
 import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 export const placeDealerState = { isPlacing: false };
 
@@ -139,7 +140,7 @@ export async function mountDealerPlacement(map: maplibregl.Map, router: Router):
   toggle.className = "btn";
   toggle.textContent = "Place dealer";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   toggle.style.left = "560px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);
@@ -147,7 +148,7 @@ export async function mountDealerPlacement(map: maplibregl.Map, router: Router):
   const draftPanel = document.createElement("div");
   draftPanel.className = "panel";
   draftPanel.style.position = "absolute";
-  draftPanel.style.bottom = "44px";
+  draftPanel.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
   draftPanel.style.left = "560px";
   draftPanel.style.zIndex = "2";
   draftPanel.style.width = "300px";
@@ -414,6 +415,28 @@ export async function mountDealerPlacement(map: maplibregl.Map, router: Router):
       dealerPopup?.remove();
     });
     container.appendChild(addEntranceButton);
+
+    // Explicit "I've added every entrance this dealer needs" (2026-11-01,
+    // live user request — replaces the old implicit "has at least one
+    // entrance" signal dealer-reference-pins.ts used, which was wrong for
+    // a real site needing more than one). A future session hard-codes any
+    // dealer marked complete's own confirmed position/entrances into
+    // source, the same way REFERENCE_PINS already hard-codes position.
+    const completeButton = document.createElement("button");
+    completeButton.className = "btn";
+    completeButton.style.marginTop = "6px";
+    completeButton.textContent = dealer.isEntrancesComplete ? "✓ Entrances complete" : "Mark entrances complete";
+    completeButton.title = dealer.isEntrancesComplete
+      ? "Click to unmark — this dealer will show again on the \"needs entrances\" checklist"
+      : "Confirms every entrance/exit this dealer needs has been added";
+    completeButton.addEventListener("click", () => {
+      const next = !dealer.isEntrancesComplete;
+      void window.dealers.setEntrancesComplete(dealer.id, next).then(() => {
+        dealers = dealers.map((d) => (d.id === dealer.id ? { ...d, isEntrancesComplete: next } : d));
+        openDealerPopup({ ...dealer, isEntrancesComplete: next });
+      });
+    });
+    container.appendChild(completeButton);
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "btn btn-danger";

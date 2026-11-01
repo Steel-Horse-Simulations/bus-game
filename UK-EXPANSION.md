@@ -39,6 +39,9 @@ rather than guess when it becomes relevant to a specific system.
 
 **Yutong** (England): Pelican Bus and Coach, PJCC+3X Castleford, UK.
 
+**MCV Bus & Coach Ltd** (the MCV Evora dealer, confirmed 2026-11-01):
+94WP+R2 Ely, UK.
+
 **Wrightbus**: VM4F+RF Ballymena, UK (Northern Ireland — its real HQ/
 factory, replacing the old "nearest depot to Stranraer" workaround now NI
 is in scope).
@@ -357,7 +360,9 @@ Railair, not a single fixed contract like AIR (DESIGN.md §10).
 
 **Numbering:** N + the day route's number (e.g. day route 9 → N9). A
 standalone night route with no day counterpart gets its own independent
-N-number (e.g. N50). N-prefixed numbers only need to avoid colliding with
+N-number (e.g. N50). **Mandatory, not optional** (confirmed 2026-11-01,
+live user instruction) — a Night-type route's number must start with "N"
+or it can't be saved. N-prefixed numbers only need to avoid colliding with
 OTHER N-routes — no clash check against plain-numbered routes, since the
 prefix already disambiguates them.
 
@@ -372,12 +377,18 @@ prefix already disambiguates them.
 **Scope:** opt-in per route — player chooses which get a night version,
 not automatic.
 
-**Operating window:** typically **2345–0400** (real figure), but NOT tied
+**Operating window:** typically **2345–0400** (real figure, as a general
+guide), but NOT tied
 to the existing 2200–0700 staff night shift band — its own separate
 window. Doesn't have to run to any fixed frequency at all: some night
 routes run just once in each direction total, or a single bus doing one
 out-and-back trip and nothing else. Where there IS a regular pattern,
 it's much sparser than daytime — roughly every 30–60 minutes.
+
+**Enforced limits (2026-11-01):** the last departure of the night may be
+no later than **03:45**, and must actually arrive at its final
+destination by **04:15** — the two are checked separately, since the
+second depends on the route's own running time.
 
 **Fare:** a flat night surcharge on top of the normal fare (roughly +50p
 as an example figure, not necessarily final).

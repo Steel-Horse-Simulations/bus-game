@@ -9,6 +9,7 @@ import { renderConfigureScreen } from "./vehicle-buy-configure-screen";
 import { renderBasketScreen } from "./vehicle-buy-basket-screen";
 import { renderUsedScreen } from "./vehicle-buy-used-screen";
 import { renderDeliveriesScreen } from "./vehicle-buy-deliveries-screen";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 type Tab = "catalogue" | "used" | "basket" | "deliveries";
 
@@ -17,7 +18,7 @@ export function mountVehicleBuyMenu(): void {
   toggle.className = "btn";
   toggle.textContent = "Vehicles";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   toggle.style.left = "330px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);

@@ -7,9 +7,14 @@ import {
   countrySingleFareGBPPence,
   beyondDepotGroupSingleFareGBPPence,
   longDistanceSingleFareGBPPence,
-  specialServiceSingleFareGBPPence,
+  airportExpressSingleFareGBPPence,
+  airportExpressReturnFareGBPPence,
+  sightseeingDayFareGBPPence,
+  sightseeingSingleFareGBPPence,
   nightSurchargeGBPPence,
   returnFareGBPPence,
+  networkFareGBPPence,
+  townFareGBPPence,
   type FareConfig,
 } from "./fare-pricing.mts";
 
@@ -37,9 +42,12 @@ const lothianLikeConfig: FareConfig = {
   beyondDepotGroupPerMileGBPPence: 25,
   longDistanceBaseGBPPence: 150,
   longDistancePerMileGBPPence: 20,
-  specialServiceSingleGBPPence: 500,
+  airportExpressSingleGBPPence: 600,
+  airportExpressReturnGBPPence: 850,
   nightExtraBaseGBPPence: 60,
   nightExtraPerZoneGBPPence: 30,
+  sightseeingDayGBPPence: 1500,
+  sightseeingSingleGBPPence: 900,
 };
 
 assert(citySingleFareGBPPence(lothianLikeConfig) === 240, "city single fare is the flat configured figure, £2.40");
@@ -59,7 +67,10 @@ assert(bandMissing, "an unconfigured zone-count band throws rather than silently
 
 assert(beyondDepotGroupSingleFareGBPPence(lothianLikeConfig, 10) === 250, "beyond-depot-group: 25p/mile x 10 miles = £2.50");
 assert(longDistanceSingleFareGBPPence(lothianLikeConfig, 10) === 350, "long distance: £1.50 base + 20p/mile x 10 miles = £3.50");
-assert(specialServiceSingleFareGBPPence(lothianLikeConfig) === 500, "special service is the flat configured figure, £5.00");
+assert(airportExpressSingleFareGBPPence(lothianLikeConfig) === 600, "Airport Express single is the flat configured figure, £6.00 (matching AIR's own real single)");
+assert(airportExpressReturnFareGBPPence(lothianLikeConfig) === 850, "Airport Express return is its own flat figure, £8.50 — NOT 1.6x the single (960), confirming it doesn't use the standard Return formula");
+assert(sightseeingDayFareGBPPence(lothianLikeConfig) === 1500, "sightseeing hop-on hop-off day ticket is the flat configured figure, £15.00");
+assert(sightseeingSingleFareGBPPence(lothianLikeConfig) === 900, "sightseeing single trip is the flat configured figure, £9.00");
 
 // Night surcharge is a plain player-set linear add-on (extra base + extra
 // per zone), NOT forced to reproduce Lothian's own real night tiers
@@ -83,5 +94,19 @@ assert(notConfigured, "an unset fare throws rather than silently returning a non
 assert(returnFareGBPPence(240) === 385, "return on a £2.40 single: 240 x 1.6 = 384, rounds UP to £3.85, not down to £3.80");
 assert(returnFareGBPPence(250) === 400, "return on a £2.50 single: 250 x 1.6 = 400 exactly, stays £4.00 (no unnecessary round-up)");
 assert(returnFareGBPPence(340) === 545, "return on a £3.40 single: 340 x 1.6 = 544, rounds up to £5.45");
+
+// NETWORK: confirmed 2026-10-31, "a percentage more than city+country...
+// rounded up to the nearest 5p... the same percentage on all types of
+// ticket" — computed from the matching Combined price, not its own typed-in
+// figure.
+assert(networkFareGBPPence(960, 20) === 1155, "network at 20% markup on a £9.60 combined price: 960 x 1.2 = 1152, rounds up to £11.55");
+assert(networkFareGBPPence(2650, 20) === 3180, "network at 20% markup on a £26.50 combined price: 2650 x 1.2 = 3180 exactly, stays £31.80");
+assert(networkFareGBPPence(960, 0) === 960, "0% markup leaves the combined price unchanged");
+
+// Town (T107, confirmed 2026-10-31): always exactly 70% of the parent's
+// own 1-zone figure, rounded up to the nearest 5p — never player-set.
+assert(townFareGBPPence(240) === 170, "town fare at 70% of a £2.40 parent 1-zone price: 240 x 0.7 = 168, rounds up to £1.70");
+assert(townFareGBPPence(340) === 240, "town fare at 70% of a £3.40 parent price: 340 x 0.7 = 238, rounds up to £2.40");
+assert(townFareGBPPence(250) === 175, "town fare at 70% of a £2.50 parent price: 250 x 0.7 = 175 exactly, stays £1.75 (no unnecessary round-up)");
 
 console.log("All fare-pricing checks passed.");

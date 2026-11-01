@@ -17,6 +17,8 @@ import {
   generateDepartureMinutesForBands,
   applyExcludedDepartures,
   mergeCustomDepartures,
+  validateNightWindow,
+  validateNightFinishTime,
 } from "./route-timetable.mts";
 import { timetableEditorState } from "./timetable-editor-state";
 import { stopsPanelState } from "./stops-layer";
@@ -940,6 +942,25 @@ export function createRouteTimetableEditor(
       statusLine.textContent = bandsError;
       return;
     }
+    if (currentBands.length === 0 && currentCustomMinutes.size === 0) {
+      statusLine.textContent = "Add at least one time-of-day band or one custom departure.";
+      return;
+    }
+    // Route types (2026-10-31, tightened 2026-11-01): a Night-type
+    // route's last departure must be no later than 03:45 (UK-EXPANSION.md
+    // §10's own window, tightened from the doc's general "typically
+    // 2345-0400"); the separate "must finish by 04:15" rule needs the
+    // route's actual running time, so it's checked further down once
+    // that's computed.
+    let allNightMinutes: number[] = [];
+    if (route.routeType === "night") {
+      allNightMinutes = mergeCustomDepartures(generateDepartureMinutesForBands(currentBands), [...currentCustomMinutes]);
+      const nightWindowError = validateNightWindow(allNightMinutes);
+      if (nightWindowError) {
+        statusLine.textContent = nightWindowError;
+        return;
+      }
+    }
     const timingPoints = timetableEditorState.timingPoints;
     const tpError = validateTimingPoints(route.points, timingPoints);
     if (tpError) {
@@ -955,6 +976,14 @@ export function createRouteTimetableEditor(
       legTimesSeconds,
       timingPoints,
     );
+    if (route.routeType === "night") {
+      const runningTimeSeconds = Math.max(...arrivalOffsetsSeconds);
+      const nightFinishError = validateNightFinishTime(allNightMinutes, runningTimeSeconds);
+      if (nightFinishError) {
+        statusLine.textContent = nightFinishError;
+        return;
+      }
+    }
     // Dropped against the live generated list before saving — an
     // exclusion for a minute these bands no longer generate is dead
     // weight, not a real setting worth keeping around indefinitely.

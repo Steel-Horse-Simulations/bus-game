@@ -288,6 +288,9 @@ between two real models:
 - **T12E** (12m, twin-axle): battery 399kWh/320mi or 465kWh/370mi
 - **T15E** (15m, tri-axle): battery 621kWh/335mi or 704kWh/380mi
 
+Also covered by Yutong through-charging — see the E10/E12 entry below and
+OPERATIONS.md §15.
+
 ---
 
 ### Category 4 — open-top double-deckers (sightseeing only)
@@ -357,6 +360,11 @@ max capacity 70 minus seats+tip-ups). Battery: 350kWh/230mi or 422kWh/275mi.
 **Yutong E12** (12.2m): 34 seats + 5 tip-ups, standing 31 (worked out from
 max capacity 70 minus seats+tip-ups). Battery: 350kWh/225mi or 422kWh/275mi
 (same battery options as the E10, different range).
+
+**Yutong through-charging** (confirmed 2026-11-01): Yutong's electric
+models can be plugged into each other, daisy-chaining up to 4 vehicles off
+a single charger connection with power shared dynamically between them —
+see OPERATIONS.md §15 for the full mechanic.
 
 ---
 

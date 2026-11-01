@@ -5,6 +5,9 @@ import type {
   Route,
   RoutePoint,
   RouteHailAndRideSection,
+  RouteSegment,
+  RouteType,
+  LongDistanceSection,
   DayType,
   TimingPoint,
   TimeBand,
@@ -23,6 +26,7 @@ import type {
   SupportIconKey,
   IconColour,
   RepaintShop,
+  RepaintShopEntrance,
   DeadMileageRoute,
   DeadMileageDirection,
   DeadMileageBranch,
@@ -37,6 +41,8 @@ import type {
   FareZonePoint,
   FareConfig,
   CountryZoneBand,
+  IslandZoneBand,
+  GameClock,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -83,6 +89,8 @@ contextBridge.exposeInMainWorld("routes", {
     variationLetter: string | null,
     composedFromRouteIds: number[],
     hailAndRideSections: RouteHailAndRideSection[],
+    segments: RouteSegment[],
+    routeType: RouteType,
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -98,8 +106,12 @@ contextBridge.exposeInMainWorld("routes", {
       variationLetter,
       composedFromRouteIds,
       hailAndRideSections,
+      segments,
+      routeType,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
+  depotGroupHasRouteType: (depotGroupId: number, routeType: RouteType) =>
+    ipcRenderer.invoke("routes:depotGroupHasRouteType", depotGroupId, routeType) as Promise<boolean>,
   update: (
     id: number,
     depotGroupId: number,
@@ -114,6 +126,8 @@ contextBridge.exposeInMainWorld("routes", {
     variationLetter: string | null,
     composedFromRouteIds: number[],
     hailAndRideSections: RouteHailAndRideSection[],
+    segments: RouteSegment[],
+    routeType: RouteType,
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -130,6 +144,8 @@ contextBridge.exposeInMainWorld("routes", {
       variationLetter,
       composedFromRouteIds,
       hailAndRideSections,
+      segments,
+      routeType,
     ) as Promise<Route>,
   refreshComposedPoints: (id: number, points: RoutePoint[]) =>
     ipcRenderer.invoke("routes:refreshComposedPoints", id, points) as Promise<void>,
@@ -140,6 +156,21 @@ contextBridge.exposeInMainWorld("routes", {
     value: "pickup_only" | "setdown_only" | "skip" | null,
   ) =>
     ipcRenderer.invoke("routes:setPickupDropoffOverride", routeId, pointIndex, value) as Promise<void>,
+});
+
+// Shared long-distance sections (live design discussion, 2026-10-31) — see
+// long_distance_sections' own SCHEMA comment in db.mts. A route references
+// one via its own `segments` field (above), resolved live in the renderer
+// (long-distance-sections.mts), the same live-reference principle this
+// project already uses for composed route variations.
+contextBridge.exposeInMainWorld("longDistanceSections", {
+  list: () => ipcRenderer.invoke("longDistanceSections:list") as Promise<LongDistanceSection[]>,
+  create: (name: string, points: RoutePoint[]) =>
+    ipcRenderer.invoke("longDistanceSections:create", name, points) as Promise<LongDistanceSection>,
+  rename: (id: number, name: string) => ipcRenderer.invoke("longDistanceSections:rename", id, name) as Promise<void>,
+  setPoints: (id: number, points: RoutePoint[]) =>
+    ipcRenderer.invoke("longDistanceSections:setPoints", id, points) as Promise<void>,
+  delete: (id: number) => ipcRenderer.invoke("longDistanceSections:delete", id) as Promise<void>,
 });
 
 // Route timetables (DESIGN.md §7) — the renderer's only way to persist a
@@ -214,6 +245,7 @@ contextBridge.exposeInMainWorld("dealers", {
   setEntranceMode: (id: number, mode: DealerEntranceMode) => ipcRenderer.invoke("dealers:setEntranceMode", id, mode) as Promise<void>,
   deleteEntrance: (id: number) => ipcRenderer.invoke("dealers:deleteEntrance", id) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("dealers:delete", id) as Promise<void>,
+  setEntrancesComplete: (id: number, isComplete: boolean) => ipcRenderer.invoke("dealers:setEntrancesComplete", id, isComplete) as Promise<void>,
 });
 
 // Stop groups (DESIGN.md §4) — player-created only (2026-09-27: dropped the
@@ -238,14 +270,22 @@ contextBridge.exposeInMainWorld("liveries", {
     ipcRenderer.invoke("liveries:setIconOverride", liveryId, icon, colour) as Promise<void>,
 });
 
-// Repaint shops (T63) — player-placed, each with its own weekly capacity.
+// Repaint shops (T63) — player-placed, each with its own concurrent
+// capacity (bays) and turnaround time (working days per vehicle).
 contextBridge.exposeInMainWorld("repaintShops", {
   list: () => ipcRenderer.invoke("repaintShops:list") as Promise<RepaintShop[]>,
-  create: (name: string, lon: number, lat: number, weeklyCapacity: number) =>
-    ipcRenderer.invoke("repaintShops:create", name, lon, lat, weeklyCapacity) as Promise<RepaintShop>,
-  setWeeklyCapacity: (id: number, weeklyCapacity: number) =>
-    ipcRenderer.invoke("repaintShops:setWeeklyCapacity", id, weeklyCapacity) as Promise<void>,
+  create: (name: string, lon: number, lat: number, concurrentCapacity: number, turnaroundDays: number) =>
+    ipcRenderer.invoke("repaintShops:create", name, lon, lat, concurrentCapacity, turnaroundDays) as Promise<RepaintShop>,
+  setConcurrentCapacity: (id: number, concurrentCapacity: number) =>
+    ipcRenderer.invoke("repaintShops:setConcurrentCapacity", id, concurrentCapacity) as Promise<void>,
+  setTurnaroundDays: (id: number, turnaroundDays: number) =>
+    ipcRenderer.invoke("repaintShops:setTurnaroundDays", id, turnaroundDays) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("repaintShops:delete", id) as Promise<void>,
+  listAllEntrances: () => ipcRenderer.invoke("repaintShops:listAllEntrances") as Promise<RepaintShopEntrance[]>,
+  addEntrance: (repaintShopId: number, lon: number, lat: number, mode: DealerEntranceMode) =>
+    ipcRenderer.invoke("repaintShops:addEntrance", repaintShopId, lon, lat, mode) as Promise<RepaintShopEntrance>,
+  setEntranceMode: (id: number, mode: DealerEntranceMode) => ipcRenderer.invoke("repaintShops:setEntranceMode", id, mode) as Promise<void>,
+  deleteEntrance: (id: number) => ipcRenderer.invoke("repaintShops:deleteEntrance", id) as Promise<void>,
 });
 
 // Dead mileage routes (DESIGN.md "Dead mileage routes") — saved per depot entrance pair, with waypoints the player added.
@@ -344,13 +384,14 @@ contextBridge.exposeInMainWorld("fareZones", {
   listForDepotGroup: (depotGroupId: number) =>
     ipcRenderer.invoke("fareZones:listForDepotGroup", depotGroupId) as Promise<FareZone[]>,
   listAll: () => ipcRenderer.invoke("fareZones:listAll") as Promise<FareZone[]>,
-  create: (depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string) =>
-    ipcRenderer.invoke("fareZones:create", depotGroupId, name, zoneType, points, colour) as Promise<FareZone>,
+  create: (depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string, parentZoneId: number | null = null) =>
+    ipcRenderer.invoke("fareZones:create", depotGroupId, name, zoneType, points, colour, parentZoneId) as Promise<FareZone>,
   rename: (zoneId: number, name: string) => ipcRenderer.invoke("fareZones:rename", zoneId, name) as Promise<void>,
-  setType: (zoneId: number, zoneType: FareZoneType) =>
-    ipcRenderer.invoke("fareZones:setType", zoneId, zoneType) as Promise<void>,
+  setType: (zoneId: number, zoneType: FareZoneType, parentZoneId: number | null = null) =>
+    ipcRenderer.invoke("fareZones:setType", zoneId, zoneType, parentZoneId) as Promise<void>,
   setColour: (zoneId: number, colour: string) => ipcRenderer.invoke("fareZones:setColour", zoneId, colour) as Promise<void>,
   delete: (zoneId: number) => ipcRenderer.invoke("fareZones:delete", zoneId) as Promise<void>,
+  merge: (sourceZoneId: number, targetZoneId: number) => ipcRenderer.invoke("fareZones:merge", sourceZoneId, targetZoneId) as Promise<void>,
 });
 
 // Fare pricing config (DESIGN.md §9, Phase 4 increment 2b) — see
@@ -365,4 +406,17 @@ contextBridge.exposeInMainWorld("farePricing", {
     ipcRenderer.invoke("farePricing:setCountryZoneBand", depotGroupId, zoneCount, priceGBPPence) as Promise<void>,
   deleteCountryZoneBand: (depotGroupId: number, zoneCount: number) =>
     ipcRenderer.invoke("farePricing:deleteCountryZoneBand", depotGroupId, zoneCount) as Promise<void>,
+  listIslandZoneBands: (depotGroupId: number) =>
+    ipcRenderer.invoke("farePricing:listIslandZoneBands", depotGroupId) as Promise<IslandZoneBand[]>,
+  setIslandZoneBand: (depotGroupId: number, zoneCount: number, priceGBPPence: number) =>
+    ipcRenderer.invoke("farePricing:setIslandZoneBand", depotGroupId, zoneCount, priceGBPPence) as Promise<void>,
+  deleteIslandZoneBand: (depotGroupId: number, zoneCount: number) =>
+    ipcRenderer.invoke("farePricing:deleteIslandZoneBand", depotGroupId, zoneCount) as Promise<void>,
+});
+
+// The game clock (DESIGN.md §3) — see game_clock's own SCHEMA comment in
+// db.mts.
+contextBridge.exposeInMainWorld("gameClock", {
+  get: () => ipcRenderer.invoke("gameClock:get") as Promise<GameClock>,
+  set: (clock: GameClock) => ipcRenderer.invoke("gameClock:set", clock) as Promise<void>,
 });

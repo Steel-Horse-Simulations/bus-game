@@ -8,8 +8,10 @@ src/renderer/public/
 *.osm.pbf
 pipeline-data/
 pipeline-data-uk-expansion-verify/
+pipeline-data-*/
 .backup-scotland-only-pipeline-data/
 .backup-scotland-only-pipeline-data-new-schema/
+.backup-scotland-only-pipeline-data-*/
 dist-map-data/
 /data/
 release/

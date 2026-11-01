@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "prepackage": "npm run build",
     "package": "electron-builder --dir --win",
+    "preinstaller": "npm run build",
     "installer": "electron-builder --win nsis --publish never --config electron-builder.installer.json"
   },
   "repository": {

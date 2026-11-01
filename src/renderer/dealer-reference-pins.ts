@@ -14,14 +14,14 @@
 //    manual and SHOULD stay that way: which real road a dealer's own
 //    entrance/exit sits on needs a person looking at the map, not a
 //    guess. The reference-pin layer is now a checklist for exactly that —
-//    a pin stays visible for any seeded dealer with zero entrances yet,
-//    and drops off the list the moment the player adds its first one
-//    (`refreshReferencePinsData`, re-run on every toggle-show so it stays
-//    current through a session). The Loughborough repaint/bodyshop entry
-//    is not a dealer at all (UK-EXPANSION.md §2 says so explicitly) and
-//    has no manufacturer the `dealers` table's own CHECK constraint
-//    accepts, so it's never seeded and always stays on the list — a
-//    future T63 (repaint shops) concern, not this one's.
+//    a pin stays visible until the player explicitly marks that dealer's
+//    entrances complete (`dealers.isEntrancesComplete`, confirmed
+//    2026-11-01, replacing the old "drops off after the first entrance"
+//    heuristic — wrong for a real site needing more than one). The
+//    Loughborough repaint/bodyshop entry has moved out entirely
+//    (2026-11-01) — it was never a dealer (UK-EXPANSION.md §2 says so
+//    explicitly) and has its own real home now, `repaint-shop-panel.ts`'s
+//    `seedRealRepaintShops`, which also gained its own entrance concept.
 //
 // Every dot sits at the real Plus Code position UK-EXPANSION.md §2 gives
 // for that dealer, not a rough town-centre approximation — a live user
@@ -45,6 +45,7 @@
 // — `seedRealDealers` itself can go at the same time, its job done.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -62,7 +63,6 @@ const MANUFACTURER_COLORS: Record<string, string> = {
   western_commercial: "#a16207",
   wrightbus: "#b91c1c",
   yutong: "#be185d",
-  repaint: "#64748b",
 };
 
 const REFERENCE_PINS: ReferencePin[] = [
@@ -149,21 +149,18 @@ const REFERENCE_PINS: ReferencePin[] = [
   { manufacturer: "volvo", label: "Dungannon", plusCode: "F7M7+G7", lon: -6.736872, lat: 54.483753 },
   { manufacturer: "volvo", label: "Coleraine", plusCode: "48VV+2V", lon: -6.655372, lat: 55.142503 },
   { manufacturer: "volvo", label: "Newry", plusCode: "5JGR+W9", lon: -6.359122, lat: 54.177253 },
-  { manufacturer: "repaint", label: "Loughborough repaint/bodyshop", plusCode: "QQHG+HR", lon: -1.222997, lat: 52.778878 },
 ];
 
 // Seeds every real dealer in REFERENCE_PINS directly into the `dealers`
 // table at its own precise decoded position — idempotent (matched by
 // name, so safe to call on every launch; a second run creates nothing
-// new). Skips "repaint" entries (Loughborough), which aren't a dealer at
-// all and have no manufacturer the table's own CHECK constraint accepts.
-// No entrances are created here — which real road a dealer's own
+// new). No entrances are created here — which real road a dealer's own
 // entrance/exit sits on needs a person looking at the map, not a guess.
 export async function seedRealDealers(): Promise<void> {
   const existing = await window.dealers.list();
   const existingNames = new Set(existing.map((d) => d.name));
   for (const pin of REFERENCE_PINS) {
-    if (pin.manufacturer === "repaint" || existingNames.has(pin.label)) continue;
+    if (existingNames.has(pin.label)) continue;
     await window.dealers.create(pin.label, pin.manufacturer as DealerManufacturer, pin.lon, pin.lat, []);
   }
 }
@@ -190,7 +187,7 @@ export async function mountDealerReferencePins(map: maplibregl.Map): Promise<voi
         MANUFACTURER_COLORS.wrightbus,
         "yutong",
         MANUFACTURER_COLORS.yutong,
-        MANUFACTURER_COLORS.repaint,
+        "#64748b",
       ],
       "circle-opacity": 0.55,
       "circle-stroke-color": "#ffffff",
@@ -213,20 +210,18 @@ export async function mountDealerReferencePins(map: maplibregl.Map): Promise<voi
     paint: { "text-color": "#ffffff", "text-halo-color": "#000000", "text-halo-width": 1 },
   });
 
-  // Shows a pin only for a dealer that still has zero entrances — re-run
-  // every time the layer is shown so it reflects entrances added earlier
-  // in the same session (a live user request: "make the reference show
-  // on the map until I have added entrance and/or exits").
+  // Shows a pin only for a dealer not yet explicitly marked complete
+  // (`isEntrancesComplete`, confirmed 2026-11-01 — replaces the old
+  // "has zero entrances" heuristic, which wrongly hid a dealer needing
+  // more than one entrance after just the first) — re-run every time the
+  // layer is shown so it reflects a mark-complete made earlier in the
+  // same session.
   const refreshReferencePinsData = async (): Promise<void> => {
     const dealers = await window.dealers.list();
-    const entrances = await window.dealers.listAllEntrances();
-    const entranceCountByDealerId = new Map<number, number>();
-    for (const e of entrances) entranceCountByDealerId.set(e.dealerId, (entranceCountByDealerId.get(e.dealerId) ?? 0) + 1);
     const dealerByName = new Map(dealers.map((d) => [d.name, d]));
     const features: GeoJSON.Feature[] = REFERENCE_PINS.filter((p) => {
-      if (p.manufacturer === "repaint") return true; // no matching dealer concept yet (T63)
       const dealer = dealerByName.get(p.label);
-      return !dealer || (entranceCountByDealerId.get(dealer.id) ?? 0) === 0;
+      return !dealer || !dealer.isEntrancesComplete;
     }).map((p) => ({
       type: "Feature",
       properties: { manufacturer: p.manufacturer, label: p.label, plusCode: p.plusCode },
@@ -240,7 +235,7 @@ export async function mountDealerReferencePins(map: maplibregl.Map): Promise<voi
   toggle.textContent = "Show dealers needing entrances";
   toggle.title = "Dealers already placed at their own real Plus Code position but with no entrance/exit added yet — a pin disappears once you add its first one";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   toggle.style.left = "800px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);

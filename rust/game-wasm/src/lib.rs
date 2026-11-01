@@ -28,6 +28,19 @@ struct Hop {
 #[wasm_bindgen]
 pub struct Router {
     graph: RoadGraph,
+    /// The fastest speed (m/s) any routable edge in this graph permits —
+    /// the real tagged `maxspeed_mph` where present, otherwise the class
+    /// default, maxed over every edge `edge_is_routable` lets through.
+    /// Computed once here so `dijkstra`'s A* heuristic below can turn a
+    /// straight-line distance into a genuinely admissible (never-
+    /// overestimating) lower bound on remaining travel time: no real
+    /// route can ever cover ground faster than this, anywhere in the
+    /// graph, so `remaining_distance / max_speed_mps` can never exceed
+    /// the true remaining cost. Computed from the graph's own real data
+    /// rather than hardcoded from `HIGHWAY_CLASS_DEFAULT_SPEED_MPH`
+    /// alone, since a real `maxspeed` tag can legally exceed a class's
+    /// own default.
+    max_speed_mps: f64,
     /// Every node's own outgoing hops, flattened into one shared buffer —
     /// `adjacency[adjacency_offsets[node]..adjacency_offsets[node + 1]]` is
     /// that node's own slice, the CSR ("compressed sparse row") shape
@@ -325,6 +338,28 @@ fn approx_distance_m(a_lon_e7: i32, a_lat_e7: i32, b_lon_e7: i32, b_lat_e7: i32)
     EARTH_RADIUS_M * (dlat * dlat + x * x).sqrt()
 }
 
+/// Great-circle (haversine) distance in metres, using the same mean-Earth-
+/// radius constant as every other distance calc in this file. Unlike
+/// `approx_distance_m`'s equirectangular approximation (fine at short
+/// range, e.g. snapping to the nearest node) this is the exact spherical
+/// formula — needed because `dijkstra`'s A* heuristic below relies on it
+/// being a genuine lower bound on real distance at *any* range, including
+/// the length of Great Britain itself, where an approximation's own small
+/// error could in principle overestimate and silently break admissibility.
+/// The haversine distance between two points can never exceed the true
+/// great-circle distance, which can never exceed any real road path
+/// between them.
+fn haversine_distance_m(a_lon_e7: i32, a_lat_e7: i32, b_lon_e7: i32, b_lat_e7: i32) -> f64 {
+    const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+    const EARTH_RADIUS_M: f64 = 6_371_000.0;
+    let lat1 = a_lat_e7 as f64 * 1e-7 * DEG_TO_RAD;
+    let lat2 = b_lat_e7 as f64 * 1e-7 * DEG_TO_RAD;
+    let dlat = lat2 - lat1;
+    let dlon = (b_lon_e7 - a_lon_e7) as f64 * 1e-7 * DEG_TO_RAD;
+    let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_M * a.sqrt().clamp(0.0, 1.0).asin()
+}
+
 /// Distance in metres from a point to the segment `a`–`b`, and the closest
 /// point on that segment (as `lon_e7, lat_e7`) — via the same local
 /// equirectangular flattening as `approx_distance_m` (adequate at the scale
@@ -513,6 +548,34 @@ impl PartialOrd for QueueEntry {
     }
 }
 
+/// `dijkstra`'s own queue entry — ordered by f-score (`cost_s`, the real
+/// accumulated g-score, plus an admissible heuristic estimate of the
+/// remaining cost to the goal), turning it into A*. A deliberately
+/// separate type from the plain `QueueEntry` above, which
+/// `dijkstra_any_road` still uses unchanged (no goal-directed heuristic
+/// there — it's a different kind of search, not the real bus-routing
+/// path this fix targets). `cost_s` itself is still the real g-score,
+/// used for `best_cost_s` bookkeeping exactly as before; only the queue's
+/// own pop order changes.
+#[derive(PartialEq)]
+struct AStarQueueEntry {
+    f_score: f64,
+    cost_s: f64,
+    node: u32,
+}
+
+impl Eq for AStarQueueEntry {}
+impl Ord for AStarQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.f_score.partial_cmp(&self.f_score).expect("f-scores are always finite")
+    }
+}
+impl PartialOrd for AStarQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[wasm_bindgen]
 impl Router {
     /// `psv_override_way_ids`: OSM way ids to treat as bus-legal regardless
@@ -532,9 +595,16 @@ impl Router {
         // hops first, so the exact right amount of space can be allocated
         // once, rather than growing 10M+ separate Vecs incrementally.
         let mut hop_counts: Vec<u32> = vec![0; graph.nodes.len()];
+        let mut max_speed_mph: u16 = 0;
         for edge in &graph.edges {
             if !edge_is_routable(edge, &psv_override_way_ids) {
                 continue;
+            }
+            let edge_mph = edge
+                .maxspeed_mph
+                .unwrap_or(game_data::HIGHWAY_CLASS_DEFAULT_SPEED_MPH[edge.class as usize]);
+            if edge_mph > max_speed_mph {
+                max_speed_mph = edge_mph;
             }
             if matches!(edge.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay) {
                 hop_counts[edge.from as usize] += 1;
@@ -545,6 +615,11 @@ impl Router {
                 has_incoming[edge.from as usize] = true;
             }
         }
+        // A graph with zero routable edges has nothing for dijkstra to do
+        // anyway; falling back to 1.0 just avoids a division by zero in
+        // the heuristic rather than asserting on an already-degenerate
+        // graph.
+        let max_speed_mps = (max_speed_mph as f64 * MPH_TO_MPS).max(1.0);
 
         let mut adjacency_offsets: Vec<u32> = Vec::with_capacity(graph.nodes.len() + 1);
         let mut running_offset = 0u32;
@@ -656,6 +731,7 @@ impl Router {
 
         Router {
             graph,
+            max_speed_mps,
             adjacency,
             adjacency_offsets,
             last_edges: RefCell::new(Vec::new()),
@@ -1256,6 +1332,21 @@ impl Router {
                 }
                 prev = next;
             }
+        }
+
+        // Max-distance cutoff (2026-11-01, real bug found and fixed —
+        // this function previously had none at all, so a click anywhere,
+        // including far out at sea, always snapped to whatever road was
+        // globally nearest, however many kilometres away: fare-zone
+        // drawing's own "I can only snap it to roads... drawing in the
+        // water around Skye did nothing" report, confirmed directly from
+        // this source rather than guessed). 500m is generous for its
+        // other real use (depot/dealer entrance placement, always hard
+        // against a real access road in practice) while clearly excluding
+        // "snap across a sea loch/firth to a distant road."
+        const MAX_SNAP_DISTANCE_M: f64 = 500.0;
+        if best_dist > MAX_SNAP_DISTANCE_M {
+            return Vec::new();
         }
 
         let Some((foot_lon_e7, foot_lat_e7)) = best else {
@@ -2169,6 +2260,17 @@ impl Router {
         coords
     }
 
+    /// Straight-line lower bound (seconds) on the remaining travel time
+    /// from `node` to `goal` — `haversine_distance_m / max_speed_mps`,
+    /// which can never exceed the true remaining cost (see both
+    /// functions' own doc comments for why). `dijkstra` below uses this
+    /// as its A* heuristic.
+    fn heuristic_s(&self, node: u32, goal: u32) -> f64 {
+        let a = &self.graph.nodes[node as usize];
+        let b = &self.graph.nodes[goal as usize];
+        haversine_distance_m(a.lon_e7, a.lat_e7, b.lon_e7, b.lat_e7) / self.max_speed_mps
+    }
+
     /// Returns the path as a list of `(edge, node arrived at)` steps in
     /// order, plus the total travel time (seconds) Dijkstra minimised to
     /// find it, or `None` if unreachable. Minimises `edge_time_cost_s` plus
@@ -2177,10 +2279,95 @@ impl Router {
     /// depend on which edge was used to *arrive* there (`prev[node]`,
     /// `None` only for `start` itself) versus the edge about to be taken
     /// next (`hop.edge`).
+    ///
+    /// A* rather than plain Dijkstra (OPEN-ITEMS.md's T55-map-boundary-perf
+    /// — a 400-mile whole-UK query measured at 2.4s with no heuristic,
+    /// since plain Dijkstra explores outward in every direction rather
+    /// than toward the goal): the queue is ordered by f-score
+    /// (`cost_s + heuristic_s`) instead of `cost_s` alone, via
+    /// `AStarQueueEntry`. `heuristic_s` is admissible (never overestimates
+    /// — see its own doc comment) and consistent (it's derived from a
+    /// true metric, straight-line distance), so this finds the exact same
+    /// optimal route and cost as plain Dijkstra always did, just by
+    /// expanding far fewer nodes to get there — the early-exit-on-goal-
+    /// popped behaviour below remains correct for exactly the same reason
+    /// it was correct before.
     fn dijkstra(&self, start: u32, goal: u32) -> Option<(Vec<(u32, u32)>, f64)> {
         let n = self.graph.nodes.len();
         let mut best_cost_s = vec![f64::INFINITY; n];
         let mut prev: Vec<Option<(u32, u32)>> = vec![None; n]; // (prev_node, via_edge)
+        let mut visited = vec![false; n];
+
+        best_cost_s[start as usize] = 0.0;
+        let mut queue = BinaryHeap::new();
+        queue.push(AStarQueueEntry { f_score: self.heuristic_s(start, goal), cost_s: 0.0, node: start });
+
+        while let Some(AStarQueueEntry { cost_s, node, .. }) = queue.pop() {
+            if visited[node as usize] {
+                continue;
+            }
+            visited[node as usize] = true;
+            if node == goal {
+                break;
+            }
+
+            let incoming_class = prev[node as usize].map(|(_, edge_idx)| self.graph.edges[edge_idx as usize].class);
+            let incoming_bearing = prev[node as usize].map(|(prev_node, _)| {
+                bearing_degrees(
+                    self.graph.nodes[prev_node as usize].lon_e7,
+                    self.graph.nodes[prev_node as usize].lat_e7,
+                    self.graph.nodes[node as usize].lon_e7,
+                    self.graph.nodes[node as usize].lat_e7,
+                )
+            });
+            let junction_control = self.graph.nodes[node as usize].junction_control;
+
+            for hop in self.node_adjacency(node) {
+                let edge = &self.graph.edges[hop.edge as usize];
+                let delay_s = junction_delay_s(junction_control, incoming_class, edge.class);
+                let outgoing_bearing = bearing_degrees(
+                    self.graph.nodes[node as usize].lon_e7,
+                    self.graph.nodes[node as usize].lat_e7,
+                    self.graph.nodes[hop.to_node as usize].lon_e7,
+                    self.graph.nodes[hop.to_node as usize].lat_e7,
+                );
+                let turn_s = turn_penalty_s(incoming_bearing, outgoing_bearing);
+                let next_cost = cost_s + edge_time_cost_s(edge) + delay_s + turn_s;
+                if next_cost < best_cost_s[hop.to_node as usize] {
+                    best_cost_s[hop.to_node as usize] = next_cost;
+                    prev[hop.to_node as usize] = Some((node, hop.edge));
+                    let f_score = next_cost + self.heuristic_s(hop.to_node, goal);
+                    queue.push(AStarQueueEntry { f_score, cost_s: next_cost, node: hop.to_node });
+                }
+            }
+        }
+
+        if !visited[goal as usize] {
+            return None;
+        }
+
+        let mut steps = Vec::new();
+        let mut current = goal;
+        while current != start {
+            let (p, edge) = prev[current as usize]?;
+            steps.push((edge, current));
+            current = p;
+        }
+        steps.reverse();
+        Some((steps, best_cost_s[goal as usize]))
+    }
+
+    /// Benchmark-only: the exact pre-A* algorithm `dijkstra` used to be,
+    /// kept solely so the real-data timing test below can measure a true
+    /// same-process, same-data before/after rather than trusting a
+    /// before-the-fact number from an earlier session. Not used by
+    /// `find_route`/`find_route_through` (those call the real `dijkstra`
+    /// above) and not compiled into a release/WASM build.
+    #[cfg(test)]
+    fn dijkstra_plain_for_benchmark(&self, start: u32, goal: u32) -> Option<(Vec<(u32, u32)>, f64)> {
+        let n = self.graph.nodes.len();
+        let mut best_cost_s = vec![f64::INFINITY; n];
+        let mut prev: Vec<Option<(u32, u32)>> = vec![None; n];
         let mut visited = vec![false; n];
 
         best_cost_s[start as usize] = 0.0;
@@ -2322,6 +2509,65 @@ pub fn decode_tram_stops(bytes: &[u8]) -> js_sys::Array {
         )
         .unwrap();
         js_sys::Reflect::set(&obj, &"osmId".into(), &(t.osm_id as f64).into()).unwrap();
+        out.push(&obj);
+    }
+    out
+}
+
+/// Decodes `ferry_routes.bin` into a plain JS array of `{osmId, name,
+/// distanceM, coordinates}` objects — `coordinates` is a flat
+/// `[lon, lat, lon, lat, ...]` array along the real sailing line, in order,
+/// the same flattening convention `decode_platforms` already uses.
+/// `distanceM` is the real distance along that line (precomputed at
+/// pipeline build time, not a straight-line endpoint distance) — see
+/// `game_data::FerryRoute`'s own doc comment for why this matters for
+/// fare/timing use rather than reading distance back out of rendered map
+/// tiles.
+#[wasm_bindgen]
+pub fn decode_ferry_routes(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_ferry_routes(bytes);
+    let out = js_sys::Array::new();
+    for r in &data.routes {
+        let coords = js_sys::Array::new();
+        for &(lon_e7, lat_e7) in &r.geometry {
+            coords.push(&(lon_e7 as f64 * 1e-7).into());
+            coords.push(&(lat_e7 as f64 * 1e-7).into());
+        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(r.osm_id as f64).into()).unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"name".into(),
+            &r.name.as_deref().map(JsValue::from).unwrap_or(JsValue::NULL),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&obj, &"distanceM".into(), &r.distance_m.into()).unwrap();
+        js_sys::Reflect::set(&obj, &"coordinates".into(), &coords).unwrap();
+        out.push(&obj);
+    }
+    out
+}
+
+/// Decodes `coastline.bin` into a plain JS array of `{coordinates}`
+/// objects, one per assembled chain — `coordinates` is the same flat
+/// `[lon, lat, lon, lat, ...]` convention `decode_ferry_routes`/
+/// `decode_platforms` already use. Consumed client-side by
+/// `fare-zone-drawing.ts` to clip a drawn fare zone's own straight
+/// water-crossing segments back to the real shore — see
+/// `game_data::CoastlineChain`'s own doc comment for the chain-assembly
+/// scoping caveat.
+#[wasm_bindgen]
+pub fn decode_coastline(bytes: &[u8]) -> js_sys::Array {
+    let data = game_data::decode_coastline(bytes);
+    let out = js_sys::Array::new();
+    for chain in &data.chains {
+        let coords = js_sys::Array::new();
+        for &(lon_e7, lat_e7) in &chain.geometry {
+            coords.push(&(lon_e7 as f64 * 1e-7).into());
+            coords.push(&(lat_e7 as f64 * 1e-7).into());
+        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"coordinates".into(), &coords).unwrap();
         out.push(&obj);
     }
     out
@@ -3559,4 +3805,69 @@ mod tests {
         );
     }
 
+    /// Real-data timing comparison for the A* fix (OPEN-ITEMS.md's
+    /// T55-map-boundary-perf, which measured a 400-mile whole-UK query at
+    /// 2.4s under plain Dijkstra, with no heuristic). The whole-UK data
+    /// isn't swapped into dev `pipeline-data/` (a separate, deliberately
+    /// deferred decision), so this measures the longest realistic route
+    /// available in what IS there — Scotland plus the border strip —
+    /// genuinely same-process, same-data, both algorithms run back to
+    /// back against the real freshly-rebuilt `road_graph.bin`, not a
+    /// projected number. `#[ignore]`d by default since it needs the real
+    /// multi-hundred-MB pipeline artefact on disk, which a synthetic CI
+    /// environment won't have — run explicitly with
+    /// `cargo test --release -- --ignored router_a_star_is_faster_than_plain_dijkstra_on_a_real_long_route`.
+    #[test]
+    #[ignore]
+    fn router_a_star_is_faster_than_plain_dijkstra_on_a_real_long_route() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../pipeline-data/road_graph.bin");
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let router = Router::new(&bytes, vec![]);
+
+        // Portree, Skye, to Gretna, right on the border strip — about as
+        // long a real route as this extract can offer (~250 real miles).
+        let (portree_lon, portree_lat) = (-6.1950_f64, 57.4133_f64);
+        let (gretna_lon, gretna_lat) = (-3.0700_f64, 54.9970_f64);
+        let to_e7 = |v: f64| (v * 1e7).round() as i32;
+
+        let start = router
+            .nearest_node(to_e7(portree_lon), to_e7(portree_lat), true, false)
+            .expect("Portree should snap to a real routable node")
+            .0;
+        let goal = router
+            .nearest_node(to_e7(gretna_lon), to_e7(gretna_lat), false, true)
+            .expect("Gretna should snap to a real routable node")
+            .0;
+
+        let t0 = std::time::Instant::now();
+        let plain = router.dijkstra_plain_for_benchmark(start, goal);
+        let plain_elapsed = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let a_star = router.dijkstra(start, goal);
+        let a_star_elapsed = t1.elapsed();
+
+        let (plain_steps, plain_cost) = plain.expect("a real route exists between Portree and Gretna");
+        let (a_star_steps, a_star_cost) = a_star.expect("a real route exists between Portree and Gretna");
+
+        println!(
+            "plain Dijkstra: {:?} ({} steps, {:.1}s travel time)",
+            plain_elapsed,
+            plain_steps.len(),
+            plain_cost
+        );
+        println!(
+            "A*:             {:?} ({} steps, {:.1}s travel time)",
+            a_star_elapsed,
+            a_star_steps.len(),
+            a_star_cost
+        );
+
+        // The whole point: same cost, same route, found faster.
+        assert!(
+            (plain_cost - a_star_cost).abs() < 0.01,
+            "A* must find the exact same optimal cost as plain Dijkstra: plain={plain_cost}, a_star={a_star_cost}"
+        );
+        assert_eq!(plain_steps, a_star_steps, "A* must find the exact same route as plain Dijkstra, not just the same cost");
+    }
 }

@@ -26,6 +26,8 @@ const route: Route = {
   variationLetter: null,
   composedFromRouteIds: [],
   hailAndRideSections: [],
+  segments: [],
+  routeType: "ordinary",
 };
 
 const timetable: RouteTimetable = {

@@ -537,6 +537,15 @@ pub struct ScanResult {
     pub railway_station_ways: Vec<crate::railway::RailwayStation>,
     /// `railway=platform` ways — full physical shape, not just a centroid.
     pub platform_ways: Vec<crate::railway::Platform>,
+    /// `route=ferry` ways — full sailing-line geometry plus its precomputed
+    /// real distance, not just a marker. See `ferry_routes.rs`'s own doc
+    /// comment for the single-way-only scoping caveat.
+    pub ferry_route_ways: Vec<crate::ferry_routes::FerryRoute>,
+    /// `natural=coastline` ways, raw (not yet joined into chains — that
+    /// happens once, after every source's own ways are combined, in
+    /// `main.rs`). See `coastline.rs`'s own doc comment for the chain-
+    /// assembly scoping caveat.
+    pub coastline_raw_ways: Vec<crate::coastline::RawCoastlineWay>,
 }
 
 /// Pass 2: stream the file once more, sequentially. Covers ways (tags +
@@ -562,6 +571,8 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
     let mut poi_ways = Vec::new();
     let mut railway_station_ways = Vec::new();
     let mut platform_ways = Vec::new();
+    let mut ferry_route_ways = Vec::new();
+    let mut coastline_raw_ways = Vec::new();
 
     reader
         .for_each(|element| match element {
@@ -580,6 +591,8 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                 let mut is_bus_station = false;
                 let mut railway_station_kind = None;
                 let mut is_platform = false;
+                let mut is_ferry_route = false;
+                let mut is_coastline = false;
                 let mut name = None;
 
                 for (k, v) in way.tags() {
@@ -621,6 +634,8 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                             railway_station_kind = Some(game_data::RailwayStationKind::Halt)
                         }
                         _ if crate::railway::is_platform_tag(k, v) => is_platform = true,
+                        _ if crate::ferry_routes::is_ferry_route_tag(k, v) => is_ferry_route = true,
+                        _ if crate::coastline::is_coastline_tag(k, v) => is_coastline = true,
                         "name" => name = Some(v.to_string()),
                         _ => {}
                     }
@@ -735,6 +750,45 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                         }
                         return;
                     }
+                    if is_ferry_route {
+                        // Full sailing-line geometry, same reasoning as
+                        // platforms above — the real distance (computed
+                        // here, once, at build time) is the whole point.
+                        // At least 2 resolved points to be a real line.
+                        let geometry: Vec<(i32, i32)> =
+                            refs.iter().filter_map(|&id| nodes.get(id)).collect();
+                        if geometry.len() >= 2 {
+                            let distance_m = crate::ferry_routes::route_distance_m(&geometry);
+                            ferry_route_ways.push(crate::ferry_routes::FerryRoute {
+                                osm_id: way.id(),
+                                name,
+                                geometry,
+                                distance_m,
+                            });
+                        }
+                        return;
+                    }
+                    if is_coastline {
+                        // Raw way only — chain assembly (joining ways that
+                        // share an end node into one longer real stretch of
+                        // coast) happens once, after every source file's
+                        // own ways are combined (main.rs), not per-way
+                        // here. The way's own first/last node ids (not
+                        // resolved coordinates) are what chaining matches
+                        // on, so both are kept alongside the geometry.
+                        let geometry: Vec<(i32, i32)> =
+                            refs.iter().filter_map(|&id| nodes.get(id)).collect();
+                        if let (Some(&first_node), Some(&last_node)) = (refs.first(), refs.last()) {
+                            if geometry.len() >= 2 {
+                                coastline_raw_ways.push(crate::coastline::RawCoastlineWay {
+                                    first_node,
+                                    last_node,
+                                    geometry,
+                                });
+                            }
+                        }
+                        return;
+                    }
                 }
 
                 let Some(class) = class else { return };
@@ -846,8 +900,10 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
         landuse_zones,
         poi_ways,
         venue_ways,
+        ferry_route_ways,
         railway_station_ways,
         platform_ways,
+        coastline_raw_ways,
     }
 }
 

@@ -3,7 +3,12 @@ import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate }
 
 export type SaveDb = DatabaseSync;
 
-const SCHEMA_VERSION = 36;
+// Exported so the real-save migration checks in db.verify.mts and
+// fare-zones.verify.mts can assert against the live constant instead of a
+// hardcoded literal (2026-11-01) — a hardcoded copy in each test went
+// stale on every schema bump this session (3 times), each one only
+// caught by the test failing rather than being naturally correct.
+export const SCHEMA_VERSION = 46;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -109,7 +114,31 @@ CREATE TABLE IF NOT EXISTS routes (
   parent_route_id INTEGER REFERENCES routes(id),
   variation_letter TEXT,
   composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
-  hail_and_ride_sections TEXT NOT NULL DEFAULT '[]'
+  hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
+  segments TEXT NOT NULL DEFAULT '[]',
+  route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance'))
+);
+
+-- Shared long-distance sections (live design discussion, 2026-10-31) — a
+-- reusable piece of drawn path, authored once in its own menu, that
+-- several otherwise-unrelated long-distance routes can all build from
+-- (DESIGN.md: several services sharing a long corridor, e.g. Glasgow-
+-- Carlisle, no longer need their own independent find_route call over
+-- that same stretch). Deliberately a standalone table, not an extension
+-- of routes' own composed_from_route_ids/parent_route_id composition
+-- (route-combine-variations.mts) — that mechanism specifically matches a
+-- sibling's diversion against a shared TRUNK at common stop points, which
+-- doesn't apply here: a section has no "trunk" relationship to the routes
+-- using it, it's just reused raw geometry spliced in wherever the player
+-- puts it. No depot_group_id — sections are deliberately company-wide,
+-- since the whole point is reuse across routes that may belong to
+-- different depot groups/operators meeting at a shared corridor; this
+-- wasn't explicitly confirmed by the user and is flagged as an open
+-- question, not a silent assumption.
+CREATE TABLE IF NOT EXISTS long_distance_sections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  points TEXT NOT NULL
 );
 
 -- A route's timetable (DESIGN.md §7), scoped to the minimal slice built so
@@ -288,7 +317,16 @@ CREATE TABLE IF NOT EXISTS dealers (
   name TEXT NOT NULL,
   manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'western_commercial', 'wrightbus', 'yutong')),
   lon REAL NOT NULL,
-  lat REAL NOT NULL
+  lat REAL NOT NULL,
+  -- Explicit, player-confirmed "I've added every entrance/exit this site
+  -- needs" (2026-11-01, live user request) — replaces the old implicit
+  -- "has at least one entrance" signal dealer-reference-pins.ts used to
+  -- decide a dealer was done, which was wrong for any real site needing
+  -- more than one entrance (the pin vanished after the first). Once set,
+  -- a future session hard-codes that dealer's confirmed position and
+  -- entrances into source (the same way REFERENCE_PINS already hard-codes
+  -- position), per the user's own stated plan.
+  is_entrances_complete INTEGER NOT NULL DEFAULT 0
 );
 
 -- A dealer's own entrances — exact mirror of depot_entrances, including
@@ -320,16 +358,38 @@ CREATE TABLE IF NOT EXISTS livery_support_icon_overrides (
   PRIMARY KEY (livery_id, icon)
 );
 
--- A repaint shop the player has placed (OPERATIONS.md §5 Ferrymill is the
--- original). weekly_capacity is how many vehicles the shop can take each
--- week; there is deliberately no default, since the real figure per shop
--- comes from the user.
+-- A repaint shop the player has placed (OPERATIONS.md §5 — Ferrymill is
+-- the original real one, ACE Commercial Refinishers the second).
+-- concurrent_capacity and turnaround_days replace the old single
+-- "weekly_capacity" figure entirely (2026-11-01, live user correction via
+-- chat: "Ferrymill Motors can have 7 vehicles in its workshop at once...
+-- A full repaint at Ferrymill takes 5 days, Monday to Friday only" —
+-- "weekly capacity" was never the real shape of this at all: a shop has a
+-- fixed number of bays (how many vehicles it can work on at once) and a
+-- fixed turnaround time per vehicle (in real working days, weekends
+-- excluded elsewhere in the app logic, not stored here), not a flat
+-- weekly intake rate. Neither has a default — the real figures come from
+-- the user, same as before.
 CREATE TABLE IF NOT EXISTS repaint_shops (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   lon REAL NOT NULL,
   lat REAL NOT NULL,
-  weekly_capacity INTEGER NOT NULL CHECK (weekly_capacity > 0)
+  concurrent_capacity INTEGER NOT NULL CHECK (concurrent_capacity > 0),
+  turnaround_days INTEGER NOT NULL CHECK (turnaround_days > 0)
+);
+
+-- A repaint shop's own entrances — exact mirror of dealer_entrances
+-- (2026-11-01, live user request: "Loughborough is a repaint shop but I
+-- have no way of adding an entrance to it" — repaint shops had no
+-- entrance concept at all before this, unlike dealers/depots, which a
+-- real site needs for dead-mileage routing the same as any other).
+CREATE TABLE IF NOT EXISTS repaint_shop_entrances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repaint_shop_id INTEGER NOT NULL REFERENCES repaint_shops(id),
+  lon REAL NOT NULL,
+  lat REAL NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
 );
 
 -- A dead mileage route between a dealer and a depot (DESIGN.md "Dead mileage
@@ -519,9 +579,31 @@ CREATE TABLE IF NOT EXISTS fare_zones (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
   name TEXT NOT NULL,
-  zone_type TEXT NOT NULL CHECK (zone_type IN ('city', 'country')),
+  zone_type TEXT NOT NULL CHECK (zone_type IN ('city', 'country', 'island', 'town')),
   points TEXT NOT NULL,
-  colour TEXT NOT NULL DEFAULT '#3b82f6'
+  colour TEXT NOT NULL DEFAULT '#3b82f6',
+  -- Town zones only (T107) — the one parent Country or Island zone a town
+  -- sits inside; always NULL for every other zone type. No ON DELETE
+  -- CASCADE in SQLite's own FK support here, so deleteFareZone below
+  -- handles it manually — deliberately different from parent_route_id's
+  -- "clear the link, keep the child" precedent, since a Town zone makes no
+  -- sense once its parent is gone (its own fares are entirely computed
+  -- from the parent's figures, not independently priced).
+  parent_zone_id INTEGER REFERENCES fare_zones(id)
+);
+
+-- Island-zone single-fare bands (2026-10-31, live user design discussion,
+-- T107) — same shape as fare_country_zone_bands above (banded by exact
+-- zone count, player-entered, not a formula), kept as its own table
+-- rather than reusing the country one since an island zone's own bands
+-- are never priced against a country zone's, even within the same depot
+-- group (confirmed: Island fares "sit entirely outside the city/country/
+-- combined/network system," the same treatment as Sightseeing).
+CREATE TABLE IF NOT EXISTS fare_island_zone_bands (
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  zone_count INTEGER NOT NULL CHECK (zone_count > 0),
+  price_gbp_pence INTEGER NOT NULL,
+  PRIMARY KEY (depot_group_id, zone_count)
 );
 
 -- Fare pricing (DESIGN.md §9, Phase 4 increment 2) — see fare-pricing.mts
@@ -533,26 +615,41 @@ CREATE TABLE IF NOT EXISTS fare_zones (
 -- calculation function throws rather than silently treating an unset
 -- fare as free. The Return multiplier is NOT stored here — it's a fixed
 -- game constant (RETURN_MULTIPLIER in fare-pricing.mts), not a setting.
+--
+-- Reworked 2026-10-31 after a live user design discussion: "special
+-- service" renamed/narrowed to Airport Express (its own Single/Return,
+-- not the standard 1.6x Return formula — AIR's own real fares don't
+-- follow that ratio either); NETWORK is no longer its own typed-in price
+-- at all — it's COMPUTED from the Combined (city+country) price times
+-- network_markup_percent, rounded up to the nearest 5p (fare-
+-- pricing.mts's networkFareGBPPence), so there's no network_*_gbp_pence
+-- column to store, only the one percentage; runs_night_services is a new
+-- real per-depot-group flag (not inferred from anything) gating whether
+-- LATE/the two night-extra fields are even relevant; sightseeing gained
+-- its own two prices, per DESIGN.md's own already-specified shape.
 CREATE TABLE IF NOT EXISTS fare_configs (
   depot_group_id INTEGER PRIMARY KEY REFERENCES depot_groups(id),
   city_single_gbp_pence INTEGER,
   beyond_depot_group_per_mile_gbp_pence INTEGER,
   long_distance_base_gbp_pence INTEGER,
   long_distance_per_mile_gbp_pence INTEGER,
-  special_service_single_gbp_pence INTEGER,
+  airport_express_single_gbp_pence INTEGER,
+  airport_express_return_gbp_pence INTEGER,
   night_extra_base_gbp_pence INTEGER,
   night_extra_per_zone_gbp_pence INTEGER,
   late_gbp_pence INTEGER,
-  network_gbp_pence INTEGER,
+  network_markup_percent REAL,
+  sightseeing_day_gbp_pence INTEGER,
+  sightseeing_single_gbp_pence INTEGER,
   city_day_gbp_pence INTEGER,
   city_weekly_gbp_pence INTEGER,
-  city_28day_gbp_pence INTEGER,
   country_day_gbp_pence INTEGER,
   country_weekly_gbp_pence INTEGER,
-  country_28day_gbp_pence INTEGER,
   combined_day_gbp_pence INTEGER,
   combined_weekly_gbp_pence INTEGER,
-  combined_28day_gbp_pence INTEGER
+  island_day_gbp_pence INTEGER,
+  island_weekly_gbp_pence INTEGER,
+  island_late_gbp_pence INTEGER
 );
 
 -- The country-zone single-fare band table (DESIGN.md §9 "banded by zone
@@ -568,16 +665,44 @@ CREATE TABLE IF NOT EXISTS fare_country_zone_bands (
   price_gbp_pence INTEGER NOT NULL,
   PRIMARY KEY (depot_group_id, zone_count)
 );
+
+-- The game clock (DESIGN.md §3: "real time, with pause and speed
+-- controls"), confirmed 2026-11-01 — nothing tracked game time at all
+-- before this; vehicle-simulation.ts just read Date.now() straight,
+-- which can't be paused or sped up. A single row (id always 1, enforced
+-- by the CHECK rather than a no-arg PRIMARY KEY, so a stray second INSERT
+-- fails loudly instead of silently creating a second clock).
+-- accumulated_game_seconds is the one source of truth for "what time is
+-- it in the game" — real elapsed time only ever advances it while
+-- !is_paused, scaled by speed_multiplier (DESIGN.md §3's own 1x/4x/10x/
+-- 20x/60x, each a multiple of the already-tenfold "1 real second = 10
+-- game seconds" base rate). Persisted (not just kept in memory) so
+-- closing and reopening the app resumes from the same point rather than
+-- silently losing time or jumping to "now".
+CREATE TABLE IF NOT EXISTS game_clock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  accumulated_game_seconds REAL NOT NULL DEFAULT 0,
+  speed_multiplier INTEGER NOT NULL DEFAULT 1 CHECK (speed_multiplier IN (1, 4, 10, 20, 60)),
+  is_paused INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 export function openSave(path: string): SaveDb {
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
 
-  const { user_version: currentVersion } = db.prepare("PRAGMA user_version").get() as {
-    user_version: number;
-  };
-  if (currentVersion === 0) {
+  // Looped rather than a single pass — a save can be more than one
+  // version behind in the rare case several migrations land in one
+  // session without a real release applying them in between (found as a
+  // real bug 2026-10-31, see the v37 branch's own comment below for the
+  // full story). Each iteration re-reads the real on-disk version after
+  // the matching branch runs, so a save several versions behind keeps
+  // advancing one step at a time instead of a single branch's own
+  // ALTERs running once and the version then silently jumping straight
+  // to SCHEMA_VERSION, skipping everything in between.
+  let currentVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  while (currentVersion !== SCHEMA_VERSION) {
+    if (currentVersion === 0) {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 1) {
     // v1 -> v2: depot groups gained a region (OPERATIONS.md §1a). No shipped
@@ -847,6 +972,104 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN road_width_m");
     db.exec("ALTER TABLE dealer_entrances DROP COLUMN size_scale");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 38) {
+    // v38 -> v39: Town zones (2026-10-31, live user design discussion,
+    // T107) — a new nested zone type, always inside exactly one parent
+    // Country or Island zone; fare_zones' own CHECK constraint needs
+    // 'town' added (same rebuild-rename-recreate-copy-drop reason as
+    // every earlier CHECK change here) and gains a new parent_zone_id
+    // column (self-referencing FK, nullable, NULL for every non-town
+    // zone). No pricing table of its own — a town's fares are always
+    // computed as 70% of its parent's own figures (fare-pricing.mts's
+    // townFareGBPPence), never stored.
+    db.exec("ALTER TABLE fare_zones RENAME TO fare_zones_v38");
+    db.exec(`
+      CREATE TABLE fare_zones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+        name TEXT NOT NULL,
+        zone_type TEXT NOT NULL CHECK (zone_type IN ('city', 'country', 'island', 'town')),
+        points TEXT NOT NULL,
+        colour TEXT NOT NULL DEFAULT '#3b82f6',
+        parent_zone_id INTEGER REFERENCES fare_zones(id)
+      )
+    `);
+    db.exec(`
+      INSERT INTO fare_zones (id, depot_group_id, name, zone_type, points, colour)
+      SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones_v38
+    `);
+    db.exec("DROP TABLE fare_zones_v38");
+    // See the v37 branch's own comment below for why this is the explicit
+    // next step (39) rather than SCHEMA_VERSION.
+    db.exec("PRAGMA user_version = 39");
+  } else if (currentVersion === 37) {
+    // v37 -> v38: Island zones (2026-10-31, live user design discussion,
+    // T107) — a new zone type parallel to city/country, banded by zone
+    // count like country, with its own Day/Weekly/28-day/LATE (fare_zones'
+    // own CHECK constraint needs 'island' added, which SQLite can't ALTER
+    // in place — same reason route_timetables was rebuilt at v17->v18 —
+    // so the table is renamed, recreated with the new CHECK, and the data
+    // copied across unchanged). fare_island_zone_bands is brand new
+    // (CREATE TABLE IF NOT EXISTS in SCHEMA above creates it, no ALTER
+    // needed here, same as any other brand-new table at migration time).
+    db.exec("ALTER TABLE fare_zones RENAME TO fare_zones_v37");
+    db.exec(`
+      CREATE TABLE fare_zones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+        name TEXT NOT NULL,
+        zone_type TEXT NOT NULL CHECK (zone_type IN ('city', 'country', 'island')),
+        points TEXT NOT NULL,
+        colour TEXT NOT NULL DEFAULT '#3b82f6'
+      )
+    `);
+    db.exec(`
+      INSERT INTO fare_zones (id, depot_group_id, name, zone_type, points, colour)
+      SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones_v37
+    `);
+    db.exec("DROP TABLE fare_zones_v37");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN island_day_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN island_weekly_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN island_28day_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN island_late_gbp_pence INTEGER");
+    // Sets the version to exactly the NEXT step (38), not straight to
+    // SCHEMA_VERSION — found as a real bug 2026-10-31 when three
+    // migrations (this one, Town zones, and shared long-distance
+    // sections) all landed in one session without ever being applied for
+    // real: the real save sat at v37 while SCHEMA_VERSION had reached 40,
+    // and the outer migration dispatch (below) runs in a loop that
+    // re-checks after every step specifically so a save more than one
+    // version behind keeps advancing — but only once every branch it
+    // passes through sets its own correct next version rather than
+    // jumping to the latest. Every older branch below still jumps
+    // straight to SCHEMA_VERSION, which remains correct for a save
+    // exactly one version behind (the normal case in real use, where a
+    // save is always migrated as each release ships) — if a future
+    // session stacks several migrations in one sitting again without a
+    // real release in between, whichever of those new branches run next
+    // need the same one-step-at-a-time treatment this comment is leaving
+    // here as a trail for.
+    db.exec("PRAGMA user_version = 38");
+  } else if (currentVersion === 36) {
+    // v36 -> v37: fare_configs reworked (2026-10-31, live user design
+    // discussion) — special_service_* replaced by airport_express_*
+    // (its own Single/Return, not the standard Return formula);
+    // network_gbp_pence dropped entirely, NETWORK is now computed from
+    // the Combined price × network_markup_percent (fare-pricing.mts's
+    // networkFareGBPPence), not its own typed-in figure; runs_night_services
+    // and the two sightseeing columns are genuinely new. No real save had
+    // anything meaningful stored in the dropped columns yet (fare_configs
+    // itself only shipped in the previous session), so this is a clean
+    // ALTER, not a data-preserving migration.
+    db.exec("ALTER TABLE fare_configs DROP COLUMN special_service_single_gbp_pence");
+    db.exec("ALTER TABLE fare_configs DROP COLUMN network_gbp_pence");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN airport_express_single_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN airport_express_return_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN runs_night_services INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN network_markup_percent REAL");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN sightseeing_day_gbp_pence INTEGER");
+    db.exec("ALTER TABLE fare_configs ADD COLUMN sightseeing_single_gbp_pence INTEGER");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 35) {
     // v35 -> v36: fare_zones gains a per-zone colour override (default
     // matches the old implicit "city" colour so every existing zone keeps
@@ -891,10 +1114,100 @@ export function openSave(path: string): SaveDb {
     // same as the column's own DEFAULT already means for a brand new row.
     db.exec("ALTER TABLE routes ADD COLUMN hail_and_ride_sections TEXT NOT NULL DEFAULT '[]'");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  } else if (currentVersion !== SCHEMA_VERSION) {
-    throw new Error(
-      `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
+  } else if (currentVersion === 39) {
+    // v39 -> v40: shared long-distance sections (see long_distance_sections'
+    // own SCHEMA comment above) — routes gain a `segments` column (their
+    // own build sequence of custom-point runs and section references);
+    // long_distance_sections itself is brand new, CREATE TABLE IF NOT
+    // EXISTS in SCHEMA above creates it, so this branch only needs the
+    // ALTER plus advancing the version number, same precedent as every
+    // other brand-new-table migration in this file.
+    db.exec("ALTER TABLE routes ADD COLUMN segments TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = 40`);
+  } else if (currentVersion === 40) {
+    // v40 -> v41: 28-day tickets dropped entirely (live user request,
+    // 2026-10-31: "I also think we should ditch 28 day tickets") — city/
+    // country/combined/island all drop their own 28-day column. No real
+    // save has ever had anything meaningful in these (the whole Day/
+    // Weekly/28-day shape only shipped earlier the same session), so this
+    // is a clean DROP, not a data-preserving migration.
+    db.exec("ALTER TABLE fare_configs DROP COLUMN city_28day_gbp_pence");
+    db.exec("ALTER TABLE fare_configs DROP COLUMN country_28day_gbp_pence");
+    db.exec("ALTER TABLE fare_configs DROP COLUMN combined_28day_gbp_pence");
+    db.exec("ALTER TABLE fare_configs DROP COLUMN island_28day_gbp_pence");
+    db.exec(`PRAGMA user_version = 41`);
+  } else if (currentVersion === 41) {
+    // v41 -> v42: route types (live user request, 2026-10-31: night/
+    // sightseeing/airport-express/long-distance should be chosen when a
+    // route is made, not just fare-config toggles). `routes` gains
+    // route_type, defaulting every existing row to 'ordinary' (the
+    // previously-implicit case) — SQLite supports a CHECK-constrained ADD
+    // COLUMN directly here since this is a brand new column, not altering
+    // an existing one's constraint (unlike fare_zones' own zone_type,
+    // which needed a full table rebuild earlier today for exactly that
+    // reason). `runs_night_services` is dropped from fare_configs — no
+    // longer a manual per-depot-group toggle, now computed on read from
+    // whether the depot group has any route with route_type = 'night'
+    // (getFareConfig's own comment below has the real reasoning).
+    db.exec(
+      "ALTER TABLE routes ADD COLUMN route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance'))",
     );
+    db.exec("ALTER TABLE fare_configs DROP COLUMN runs_night_services");
+    db.exec("PRAGMA user_version = 42");
+  } else if (currentVersion === 42) {
+    // v42 -> v43: the game clock (see its own CREATE TABLE comment in
+    // SCHEMA above) — brand new table, CREATE TABLE IF NOT EXISTS in
+    // SCHEMA already creates it for this branch to then seed.
+    db.exec("INSERT OR IGNORE INTO game_clock (id) VALUES (1)");
+    db.exec("PRAGMA user_version = 43");
+  } else if (currentVersion === 43) {
+    // v43 -> v44: explicit "entrances complete" flag on dealers (2026-11-01,
+    // live user request) — see dealers' own CREATE TABLE comment above.
+    // Brand new column with a fixed default, not altering an existing
+    // constraint, so a plain ADD COLUMN is enough (no table rebuild
+    // needed, unlike fare_zones' own zone_type CHECK expansion earlier).
+    db.exec("ALTER TABLE dealers ADD COLUMN is_entrances_complete INTEGER NOT NULL DEFAULT 0");
+    db.exec("PRAGMA user_version = 44");
+  } else if (currentVersion === 44) {
+    // v44 -> v45: repaint shop entrances (see repaint_shop_entrances' own
+    // CREATE TABLE comment above) — brand new table, CREATE TABLE IF NOT
+    // EXISTS in SCHEMA above already creates it for this branch.
+    db.exec("PRAGMA user_version = 45");
+  } else if (currentVersion === 45) {
+    // v45 -> v46: repaint_shops' weekly_capacity replaced by
+    // concurrent_capacity + turnaround_days (see repaint_shops' own
+    // CREATE TABLE comment above) — a genuine shape change, not just an
+    // added column, so the same rename-recreate-copy-drop rebuild as
+    // every earlier CHECK/column-shape change here. Any pre-existing
+    // custom shop's own weekly_capacity carries across as its new
+    // concurrent_capacity (closest available meaning), with a 5-working-
+    // day turnaround default (Ferrymill's own real figure, a reasonable
+    // placeholder until the player corrects it) — this never applies to
+    // Ferrymill/ACE themselves, which are seeded fresh with their own
+    // real figures regardless (dealer-reference-pins.ts-style seed).
+    db.exec("ALTER TABLE repaint_shops RENAME TO repaint_shops_v45");
+    db.exec(`
+      CREATE TABLE repaint_shops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        lon REAL NOT NULL,
+        lat REAL NOT NULL,
+        concurrent_capacity INTEGER NOT NULL CHECK (concurrent_capacity > 0),
+        turnaround_days INTEGER NOT NULL CHECK (turnaround_days > 0)
+      )
+    `);
+    db.exec(`
+      INSERT INTO repaint_shops (id, name, lon, lat, concurrent_capacity, turnaround_days)
+      SELECT id, name, lon, lat, weekly_capacity, 5 FROM repaint_shops_v45
+    `);
+    db.exec("DROP TABLE repaint_shops_v45");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    } else if (currentVersion !== SCHEMA_VERSION) {
+      throw new Error(
+        `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
+      );
+    }
+    currentVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
   }
 
   return db;
@@ -993,6 +1306,16 @@ export interface RouteHailAndRideSection {
   toIndex: number;
 }
 
+// Confirmed 2026-10-31, live user request: a route is chosen as exactly one
+// of these when it's created (the "+ New route" flow asks before drawing
+// starts), mutually exclusive. "ordinary" is the default/previously-implicit
+// case. This drives the fare-pricing panel's own gating (a depot group shows
+// Night/Sightseeing/Airport Express/Long-distance fields only once it has a
+// route of that type — see fare-pricing-panel.ts's fareRequirements()) and,
+// for "night" specifically, limits that route's own timetable to a real
+// window (UK-EXPANSION.md §10: "Operating window: typically 2345–0400").
+export type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance";
+
 export interface Route {
   id: number;
   depotGroupId: number;
@@ -1008,7 +1331,21 @@ export interface Route {
   variationLetter: string | null;
   composedFromRouteIds: number[];
   hailAndRideSections: RouteHailAndRideSection[];
+  segments: RouteSegment[];
+  routeType: RouteType;
 }
+
+// A route's own build sequence (shared long-distance sections, 2026-10-31)
+// — "custom" is a literal run of points the player drew by hand, "section"
+// is a live reference to a `long_distance_sections` row. Resolving this
+// into the route's actual point list (concatenating each segment's points,
+// deduping a shared boundary point between consecutive segments) is pure
+// logic that lives in `long-distance-sections.mts`, not here — this file
+// only stores/round-trips the sequence itself, the same separation
+// `composed_from_route_ids`/`route-combine-variations.mts` already uses.
+// An ordinary route (no sections used) has an empty array, same no-op
+// convention as `composedFromRouteIds`.
+export type RouteSegment = { kind: "custom"; points: RoutePoint[] } | { kind: "section"; sectionId: number };
 
 interface RouteRow {
   id: number;
@@ -1025,6 +1362,8 @@ interface RouteRow {
   variation_letter: string | null;
   composed_from_route_ids: string;
   hail_and_ride_sections: string;
+  segments: string;
+  route_type: string;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -1043,6 +1382,8 @@ function routeFromRow(row: RouteRow): Route {
     variationLetter: row.variation_letter,
     composedFromRouteIds: JSON.parse(row.composed_from_route_ids) as number[],
     hailAndRideSections: JSON.parse(row.hail_and_ride_sections) as RouteHailAndRideSection[],
+    segments: JSON.parse(row.segments) as RouteSegment[],
+    routeType: row.route_type as RouteType,
   };
 }
 
@@ -1060,10 +1401,12 @@ export function createRoute(
   variationLetter: string | null,
   composedFromRouteIds: number[] = [],
   hailAndRideSections: RouteHailAndRideSection[] = [],
+  segments: RouteSegment[] = [],
+  routeType: RouteType = "ordinary",
 ): Route {
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       depotGroupId,
@@ -1078,6 +1421,8 @@ export function createRoute(
       variationLetter,
       JSON.stringify(composedFromRouteIds),
       JSON.stringify(hailAndRideSections),
+      JSON.stringify(segments),
+      routeType,
     );
   return {
     id: Number(result.lastInsertRowid),
@@ -1094,6 +1439,8 @@ export function createRoute(
     variationLetter,
     composedFromRouteIds,
     hailAndRideSections,
+    segments,
+    routeType,
   };
 }
 
@@ -1121,9 +1468,11 @@ export function updateRoute(
   variationLetter: string | null,
   composedFromRouteIds: number[] = [],
   hailAndRideSections: RouteHailAndRideSection[] = [],
+  segments: RouteSegment[] = [],
+  routeType: RouteType = "ordinary",
 ): Route {
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?
      WHERE id = ?`,
   ).run(
     depotGroupId,
@@ -1138,6 +1487,8 @@ export function updateRoute(
     variationLetter,
     JSON.stringify(composedFromRouteIds),
     JSON.stringify(hailAndRideSections),
+    JSON.stringify(segments),
+    routeType,
     id,
   );
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
@@ -1156,6 +1507,8 @@ export function updateRoute(
     variationLetter,
     composedFromRouteIds,
     hailAndRideSections,
+    segments,
+    routeType,
   };
 }
 
@@ -1174,6 +1527,59 @@ export function updateRoute(
 export function refreshComposedRoutePoints(db: SaveDb, id: number, points: RoutePoint[]): void {
   db.prepare("UPDATE routes SET points = ? WHERE id = ?").run(JSON.stringify(points), id);
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
+}
+
+// --- Shared long-distance sections (long_distance_sections' own SCHEMA
+// comment above) ---
+export interface LongDistanceSection {
+  id: number;
+  name: string;
+  points: RoutePoint[];
+}
+
+interface LongDistanceSectionRow {
+  id: number;
+  name: string;
+  points: string;
+}
+
+function longDistanceSectionFromRow(row: LongDistanceSectionRow): LongDistanceSection {
+  return { id: row.id, name: row.name, points: JSON.parse(row.points) as RoutePoint[] };
+}
+
+export function createLongDistanceSection(db: SaveDb, name: string, points: RoutePoint[]): LongDistanceSection {
+  if (points.length < 2) throw new Error("createLongDistanceSection: a section needs at least 2 points");
+  const result = db.prepare("INSERT INTO long_distance_sections (name, points) VALUES (?, ?)").run(name, JSON.stringify(points));
+  return { id: Number(result.lastInsertRowid), name, points };
+}
+
+export function listLongDistanceSections(db: SaveDb): LongDistanceSection[] {
+  const rows = db.prepare("SELECT id, name, points FROM long_distance_sections ORDER BY name").all() as unknown as LongDistanceSectionRow[];
+  return rows.map(longDistanceSectionFromRow);
+}
+
+export function renameLongDistanceSection(db: SaveDb, id: number, name: string): void {
+  db.prepare("UPDATE long_distance_sections SET name = ? WHERE id = ?").run(name, id);
+}
+
+// Editing a section's own points — every route referencing it (via
+// `segments`) is meant to reflect this live (the user's own confirmed
+// design: "editing a section updates every route using it"), but that
+// resolution happens in the renderer the same way `resolveRoutePoints`
+// already works for composed variations — this function only updates the
+// section's own stored points; the renderer is responsible for finding
+// and refreshing every dependent route's own cached `points` afterward
+// (`findRoutesUsingSectionId` + `resolveSegments` in
+// `long-distance-sections.mts`, then `refreshComposedRoutePoints` per
+// dependent — mirroring `findDependentRouteIds`'s own existing job for
+// composed variations).
+export function setLongDistanceSectionPoints(db: SaveDb, id: number, points: RoutePoint[]): void {
+  if (points.length < 2) throw new Error("setLongDistanceSectionPoints: a section needs at least 2 points");
+  db.prepare("UPDATE long_distance_sections SET points = ? WHERE id = ?").run(JSON.stringify(points), id);
+}
+
+export function deleteLongDistanceSection(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM long_distance_sections WHERE id = ?").run(id);
 }
 
 // A per-route override of a stop's pick-up/set-down restriction (see the
@@ -1204,14 +1610,14 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
 }
 
 export function deleteRoute(db: SaveDb, id: number): void {
-  // No cascade is defined on either reference to a route, so both need
+  // No cascade is defined on any reference to a route, so all three need
   // explicit handling before the row itself can go:
   // - a route's own timetables would otherwise survive orphaned — deleted
   //   outright, same as updateRoute already does on any point-list edit.
@@ -1221,8 +1627,20 @@ export function deleteRoute(db: SaveDb, id: number): void {
   //   7A and 7B can exist with no 7"), so losing a parent is a valid state,
   //   not an error. Node's sqlite enforces the FK by default, so without
   //   this the DELETE below fails outright whenever a child exists.
+  // - any duty_piece built against this route (a driver's scheduled working
+  //   of it) is deleted outright, the same treatment as route_timetables —
+  //   confirmed live via a real-save reproduction (2026-10-31): deleting a
+  //   route referenced by duty_pieces threw "FOREIGN KEY constraint
+  //   failed" with no handling anywhere up the call stack, which the
+  //   renderer's delete button then silently swallowed as an unhandled
+  //   promise rejection — the whole route list stayed unchanged with no
+  //   visible error, reported by the user as "the button lights up but
+  //   does nothing." A real route's own duty assignment doesn't survive
+  //   the route disappearing from under it; the rest of that duty's other
+  //   pieces are untouched.
   db.prepare("UPDATE routes SET parent_route_id = NULL WHERE parent_route_id = ?").run(id);
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
+  db.prepare("DELETE FROM duty_pieces WHERE route_id = ?").run(id);
   db.prepare("DELETE FROM routes WHERE id = ?").run(id);
 }
 
@@ -1588,6 +2006,7 @@ export interface Dealer {
   manufacturer: DealerManufacturer;
   lon: number;
   lat: number;
+  isEntrancesComplete: boolean;
 }
 
 interface DealerRow {
@@ -1596,10 +2015,11 @@ interface DealerRow {
   manufacturer: DealerManufacturer;
   lon: number;
   lat: number;
+  is_entrances_complete: number;
 }
 
 function dealerFromRow(row: DealerRow): Dealer {
-  return { id: row.id, name: row.name, manufacturer: row.manufacturer, lon: row.lon, lat: row.lat };
+  return { id: row.id, name: row.name, manufacturer: row.manufacturer, lon: row.lon, lat: row.lat, isEntrancesComplete: row.is_entrances_complete !== 0 };
 }
 
 interface DealerEntranceRow {
@@ -1632,12 +2052,19 @@ export function createDealer(
       .run(dealerId, e.lon, e.lat, e.mode);
     return { id: Number(entranceResult.lastInsertRowid), dealerId, lon: e.lon, lat: e.lat, mode: e.mode };
   });
-  return { dealer: { id: dealerId, name, manufacturer, lon, lat }, entrances: createdEntrances };
+  return { dealer: { id: dealerId, name, manufacturer, lon, lat, isEntrancesComplete: false }, entrances: createdEntrances };
 }
 
 export function listDealers(db: SaveDb): Dealer[] {
-  const rows = db.prepare("SELECT id, name, manufacturer, lon, lat FROM dealers").all() as unknown as DealerRow[];
+  const rows = db.prepare("SELECT id, name, manufacturer, lon, lat, is_entrances_complete FROM dealers").all() as unknown as DealerRow[];
   return rows.map(dealerFromRow);
+}
+
+// Explicit, player-confirmed "I've added every entrance this dealer
+// needs" (dealers' own CREATE TABLE comment) — replaces the old implicit
+// zero-entrances signal dealer-reference-pins.ts used.
+export function setDealerEntrancesComplete(db: SaveDb, id: number, isComplete: boolean): void {
+  db.prepare("UPDATE dealers SET is_entrances_complete = ? WHERE id = ?").run(isComplete ? 1 : 0, id);
 }
 
 export function listDealerEntrances(db: SaveDb, dealerId: number): DealerEntrance[] {
@@ -1821,7 +2248,8 @@ export interface RepaintShop {
   name: string;
   lon: number;
   lat: number;
-  weeklyCapacity: number;
+  concurrentCapacity: number;
+  turnaroundDays: number;
 }
 
 export function createRepaintShop(
@@ -1829,27 +2257,87 @@ export function createRepaintShop(
   name: string,
   lon: number,
   lat: number,
-  weeklyCapacity: number,
+  concurrentCapacity: number,
+  turnaroundDays: number,
 ): RepaintShop {
   const result = db
-    .prepare("INSERT INTO repaint_shops (name, lon, lat, weekly_capacity) VALUES (?, ?, ?, ?)")
-    .run(name, lon, lat, weeklyCapacity);
-  return { id: Number(result.lastInsertRowid), name, lon, lat, weeklyCapacity };
+    .prepare("INSERT INTO repaint_shops (name, lon, lat, concurrent_capacity, turnaround_days) VALUES (?, ?, ?, ?, ?)")
+    .run(name, lon, lat, concurrentCapacity, turnaroundDays);
+  return { id: Number(result.lastInsertRowid), name, lon, lat, concurrentCapacity, turnaroundDays };
 }
 
 export function listRepaintShops(db: SaveDb): RepaintShop[] {
-  const rows = db
-    .prepare("SELECT id, name, lon, lat, weekly_capacity FROM repaint_shops ORDER BY id")
-    .all() as { id: number; name: string; lon: number; lat: number; weekly_capacity: number }[];
-  return rows.map((r) => ({ id: r.id, name: r.name, lon: r.lon, lat: r.lat, weeklyCapacity: r.weekly_capacity }));
+  const rows = db.prepare("SELECT id, name, lon, lat, concurrent_capacity, turnaround_days FROM repaint_shops ORDER BY id").all() as {
+    id: number;
+    name: string;
+    lon: number;
+    lat: number;
+    concurrent_capacity: number;
+    turnaround_days: number;
+  }[];
+  return rows.map((r) => ({ id: r.id, name: r.name, lon: r.lon, lat: r.lat, concurrentCapacity: r.concurrent_capacity, turnaroundDays: r.turnaround_days }));
 }
 
-export function setRepaintShopWeeklyCapacity(db: SaveDb, id: number, weeklyCapacity: number): void {
-  db.prepare("UPDATE repaint_shops SET weekly_capacity = ? WHERE id = ?").run(weeklyCapacity, id);
+export function setRepaintShopConcurrentCapacity(db: SaveDb, id: number, concurrentCapacity: number): void {
+  db.prepare("UPDATE repaint_shops SET concurrent_capacity = ? WHERE id = ?").run(concurrentCapacity, id);
+}
+
+export function setRepaintShopTurnaroundDays(db: SaveDb, id: number, turnaroundDays: number): void {
+  db.prepare("UPDATE repaint_shops SET turnaround_days = ? WHERE id = ?").run(turnaroundDays, id);
 }
 
 export function deleteRepaintShop(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM repaint_shop_entrances WHERE repaint_shop_id = ?").run(id);
   db.prepare("DELETE FROM repaint_shops WHERE id = ?").run(id);
+}
+
+// --- Repaint shop entrances (repaint_shop_entrances' own CREATE TABLE
+// comment above) — exact mirror of dealer_entrances. ---
+export interface RepaintShopEntrance {
+  id: number;
+  repaintShopId: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
+}
+
+interface RepaintShopEntranceRow {
+  id: number;
+  repaint_shop_id: number;
+  lon: number;
+  lat: number;
+  mode: DealerEntranceMode;
+}
+
+function repaintShopEntranceFromRow(row: RepaintShopEntranceRow): RepaintShopEntrance {
+  return { id: row.id, repaintShopId: row.repaint_shop_id, lon: row.lon, lat: row.lat, mode: row.mode };
+}
+
+export function addRepaintShopEntrance(db: SaveDb, repaintShopId: number, lon: number, lat: number, mode: DealerEntranceMode): RepaintShopEntrance {
+  const result = db
+    .prepare("INSERT INTO repaint_shop_entrances (repaint_shop_id, lon, lat, mode) VALUES (?, ?, ?, ?)")
+    .run(repaintShopId, lon, lat, mode);
+  return { id: Number(result.lastInsertRowid), repaintShopId, lon, lat, mode };
+}
+
+export function listRepaintShopEntrances(db: SaveDb, repaintShopId: number): RepaintShopEntrance[] {
+  const rows = db
+    .prepare("SELECT id, repaint_shop_id, lon, lat, mode FROM repaint_shop_entrances WHERE repaint_shop_id = ?")
+    .all(repaintShopId) as unknown as RepaintShopEntranceRow[];
+  return rows.map(repaintShopEntranceFromRow);
+}
+
+export function listAllRepaintShopEntrances(db: SaveDb): RepaintShopEntrance[] {
+  const rows = db.prepare("SELECT id, repaint_shop_id, lon, lat, mode FROM repaint_shop_entrances").all() as unknown as RepaintShopEntranceRow[];
+  return rows.map(repaintShopEntranceFromRow);
+}
+
+export function setRepaintShopEntranceMode(db: SaveDb, id: number, mode: DealerEntranceMode): void {
+  db.prepare("UPDATE repaint_shop_entrances SET mode = ? WHERE id = ?").run(mode, id);
+}
+
+export function deleteRepaintShopEntrance(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM repaint_shop_entrances WHERE id = ?").run(id);
 }
 
 export interface DeadMileageWaypoint {
@@ -2546,7 +3034,7 @@ export interface FareZonePoint {
   lat: number;
 }
 
-export type FareZoneType = "city" | "country";
+export type FareZoneType = "city" | "country" | "island" | "town";
 
 export interface FareZone {
   id: number;
@@ -2555,6 +3043,7 @@ export interface FareZone {
   zoneType: FareZoneType;
   points: FareZonePoint[];
   colour: string;
+  parentZoneId: number | null;
 }
 
 interface FareZoneRow {
@@ -2564,6 +3053,7 @@ interface FareZoneRow {
   zone_type: FareZoneType;
   points: string;
   colour: string;
+  parent_zone_id: number | null;
 }
 
 function fareZoneFromRow(row: FareZoneRow): FareZone {
@@ -2574,13 +3064,100 @@ function fareZoneFromRow(row: FareZoneRow): FareZone {
     zoneType: row.zone_type,
     points: JSON.parse(row.points) as FareZonePoint[],
     colour: row.colour,
+    parentZoneId: row.parent_zone_id,
   };
 }
 
 // Plain UI default, not real data — matches the colour the map used before
 // per-zone colour existed, so an existing zone looks the same until the
 // player changes it.
-const DEFAULT_ZONE_COLOUR_BY_TYPE: Record<FareZoneType, string> = { city: "#3b82f6", country: "#22c55e" };
+const DEFAULT_ZONE_COLOUR_BY_TYPE: Record<FareZoneType, string> = {
+  city: "#3b82f6",
+  country: "#22c55e",
+  island: "#f59e0b",
+  town: "#a855f7",
+};
+
+// Plain ray-casting point-in-polygon test (odd-even rule) — mirrors
+// fare-zone-drawing.ts's own `pointInRing`, duplicated here rather than
+// shared since the renderer and the Electron main process are separate
+// bundles with no shared module between them (same reason the renderer's
+// own hole-cutting containment check isn't reused here either).
+function pointInFareZoneRing(point: FareZonePoint, ring: FareZonePoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i];
+    const b = ring[j];
+    const intersects = a.lat > point.lat !== b.lat > point.lat && point.lon < ((b.lon - a.lon) * (point.lat - a.lat)) / (b.lat - a.lat) + a.lon;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+// Whether two zones' polygons overlap at all — an approximate/practical
+// test (any vertex of one sitting inside the other), the same standard
+// this project already accepted for the existing hole-cutting containment
+// check (fare-zone-drawing.ts's own `fullyContains`: "doesn't also check
+// that none of the edges cross... good enough"), not a full edge-
+// intersection test.
+function fareZonesOverlap(a: FareZone | { points: FareZonePoint[] }, b: FareZone): boolean {
+  return a.points.some((p) => pointInFareZoneRing(p, b.points)) || b.points.some((p) => pointInFareZoneRing(p, a.points));
+}
+
+// Confirmed 2026-10-31 (live user design discussion, T107): an Island
+// zone can never share land with a City or Country zone — any "urban
+// area on an island" need is served by a Town zone nested inside the
+// Island zone instead (not yet built — T107 again), not a separate City
+// zone. Geometric, not per-depot-group: Arran (an Island zone) still
+// coexists fine with Glasgow's own City zones, since they cover
+// different land entirely.
+function assertNoIslandCityCountryOverlap(db: SaveDb, depotGroupId: number, zoneType: FareZoneType, points: FareZonePoint[], excludeZoneId?: number): void {
+  const others = listFareZonesForDepotGroup(db, depotGroupId).filter((z) => z.id !== excludeZoneId);
+  const candidate = { points };
+  if (zoneType === "island") {
+    const clashing = others.find((z) => (z.zoneType === "city" || z.zoneType === "country") && fareZonesOverlap(candidate, z));
+    if (clashing) throw new Error(`createFareZone: an Island zone can't overlap "${clashing.name}" (a ${clashing.zoneType} zone)`);
+  } else if (zoneType === "city" || zoneType === "country") {
+    const clashing = others.find((z) => z.zoneType === "island" && fareZonesOverlap(candidate, z));
+    if (clashing) throw new Error(`createFareZone: a ${zoneType} zone can't overlap "${clashing.name}" (an Island zone)`);
+  }
+}
+
+// Town zones (T107, relaxed 2026-11-01): must have exactly one declared
+// parent, which must be a real Country or Island zone in the SAME depot
+// group, and must geometrically OVERLAP it — full containment was the
+// original rule, but a live user report with a real example (a town
+// straddling the boundary between two zones, e.g. partly in an Island
+// zone and partly over open water/another zone) showed that was too
+// strict: "it should only have to be partially [within another zone]."
+// The declared parent still exists (for the town's own name/colour
+// grouping, and as the baseline fare a wholly-inside trip uses) — it just
+// no longer has to contain the whole shape. When a town's own area
+// genuinely spans two zones of different prices, DESIGN.md §9 now
+// documents the resolved rule (more expensive of the two wins, compared
+// per fare type) — not yet wired into any actual journey-fare
+// calculation, since that doesn't exist yet (RAPTOR/Phase 4), the same
+// "confirmed rule, not yet actionable" treatment this file already gives
+// other phase-gated rules (e.g. T107's own ferry-operator payout). A
+// non-town zone must never carry a parent at all (defensive — nothing in
+// this codebase currently lets that happen, but a null parentZoneId is
+// the only sane state for city/country/island).
+function assertValidTownParent(db: SaveDb, depotGroupId: number, zoneType: FareZoneType, points: FareZonePoint[], parentZoneId: number | null, excludeZoneId?: number): void {
+  if (zoneType !== "town") {
+    if (parentZoneId !== null) throw new Error("createFareZone: only a town zone can have a parent zone");
+    return;
+  }
+  if (parentZoneId === null) throw new Error("createFareZone: a town zone needs a parent Country or Island zone");
+  if (parentZoneId === excludeZoneId) throw new Error("createFareZone: a town zone can't be its own parent");
+  const parent = listFareZonesForDepotGroup(db, depotGroupId).find((z) => z.id === parentZoneId);
+  if (!parent) throw new Error(`createFareZone: no zone ${parentZoneId} in this depot group to be the town's parent`);
+  if (parent.zoneType !== "country" && parent.zoneType !== "island") {
+    throw new Error(`createFareZone: a town's parent must be a Country or Island zone, not ${parent.zoneType}`);
+  }
+  if (!fareZonesOverlap({ points }, parent)) {
+    throw new Error(`createFareZone: a town zone must at least partially overlap its parent "${parent.name}"`);
+  }
+}
 
 export function createFareZone(
   db: SaveDb,
@@ -2589,18 +3166,21 @@ export function createFareZone(
   zoneType: FareZoneType,
   points: FareZonePoint[],
   colour: string = DEFAULT_ZONE_COLOUR_BY_TYPE[zoneType],
+  parentZoneId: number | null = null,
 ): FareZone {
   if (points.length < 3) throw new Error("createFareZone: a zone needs at least 3 points");
   if (!HEX_COLOUR.test(colour)) throw new Error("createFareZone: colour must be #rrggbb");
+  assertNoIslandCityCountryOverlap(db, depotGroupId, zoneType, points);
+  assertValidTownParent(db, depotGroupId, zoneType, points, parentZoneId);
   const result = db
-    .prepare("INSERT INTO fare_zones (depot_group_id, name, zone_type, points, colour) VALUES (?, ?, ?, ?, ?)")
-    .run(depotGroupId, name, zoneType, JSON.stringify(points), colour);
-  return { id: Number(result.lastInsertRowid), depotGroupId, name, zoneType, points, colour };
+    .prepare("INSERT INTO fare_zones (depot_group_id, name, zone_type, points, colour, parent_zone_id) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(depotGroupId, name, zoneType, JSON.stringify(points), colour, parentZoneId);
+  return { id: Number(result.lastInsertRowid), depotGroupId, name, zoneType, points, colour, parentZoneId };
 }
 
 export function listFareZonesForDepotGroup(db: SaveDb, depotGroupId: number): FareZone[] {
   const rows = db
-    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones WHERE depot_group_id = ? ORDER BY id")
+    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour, parent_zone_id FROM fare_zones WHERE depot_group_id = ? ORDER BY id")
     .all(depotGroupId) as unknown as FareZoneRow[];
   return rows.map(fareZoneFromRow);
 }
@@ -2610,7 +3190,7 @@ export function listFareZonesForDepotGroup(db: SaveDb, depotGroupId: number): Fa
 // two different depot groups' own zones, which still share the same map).
 export function listAllFareZones(db: SaveDb): FareZone[] {
   const rows = db
-    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour FROM fare_zones ORDER BY id")
+    .prepare("SELECT id, depot_group_id, name, zone_type, points, colour, parent_zone_id FROM fare_zones ORDER BY id")
     .all() as unknown as FareZoneRow[];
   return rows.map(fareZoneFromRow);
 }
@@ -2619,8 +3199,21 @@ export function renameFareZone(db: SaveDb, zoneId: number, name: string): void {
   db.prepare("UPDATE fare_zones SET name = ? WHERE id = ?").run(name, zoneId);
 }
 
-export function setFareZoneType(db: SaveDb, zoneId: number, zoneType: FareZoneType): void {
-  db.prepare("UPDATE fare_zones SET zone_type = ? WHERE id = ?").run(zoneType, zoneId);
+// `parentZoneId` is required when retyping TO "town" and ignored (forced to
+// NULL) for every other type — a zone that stops being a town stops having
+// a parent, regardless of what's passed.
+export function setFareZoneType(db: SaveDb, zoneId: number, zoneType: FareZoneType, parentZoneId: number | null = null): void {
+  const zone = (
+    db.prepare("SELECT id, depot_group_id, name, zone_type, points, colour, parent_zone_id FROM fare_zones WHERE id = ?").get(zoneId) as unknown as
+      | FareZoneRow
+      | undefined
+  );
+  if (!zone) throw new Error(`setFareZoneType: no zone with id ${zoneId}`);
+  const points = JSON.parse(zone.points) as FareZonePoint[];
+  assertNoIslandCityCountryOverlap(db, zone.depot_group_id, zoneType, points, zoneId);
+  const resolvedParentId = zoneType === "town" ? parentZoneId : null;
+  assertValidTownParent(db, zone.depot_group_id, zoneType, points, resolvedParentId, zoneId);
+  db.prepare("UPDATE fare_zones SET zone_type = ?, parent_zone_id = ? WHERE id = ?").run(zoneType, resolvedParentId, zoneId);
 }
 
 export function setFareZoneColour(db: SaveDb, zoneId: number, colour: string): void {
@@ -2628,7 +3221,45 @@ export function setFareZoneColour(db: SaveDb, zoneId: number, colour: string): v
   db.prepare("UPDATE fare_zones SET colour = ? WHERE id = ?").run(colour, zoneId);
 }
 
+// Merging one zone into another (live user request, 2026-11-01: "how do i
+// merge zones into another, there is no way of doing this"). Confirmed via
+// AskUserQuestion before building, since getting this wrong risks real
+// geometry corruption: properly combining two polygons into one new outer
+// boundary ("union") is real geometry work this project has no library
+// for, and could produce a broken/self-intersecting shape — the user's
+// own choice was to NOT attempt that. This instead keeps both polygons
+// exactly as drawn and just relabels the source zone to match the
+// target's own name/type/colour, so the two shapes read as one merged
+// zone (same name, same colour, same type) without computing any new
+// boundary at all. The source zone's own row survives (never deleted),
+// so anything still referencing its id (a town's own parentZoneId) keeps
+// working — same reasoning parent_route_id's "clear the link, keep the
+// child" precedent follows elsewhere in this file, just with nothing
+// even needing to be cleared here. Town zones are excluded on either
+// side — a town's own containment/parent rules make a plain relabel the
+// wrong operation for it; merging Towns isn't what was asked for.
+export function mergeFareZone(db: SaveDb, sourceZoneId: number, targetZoneId: number): void {
+  if (sourceZoneId === targetZoneId) throw new Error("mergeFareZone: can't merge a zone into itself");
+  const row = db.prepare("SELECT id, depot_group_id, name, zone_type, points, colour, parent_zone_id FROM fare_zones WHERE id = ?");
+  const source = row.get(sourceZoneId) as unknown as FareZoneRow | undefined;
+  const target = row.get(targetZoneId) as unknown as FareZoneRow | undefined;
+  if (!source) throw new Error(`mergeFareZone: no zone with id ${sourceZoneId}`);
+  if (!target) throw new Error(`mergeFareZone: no zone with id ${targetZoneId}`);
+  if (source.depot_group_id !== target.depot_group_id) throw new Error("mergeFareZone: both zones must be in the same depot group");
+  if (source.zone_type === "town" || target.zone_type === "town") throw new Error("mergeFareZone: a town zone can't be merged this way");
+  const points = JSON.parse(source.points) as FareZonePoint[];
+  assertNoIslandCityCountryOverlap(db, source.depot_group_id, target.zone_type as FareZoneType, points, sourceZoneId);
+  db.prepare("UPDATE fare_zones SET name = ?, zone_type = ?, colour = ? WHERE id = ?").run(target.name, target.zone_type, target.colour, sourceZoneId);
+}
+
+// A town zone makes no sense once its parent is gone (its own fares are
+// entirely computed from the parent's figures — T107), so deleting a
+// Country/Island zone cascades to its own towns, unlike parent_route_id's
+// "clear the link, keep the child" precedent elsewhere in this file. No FK
+// ON DELETE CASCADE in SQLite here, so this is explicit.
 export function deleteFareZone(db: SaveDb, zoneId: number): void {
+  const children = db.prepare("SELECT id FROM fare_zones WHERE parent_zone_id = ?").all(zoneId) as unknown as { id: number }[];
+  for (const child of children) deleteFareZone(db, child.id);
   db.prepare("DELETE FROM fare_zones WHERE id = ?").run(zoneId);
 }
 
@@ -2636,50 +3267,69 @@ export function deleteFareZone(db: SaveDb, zoneId: number): void {
 // fare_configs' own SCHEMA comment above for why every field is nullable
 // and amounts are stored in pence. Field order here matches the SCHEMA's
 // own column order.
+// Reworked 2026-10-31 (live user design discussion) — see fare_configs'
+// own SCHEMA comment for the full reasoning: Airport Express replaces
+// "special service" with its own Single/Return; NETWORK has no price
+// fields of its own at all any more, only networkMarkupPercent (the
+// actual prices are computed from the Combined ones — fare-pricing.mts's
+// networkFareGBPPence); sightseeing gained its own two prices. Reworked
+// again the same day: `runsNightServices` is no longer stored here at all
+// — route types (routes.route_type) now drive whether a depot group
+// "runs night services" (it does iff it has any route with
+// route_type = 'night'), so there's nothing left to toggle manually;
+// callers that need this check `listRoutes` themselves (see
+// fare-pricing-panel.ts's fareRequirements()), the same way Airport
+// Express/Sightseeing/Long-distance gating now works too.
 export interface FareConfig {
   depotGroupId: number;
   citySingleGBPPence: number | null;
   beyondDepotGroupPerMileGBPPence: number | null;
   longDistanceBaseGBPPence: number | null;
   longDistancePerMileGBPPence: number | null;
-  specialServiceSingleGBPPence: number | null;
+  airportExpressSingleGBPPence: number | null;
+  airportExpressReturnGBPPence: number | null;
   nightExtraBaseGBPPence: number | null;
   nightExtraPerZoneGBPPence: number | null;
   lateGBPPence: number | null;
-  networkGBPPence: number | null;
+  networkMarkupPercent: number | null;
+  sightseeingDayGBPPence: number | null;
+  sightseeingSingleGBPPence: number | null;
   cityDayGBPPence: number | null;
   cityWeeklyGBPPence: number | null;
-  city28DayGBPPence: number | null;
   countryDayGBPPence: number | null;
   countryWeeklyGBPPence: number | null;
-  country28DayGBPPence: number | null;
   combinedDayGBPPence: number | null;
   combinedWeeklyGBPPence: number | null;
-  combined28DayGBPPence: number | null;
+  islandDayGBPPence: number | null;
+  islandWeeklyGBPPence: number | null;
+  islandLateGBPPence: number | null;
 }
 
-// Maps every FareConfig field (except depotGroupId) to its own column —
-// used by both the row-to-object reader and the dynamic partial-update
-// writer below, so the two can never silently drift apart.
+// Maps every nullable-number FareConfig field to its own column — used by
+// both the row-to-object reader and the dynamic partial-update writer
+// below, so the two can never silently drift apart.
 const FARE_CONFIG_COLUMNS: Record<Exclude<keyof FareConfig, "depotGroupId">, string> = {
   citySingleGBPPence: "city_single_gbp_pence",
   beyondDepotGroupPerMileGBPPence: "beyond_depot_group_per_mile_gbp_pence",
   longDistanceBaseGBPPence: "long_distance_base_gbp_pence",
   longDistancePerMileGBPPence: "long_distance_per_mile_gbp_pence",
-  specialServiceSingleGBPPence: "special_service_single_gbp_pence",
+  airportExpressSingleGBPPence: "airport_express_single_gbp_pence",
+  airportExpressReturnGBPPence: "airport_express_return_gbp_pence",
   nightExtraBaseGBPPence: "night_extra_base_gbp_pence",
   nightExtraPerZoneGBPPence: "night_extra_per_zone_gbp_pence",
   lateGBPPence: "late_gbp_pence",
-  networkGBPPence: "network_gbp_pence",
+  networkMarkupPercent: "network_markup_percent",
+  sightseeingDayGBPPence: "sightseeing_day_gbp_pence",
+  sightseeingSingleGBPPence: "sightseeing_single_gbp_pence",
   cityDayGBPPence: "city_day_gbp_pence",
   cityWeeklyGBPPence: "city_weekly_gbp_pence",
-  city28DayGBPPence: "city_28day_gbp_pence",
   countryDayGBPPence: "country_day_gbp_pence",
   countryWeeklyGBPPence: "country_weekly_gbp_pence",
-  country28DayGBPPence: "country_28day_gbp_pence",
   combinedDayGBPPence: "combined_day_gbp_pence",
   combinedWeeklyGBPPence: "combined_weekly_gbp_pence",
-  combined28DayGBPPence: "combined_28day_gbp_pence",
+  islandDayGBPPence: "island_day_gbp_pence",
+  islandWeeklyGBPPence: "island_weekly_gbp_pence",
+  islandLateGBPPence: "island_late_gbp_pence",
 };
 
 function emptyFareConfig(depotGroupId: number): FareConfig {
@@ -2696,9 +3346,9 @@ function emptyFareConfig(depotGroupId: number): FareConfig {
 // separate case from "config exists but nothing in it is set yet".
 export function getFareConfig(db: SaveDb, depotGroupId: number): FareConfig {
   const columns = Object.values(FARE_CONFIG_COLUMNS);
-  const row = db
-    .prepare(`SELECT ${columns.join(", ")} FROM fare_configs WHERE depot_group_id = ?`)
-    .get(depotGroupId) as Record<string, number | null> | undefined;
+  const row = db.prepare(`SELECT ${columns.join(", ")} FROM fare_configs WHERE depot_group_id = ?`).get(depotGroupId) as
+    | Record<string, number | null>
+    | undefined;
   if (!row) return emptyFareConfig(depotGroupId);
   const config = { depotGroupId } as FareConfig;
   for (const [key, column] of Object.entries(FARE_CONFIG_COLUMNS)) {
@@ -2721,6 +3371,20 @@ export function setFareConfigFields(db: SaveDb, depotGroupId: number, fields: Pa
     const column = FARE_CONFIG_COLUMNS[key];
     db.prepare(`UPDATE fare_configs SET ${column} = ? WHERE depot_group_id = ?`).run(value, depotGroupId);
   }
+}
+
+// Whether a depot group has at least one route of the given type — the
+// real source of truth for the fare panel's Night/Sightseeing/Airport
+// Express/Long-distance gating (route types, 2026-10-31), replacing the
+// old manual `runsNightServices` toggle entirely. Exposed as its own
+// function (not folded into getFareConfig) since it reads `routes`, not
+// `fare_configs` — a genuinely different table, kept visibly separate
+// rather than silently blended into one "config" object.
+export function depotGroupHasRouteType(db: SaveDb, depotGroupId: number, routeType: RouteType): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM routes WHERE depot_group_id = ? AND route_type = ? LIMIT 1")
+    .get(depotGroupId, routeType);
+  return row !== undefined;
 }
 
 // --- Country-zone single-fare bands (fare_country_zone_bands' own SCHEMA
@@ -2747,4 +3411,63 @@ export function listCountryZoneBands(db: SaveDb, depotGroupId: number): CountryZ
     .prepare("SELECT zone_count, price_gbp_pence FROM fare_country_zone_bands WHERE depot_group_id = ? ORDER BY zone_count")
     .all(depotGroupId) as unknown as { zone_count: number; price_gbp_pence: number }[];
   return rows.map((r) => ({ zoneCount: r.zone_count, priceGBPPence: r.price_gbp_pence }));
+}
+
+// --- Island-zone single-fare bands (T107, same shape as the country-zone
+// bands above — see fare_island_zone_bands' own SCHEMA comment for why
+// it's a separate table rather than reused) ---
+export interface IslandZoneBand {
+  zoneCount: number;
+  priceGBPPence: number;
+}
+
+export function setIslandZoneBand(db: SaveDb, depotGroupId: number, zoneCount: number, priceGBPPence: number): void {
+  if (zoneCount <= 0) throw new Error("setIslandZoneBand: zoneCount must be > 0");
+  db.prepare(
+    `INSERT INTO fare_island_zone_bands (depot_group_id, zone_count, price_gbp_pence) VALUES (?, ?, ?)
+     ON CONFLICT(depot_group_id, zone_count) DO UPDATE SET price_gbp_pence = excluded.price_gbp_pence`,
+  ).run(depotGroupId, zoneCount, priceGBPPence);
+}
+
+export function deleteIslandZoneBand(db: SaveDb, depotGroupId: number, zoneCount: number): void {
+  db.prepare("DELETE FROM fare_island_zone_bands WHERE depot_group_id = ? AND zone_count = ?").run(depotGroupId, zoneCount);
+}
+
+export function listIslandZoneBands(db: SaveDb, depotGroupId: number): IslandZoneBand[] {
+  const rows = db
+    .prepare("SELECT zone_count, price_gbp_pence FROM fare_island_zone_bands WHERE depot_group_id = ? ORDER BY zone_count")
+    .all(depotGroupId) as unknown as { zone_count: number; price_gbp_pence: number }[];
+  return rows.map((r) => ({ zoneCount: r.zone_count, priceGBPPence: r.price_gbp_pence }));
+}
+
+// --- Game clock (game_clock's own SCHEMA comment above; DESIGN.md §3) ---
+export interface GameClock {
+  accumulatedGameSeconds: number;
+  speedMultiplier: 1 | 4 | 10 | 20 | 60;
+  isPaused: boolean;
+}
+
+const DEFAULT_GAME_CLOCK: GameClock = { accumulatedGameSeconds: 0, speedMultiplier: 1, isPaused: false };
+
+export function getGameClock(db: SaveDb): GameClock {
+  const row = db.prepare("SELECT accumulated_game_seconds, speed_multiplier, is_paused FROM game_clock WHERE id = 1").get() as
+    | { accumulated_game_seconds: number; speed_multiplier: number; is_paused: number }
+    | undefined;
+  if (!row) return DEFAULT_GAME_CLOCK;
+  return {
+    accumulatedGameSeconds: row.accumulated_game_seconds,
+    speedMultiplier: row.speed_multiplier as GameClock["speedMultiplier"],
+    isPaused: row.is_paused !== 0,
+  };
+}
+
+// Always a full-row replace, never partial — unlike setFareConfigFields,
+// every field here changes together as one atomic tick/pause/speed
+// update from the clock engine (game-clock-engine.ts), not filled in by
+// the player one field at a time.
+export function setGameClock(db: SaveDb, clock: GameClock): void {
+  db.prepare(
+    `INSERT INTO game_clock (id, accumulated_game_seconds, speed_multiplier, is_paused) VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET accumulated_game_seconds = excluded.accumulated_game_seconds, speed_multiplier = excluded.speed_multiplier, is_paused = excluded.is_paused`,
+  ).run(clock.accumulatedGameSeconds, clock.speedMultiplier, clock.isPaused ? 1 : 0);
 }

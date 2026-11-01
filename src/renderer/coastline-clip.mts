@@ -1,0 +1,157 @@
+// Coastline clipping (31 October hand-off item 2, OPEN-ITEMS.md): "Zones
+// can be drawn out over sea using straight-line segments; when closed, any
+// part of the outline over water gets clipped back to the shoreline so the
+// finished zone is land-only with the coastline as its edge." Pure logic,
+// no maplibre-gl import — kept separate from fare-zone-drawing.ts (which
+// can't be unit-tested directly, since maplibre-gl has no Node-compatible
+// exports) the same way fare-pricing.mts's pure calc layer is kept
+// separate from fare-pricing-panel.ts's own UI.
+//
+// Real coastline geometry comes from the pipeline's coastline.bin
+// (rust/pipeline/src/coastline.rs) — assembled chains of natural=coastline
+// ways, not closed rings; see that file's own doc comment for the real
+// limits of the chain assembly itself.
+
+export interface FareZonePoint {
+  lon: number;
+  lat: number;
+}
+
+// Standard 2D segment-vs-segment intersection, treating lon/lat as flat —
+// the same approximation this project's existing point-in-polygon/
+// containment checks already make (fare-zone-drawing.ts's own
+// pointInRing/fullyContains), reasonable at this scale. Returns the
+// intersection's own t (0..1 along p1->p2) and point, or null if the
+// segments don't cross within both their own bounds.
+export function segmentIntersection(
+  p1: FareZonePoint,
+  p2: FareZonePoint,
+  p3: FareZonePoint,
+  p4: FareZonePoint,
+): { t: number; point: FareZonePoint } | null {
+  const d1x = p2.lon - p1.lon;
+  const d1y = p2.lat - p1.lat;
+  const d2x = p4.lon - p3.lon;
+  const d2y = p4.lat - p3.lat;
+  const denom = d1x * d2y - d1y * d2x;
+  if (Math.abs(denom) < 1e-12) return null; // parallel or degenerate
+  const dx = p3.lon - p1.lon;
+  const dy = p3.lat - p1.lat;
+  const t = (dx * d2y - dy * d2x) / denom;
+  const u = (dx * d1y - dy * d1x) / denom;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { t, point: { lon: p1.lon + t * d1x, lat: p1.lat + t * d1y } };
+}
+
+export interface CoastlineCrossing {
+  t: number;
+  chainIndex: number;
+  // Index of the coastline edge the crossing landed on: chain[edgeIndex]
+  // -> chain[edgeIndex + 1].
+  edgeIndex: number;
+  point: FareZonePoint;
+}
+
+export function findCoastlineCrossings(p1: FareZonePoint, p2: FareZonePoint, chains: FareZonePoint[][]): CoastlineCrossing[] {
+  const crossings: CoastlineCrossing[] = [];
+  for (let c = 0; c < chains.length; c++) {
+    const chain = chains[c];
+    for (let i = 0; i < chain.length - 1; i++) {
+      const hit = segmentIntersection(p1, p2, chain[i], chain[i + 1]);
+      if (hit) crossings.push({ t: hit.t, chainIndex: c, edgeIndex: i, point: hit.point });
+    }
+  }
+  crossings.sort((a, b) => a.t - b.t);
+  return crossings;
+}
+
+// Walks a coastline chain between two of its own edge indices (each
+// chain is an open polyline, not a closed ring — see coastline.rs — so
+// there's only ever one path between two points on it, no "shorter
+// direction" ambiguity to resolve).
+export function coastlineWalkBetween(
+  chain: FareZonePoint[],
+  fromEdge: number,
+  fromPoint: FareZonePoint,
+  toEdge: number,
+  toPoint: FareZonePoint,
+): FareZonePoint[] {
+  const walked: FareZonePoint[] = [fromPoint];
+  if (fromEdge <= toEdge) {
+    for (let i = fromEdge + 1; i <= toEdge; i++) walked.push(chain[i]);
+  } else {
+    for (let i = fromEdge; i > toEdge; i--) walked.push(chain[i]);
+  }
+  walked.push(toPoint);
+  return walked;
+}
+
+// Clips a drawn zone's own closed outline back to the real coastline
+// wherever one of its edges crosses open water. Deliberately bounded, not
+// a general polygon-boolean-intersection (no geometry library exists in
+// this project): only an edge crossing the SAME coastline chain exactly
+// twice gets its water-side portion replaced by a walk along that chain —
+// 0 crossings leaves the edge untouched (fully on land, or nowhere near
+// the coast); any other case (1 crossing, 3+, or crossings landing on
+// different chains — e.g. a genuine open-water crossing to an island
+// where the two shores belong to separate, unconnected coastline chains)
+// is left as the original straight edge rather than guessed at. A shape
+// that needs the harder case is better left for the player to notice and
+// adjust than silently gotten wrong.
+// Nearest point on any real coastline chain to a click, with a max-distance
+// cutoff — the click-time counterpart to clipRingToCoastline's own
+// after-the-fact clip. Added 2026-11-01, live bug report: "the fare zone
+// is meant to snap to the edge of the land, not be in the water after
+// completing it" — clipRingToCoastline only corrects an edge that crosses
+// the SAME coastline chain exactly twice (a bay being cut across), which
+// never applies to a genuine open-water crossing to a separate landmass
+// (Skye's own case: its coastline is its own chain, unconnected to the
+// mainland's), so a zone boundary meant to hug an island's own coast had
+// nothing pulling it onto the shoreline at all. Equirectangular projection
+// centred on the click's own latitude (consistent with
+// `point_to_segment_closest` in `rust/game-wasm/src/lib.rs`, close enough
+// at this scale that the two don't need to match bit-for-bit).
+export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: FareZonePoint[][], maxDistanceM: number): FareZonePoint | null {
+  const DEG_TO_RAD = Math.PI / 180;
+  const EARTH_RADIUS_M = 6_371_000;
+  const cosLat = Math.cos(point.lat * DEG_TO_RAD);
+  const toXY = (p: FareZonePoint): [number, number] => [p.lon * DEG_TO_RAD * cosLat * EARTH_RADIUS_M, p.lat * DEG_TO_RAD * EARTH_RADIUS_M];
+  const [px, py] = toXY(point);
+
+  let bestDist = Infinity;
+  let best: FareZonePoint | null = null;
+  for (const chain of coastlineChains) {
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [ax, ay] = toXY(chain[i]);
+      const [bx, by] = toXY(chain[i + 1]);
+      const dx = bx - ax;
+      const dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      const t = lenSq > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq)) : 0;
+      const cx = ax + t * dx;
+      const cy = ay + t * dy;
+      const dist = Math.hypot(px - cx, py - cy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { lon: (cx / (cosLat * EARTH_RADIUS_M)) / DEG_TO_RAD, lat: (cy / EARTH_RADIUS_M) / DEG_TO_RAD };
+      }
+    }
+  }
+  return bestDist <= maxDistanceM ? best : null;
+}
+
+export function clipRingToCoastline(points: FareZonePoint[], coastlineChains: FareZonePoint[][]): FareZonePoint[] {
+  if (coastlineChains.length === 0 || points.length < 3) return points;
+  const result: FareZonePoint[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % points.length];
+    result.push(p1);
+    const crossings = findCoastlineCrossings(p1, p2, coastlineChains);
+    if (crossings.length === 2 && crossings[0].chainIndex === crossings[1].chainIndex) {
+      const chain = coastlineChains[crossings[0].chainIndex];
+      result.push(...coastlineWalkBetween(chain, crossings[0].edgeIndex, crossings[0].point, crossings[1].edgeIndex, crossings[1].point));
+    }
+  }
+  return result;
+}

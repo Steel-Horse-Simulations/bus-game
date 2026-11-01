@@ -84,6 +84,87 @@ and tours. Island networks are therefore self-contained: a Mull depot runs Mull
 routes, and the ferry is where passengers arrive from rather than something the
 timetable depends on. Piers generate both local demand and ferry arrivals.
 
+**⚠ See §9's own flagged note** — T108 (2026-10-31, confirmed via many
+rounds of design discussion, real reference: Scottish Citylink's 923
+Glasgow–Cairnryan–Belfast service via Stena Line) designed **ferry-linked
+long-distance routes**, which directly assume the opposite of the line
+above for that one route category. Recorded here rather than silently
+reconciled — ask before resolving which is current:
+- A **long-distance** route can call at a ferry terminal and continue on
+  the far side as a **variation under the same route number** (923, not a
+  new number) — the player draws and times both legs as perfectly
+  ordinary routes; the game itself only supplies the ferry crossing
+  (real OSM ferry-route data, rendered as a dotted line, which also gives
+  the real distance for timing and ticket mileage — **built**, see the
+  ferry pipeline work, `rust/pipeline/src/ferry_routes.rs`).
+- **Not yet designed, a genuine open question**: this is the first
+  variation that must always be run by a **completely separate vehicle**
+  from its parent's own fleet, since the two sides of the crossing can
+  never physically reach each other — how that property is represented
+  on a variation, and how duty/vehicle auto-complete is told to respect
+  it and never try to chain the two, isn't designed yet.
+- The whole Glasgow→Belfast journey sells as **one through-fare** on the
+  existing long-distance formula (§9: base + per-mile) — not T107's
+  island per-mile ferry-ticket mechanism, a deliberately separate case.
+  Of that one fare, **87.5% goes to the ferry company, 12.5% stays with
+  the player** ("due to the complexities of running the long distance
+  ferry routes") — a bigger operator cut than T107's own 95%/5% island
+  split, since this is a major cross-border operator (Stena Line), not a
+  small island ferry company.
+- Scoped to **long-distance routes only** — not ordinary local/regional
+  services.
+
+**A third real confirmed case, strengthening the same flag**: the
+**Corran Ferry** (Corran↔Ardgour, near Fort William, run by **The
+Highland Council**, real timetable supplied 2026-11-01) is a short
+(~5 minute), frequent, local vehicle crossing — buses genuinely drive
+onto it as part of ordinary scheduled service, not just long-distance or
+island-linking routes. A **different revenue model from both T107 and
+T108**, confirmed directly:
+- The player pays Highland Council for crossings the **real way a
+  company actually does it**, not the casual cash fare: a **book of 30
+  tickets for £191.00 (excluding VAT), issued in the business's own
+  name** (buses/coaches get their own cheaper book rate — other
+  vehicle types pay £229.50 including VAT for the same 30), consumed
+  **3 tickets per crossing for a 17–35 seat bus, 5 tickets for 36+
+  seats** — an effective **£19.10 per crossing (17–35 seats) or £31.83
+  per crossing (36+ seats)**, each a discount on the casual cash fares
+  (£23/£35) that only apply to a one-off, non-company crossing. **A
+  16-seats-and-under bus/coach uses 2 tickets** (effective £12.73) — the
+  user's own rule, not in the real published table (which only breaks
+  out 17–35 and 36+), filling the gap below it at the same rate the real
+  table already gives a small van/lorry. With **no cut back** either
+  way, a pure operating cost, unlike T107/T108's own revenue splits.
+- **The ticket book only covers buses/coaches belonging to the Fort
+  William depot group** — it's issued in that one business's own name,
+  not a company-wide rate any depot group's vehicles can draw on.
+  **Private hire work pays the normal casual cash fare** (£23/£35,
+  not the book rate) even when it's the Fort William depot group's own
+  vehicle making the crossing — the book is for the depot group's own
+  scheduled service, not every use of its buses.
+- Passengers on that bus pay the real **£2 foot-passenger fare** to the
+  player, **in addition to** whatever ticket they already hold for the
+  journey — kept as ordinary player revenue, not shared with Highland
+  Council.
+- Real sailings: every 20–30 minutes through most of the day, Monday to
+  Saturday (6:30am–9:30pm) and Sunday (8:45am–9:30pm, a later start),
+  not running 25/26 December or 1/2 January.
+- Real vehicle restrictions apply from the timetable (two vessels, each
+  with its own weight/height/length limits for larger vehicles) —
+  relevant mainly to which coach a long-distance or contract service
+  could use, not ordinary buses.
+
+**Two more real Highland Council ferries, foot-passenger only** (real
+timetables supplied 2026-11-01) — shown on the map for completeness, but
+**buses can't use either and the player makes no money from them**:
+- **Fort William–Camusnagaul**: Monday–Saturday only (Sunday by special
+  arrangement, £100 charge), departures roughly every 2–2.5 hours
+  (08:00/10:30/12:20/16:15, plus a 17:30 request-only sailing).
+- **Cromarty–Nigg**: every 20–30 minutes through the day (from 08:00
+  weekdays/10:00 weekends until 1800), **seasonal — April to October
+  only**. Camper vans/motorhomes have real weight/length limits (4
+  tonnes, 6m) and motorhomes aren't carried at all (grounding risk).
+
 Where a route calls at a ferry terminal, individual services can be **locked to
 the ferry** so retiming never breaks the connection.
 
@@ -159,10 +240,11 @@ sensitivity, and to awareness (§10).
 
 Real time, with pause and speed controls.
 
-The calendar uses **28-day months of exactly four weeks**, so weekly rotas,
-weekly fare caps and 28-day tickets all line up and a 28-day ticket is precisely
-one month. A year is thirteen months. Anything annual — the MOT, the annual
-test — is defined as **364 days** rather than twelve months.
+The calendar uses **28-day months of exactly four weeks**, so weekly rotas
+and weekly fare caps line up with it cleanly (28-day tickets themselves were
+dropped from the fare model, 2026-10-31 — this is purely the calendar's own
+unit, unrelated). A year is thirteen months. Anything annual — the MOT, the
+annual test — is defined as **364 days** rather than twelve months.
 
 Game pace comes from the clock speed, not from shortening the calendar.
 
@@ -573,6 +655,18 @@ service"), not a separate one.
 route's vehicle type and livery requirements. A different type can be set,
 but only via manual override, and it **reverts to matching the parent**
 unless explicitly overridden.
+
+**A genuinely new kind of variation, not yet designed (T108, flagged
+2026-10-31):** every variation above assumes the same vehicle/duty could
+run it interchangeably with its parent or any other variation of that
+route. The far side of a ferry-linked long-distance route's crossing
+(§1 "Islands and ferries", §9) is the first variation that **must always
+be run by a completely separate vehicle**, physically based beyond the
+crossing — duty/vehicle auto-complete must never try to chain its duty
+with the parent route's own vehicles, since they can never physically
+reach each other. Exactly how this property is represented on a
+variation, and how auto-complete is told to respect it, is an open
+question — not guessed at here.
 
 **Timing points.** Identical to the parent before the split, since it's
 physically the same operation. After the split, the first timing point can be
@@ -1043,8 +1137,119 @@ number** rather than stacking as six separate bonuses.
 ## 9. Fares and ticketing
 
 Fare zones are drawn on the map by the player, in the style of Lothian's. Each
-zone is typed **city** or **country**. The **depot group** is the unit of ticket
-validity and of fare capping.
+zone is typed **city**, **country**, **island** or **town** (the last two
+added 2026-10-31, T107). The **depot group** is the unit of ticket validity
+and of fare capping.
+
+### Zone types
+
+- **City** — flat single fare, no zone counting.
+- **Country** — banded by zone count, bands set by the player.
+- **Island** — banded by zone count too, its own separate set of bands from
+  Country's. Geometrically exclusive with City/Country — an Island zone can
+  never share land with a City or Country zone — but a depot group can still
+  have an Island zone alongside City/Country zones elsewhere on its map; the
+  exclusion is purely geometric, not a depot-group-wide restriction.
+- **Town** — declares exactly one Country or Island zone as its parent,
+  never a City one, and must at least **partially overlap** it (relaxed
+  2026-11-01 — a live user report, with a real example, showed a town can
+  genuinely straddle the boundary into a second zone, so full containment
+  was dropped; it still needs some real overlap with its declared parent,
+  not none at all). Never independently priced: always **70% of its
+  parent zone's own 1-zone figure**, rounded up to the nearest 5p, for a
+  trip that stays entirely within the town. Once a journey leaves the
+  town and crosses into or through other zones, the town has no further
+  effect on zone-counting — it always just counts as 1 zone of its parent.
+  **Where a town's own area genuinely spans into a second, different
+  zone** (confirmed 2026-11-01): a trip touching the part of the town
+  that overlaps the second zone uses whichever of the two zones is more
+  expensive, compared **per fare type** (a Single might go one way, a
+  Weekly the other, independently) — not yet wired into any actual
+  journey-fare calculation, since that doesn't exist yet (RAPTOR, Phase
+  4); confirmed as the rule for whenever that's built, same "confirmed
+  but not yet actionable" treatment already given to other phase-gated
+  rules in this section (e.g. the ferry operator's monthly payout).
+
+### Ferry and joint tickets (T107, confirmed 2026-10-31)
+
+**⚠ Flagged inconsistency, not yet resolved — needs the user's own
+call:** this subsection assumes ordinary scheduled bus services cross by
+ferry as part of a normal journey (a joint ticket spanning the crossing,
+a ferry ticket bundled into a dayrider). That directly conflicts with
+this document's own existing "Islands and ferries" text (§1): "**Buses
+do not use ferries on service or contract work — only on private hire
+and tours.**" T107/T108 (2026-10-31, many confirmed rounds of
+`AskUserQuestion`, including the real Citylink 923 Cairnryan–Belfast
+service as a worked example) clearly assume the opposite for island and
+long-distance ferry crossings specifically. Documented here as given,
+without silently editing §1's older rule — ask before resolving which
+one is current.
+
+**Which mechanism applies is decided by whether the link is a ferry or a
+physical connection, not by the `depot_group_id` row**: two zones joined
+by road or bridge (even island↔mainland, e.g. Skye's own bridge) use the
+ordinary same-depot-group zone-crossing rule above. Two zones only
+reachable by ferry always need the ferry-ticket/joint-ticket mechanism
+below, even when they're technically the same depot group in the
+database (Arran, run by the Glasgow depot group, still needs it to reach
+Ardrossan, because the link is a ferry, not a road). Where an Island
+zone links to a Town zone and the two don't directly touch, the link is
+to whichever real ferry connection is nearest.
+
+**Joint day rider rate** (one zone's day rider + a rate × the other
+zone's day rider — the dearer zone's day rider is the base figure,
+50/50 split between the two zones/depot groups involved): **0.6x** when
+one side is a Town zone or an automatically-computed "most direct
+route" corridor through a Country zone (e.g. Skye + Fort William — the
+corridor is computed from the road network, never player-drawn); **0.7x**
+when linking two full Country/Island zones. Both **rounded up to the
+nearest 5p**, the same convention as Return and NETWORK.
+
+**Ferry tickets** — a separate charge from the joint day rider above, for
+the crossing itself: a real ferry operator (CalMac, Western Ferries,
+etc.) sets its own per-mile rate; the crossing's mileage is the real
+sailing-route distance, not player-entered. Sold as **Single or Return
+only** (no Day/Weekly of its own), and can be bundled into any dayrider,
+but **only one single-or-return per dayrider regardless of its own
+duration** — a 7-day dayrider still only gets 1 return. The player
+collects the full computed fare at time of sale; **95% is paid to the
+real ferry operator at month-end, 5% stays with the player** (deferred
+until Phase 5's finance system exists to hang the actual monthly payout
+on). The ferry fee is **always charged separately on top of whatever
+zone ticket is held, including NETWORK** — NETWORK bundles in Island
+zone *access*, but never the ferry crossing itself, since a different,
+real company runs the ferry. For a **same-depot-group** crossing (Arran
++ Ardrossan), the ferry ticket is the *only* extra cost beyond the
+Island zone's own fare — no joint-ticket rate applies, since it's one
+operator's own zones. For a **cross-depot-group** crossing (Skye +
+Mallaig/Fort William), the ferry ticket is **additional** on top of the
+joint day rider price — both charges apply together.
+
+### Flight commission (island and Donegal Loganair routes, T108)
+
+A separate mechanism from the ferry split above, confirmed 2026-10-31.
+When a passenger's journey uses a connecting bus (an Airport Express
+service or a NETWORK ticket) at **both** the departure and arrival end of
+a Loganair flight, **the airline pays the player 7.5% of the flight's own
+ticket price**, settled at month-end — the same deferred-until-Phase-5
+treatment as the ferry split, but the **direction is reversed**: there,
+the player collects the full fare and pays most of it away; here, the
+airline pays the player a minority commission for feeding it passengers.
+
+Scoped to **island airports (Kirkwall, Sumburgh, Stornoway, Benbecula,
+Barra, Tiree, Islay) and Donegal only** — mainland-to-mainland legs don't
+qualify. A flight's own ticket price is worked out per mile on the
+**straight-line (great-circle) distance** between the two airports,
+unlike a ferry's real sailing-route distance — the natural equivalent for
+point-to-point air travel, with no path to follow.
+
+**Exempt, no commission at all: Orkney's and Shetland's own inter-island
+hop networks** (Kirkwall↔Stronsay/Sanday/North Ronaldsay/Westray/Papa
+Westray/Eday, and the equivalent Tingwall-hub Shetland routes) — real
+lifeline services, consistent with this document's own "Island and
+remote-area review" (§10) already treating both as lifeline/mixed-subsidy
+areas. The 7.5% only applies to commercial mainland-hub routes
+(Kirkwall↔Aberdeen, Sumburgh↔Edinburgh, etc.), not these internal hops.
 
 ### Single fares
 
@@ -1052,15 +1257,25 @@ validity and of fare capping.
 |---|---|
 | Within a city zone group | Flat fare, no zone counting |
 | Within a country zone group | Banded by zone count, bands set by the player |
+| Within an island zone group | Banded by zone count, its own separate bands from country's |
+| Within a town zone | 70% of the parent zone's own 1-zone figure, rounded up to the nearest 5p |
 | Beyond the originating depot group | Fixed price per mile |
-| Long-distance services | No zones — base fare plus price per mile |
-| Special services (e.g. airport) | Flat fare regardless of zones |
+| Long-distance routes | No zones — base fare plus price per mile |
+| Airport Express routes | Flat single and flat return, each independently set — not the standard 1.6x return multiplier below |
+| Sightseeing | Its own two prices, entirely outside the zone system — see below |
 
 Where a journey crosses between city and country zones, the higher base price
 applies, then the additional price for the type of zone being travelled through.
 
-Night services add an extra base fee and an extra per-zone fee, both set by the
-player.
+**Return** is a fixed game constant, not a per-depot-group setting: **1.6x a
+single, rounded up to the nearest 5p** — except Airport Express, which has
+its own independently-set return fare instead (its real fares don't follow
+that ratio either, e.g. AIR's own Single £6/Return £8.50 is 1.4167x).
+
+Night services add an extra base fee and an extra per-zone fee on top of
+whatever the journey's own base single fare already is, both set by the
+player — shown only for a depot group that actually has a Night-type route
+(see "Route types and fares" below), not a manual per-service toggle.
 
 Lothian's real figures for reference: country singles are 1 zone (or 2 if A/B)
 £2.40, 2–3 zones £3.40, then £1 per zone to £6.40 at 6 zones; city singles a
@@ -1070,25 +1285,51 @@ flat £2.40; night singles 1 zone £3.50, 2–3 £5.50, 4–6 £8.50.
 A separate ticket type from the ordinary families, sold in two forms at
 different prices: a **hop-on hop-off day ticket** and a **single trip** round the
 loop. Sightseeing fares sit outside the zone system and outside capping.
+Shown only for a depot group with at least one Sightseeing-type route.
 
 ### Ticket families
-Single, return, day, weekly, 28-day, **LATE** (evening, priced between a single
-and a day ticket) and **NETWORK** (everything, including special services).
+Single, return, day, weekly, **LATE** (evening, priced between a single
+and a day ticket) and **NETWORK** (everything, including Airport Express).
+**28-day tickets were dropped entirely** (confirmed 2026-10-31) — the list
+above is complete, not a subset.
 
-Weekly and 28-day tickets are bought up front, after which the passenger travels
-free.
+Weekly tickets are bought up front, after which the passenger travels free
+for that week.
+
+### NETWORK
+Not an independently player-set price — a **percentage markup over the
+Combined (city+country) price**, applied identically to both Day and Weekly,
+rounded up to the nearest 5p. Only shown (and only needed) for a depot group
+that has both City and Country zones and more than 3 zones in total. A
+NETWORK ticket also covers travel on Island and Airport Express services as
+a coverage benefit — that doesn't change how the price itself is computed,
+which only ever reads the Combined price and the markup percentage.
 
 ### Capping
 Caps apply **automatically** once a passenger reaches them, behaving like a day
-ticket bought retroactively. Three tiers, each with a daily and a weekly figure:
-city zones (including special services), country zones, and city and country
-combined.
+ticket bought retroactively. Three tiers — city zones, country zones, and
+city and country combined — but **there are no separate cap figures to
+set**: each tier's own Day and Weekly ticket price doubles as its capping
+threshold. Island, Sightseeing and NETWORK all sit entirely outside this
+system, priced on their own with no capping at all.
 
 Lothian's figures for reference: City DAY £6.00, Country DAY £6.30, City&Country
 DAY £9.60; weekly £26.50 / £25.00 / £38.50.
 
 Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are in
 `reference/`.
+
+### Route types and fares
+Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
+Airport Express or Long-distance (UK-EXPANSION.md §10 for Night's own real
+operating window and its mandatory N-prefix numbering). Which fare sections
+above actually show in the fare-pricing panel is **derived from the depot
+group's real zones and routes**, never a manual toggle: Night fields need a
+Night-type route, Airport Express fields need an Airport Express-type
+route, Sightseeing fields need a Sightseeing-type route, Long-distance
+fields need a Long-distance-type route — the same derived-visibility
+principle City/Country/Island zone fields already use (shown only when
+that zone type actually exists on the map).
 
 ### £2 fare cap (Highland, SPT and Aberdeen)
 Modelled on the real Scottish schemes. Three zones (extended to Aberdeen,
@@ -1126,7 +1367,7 @@ capped zone is **not** a £4 crossing — each capped portion gets its own £2
 cap and the uncapped middle portion is charged normally, exactly as if it
 were two separate journeys.
 
-The cap applies to **single tickets only** — day, weekly, 28-day and return
+The cap applies to **single tickets only** — day, weekly and return
 tickets are unaffected. The driver sells whichever ticket is actually
 cheapest for the journeys the customer will make, so a capped single isn't
 sold in preference to a cheaper option that already exists.
@@ -1929,7 +2170,7 @@ Categories:
 
 | Revenue | Costs |
 |---|---|
-| Fares — singles and returns, day and LATE, weekly and 28-day, capping, concessionary reimbursement | Staff — drivers, engineering and stores, controllers and travel centre, overtime and loans, fleet elite payments |
+| Fares — singles and returns, day and LATE, weekly, NETWORK, capping, concessionary reimbursement | Staff — drivers, engineering and stores, controllers and travel centre, overtime and loans, fleet elite payments |
 | Contracts — council and event | Vehicles — fuel and energy, maintenance, parts stock, leasing |
 | Sightseeing | Property — depot, stand rental, stop fees, station upkeep |
 | Private hire | Marketing |

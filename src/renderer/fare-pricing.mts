@@ -29,9 +29,12 @@ export interface FareConfig {
   beyondDepotGroupPerMileGBPPence: number | null;
   longDistanceBaseGBPPence: number | null;
   longDistancePerMileGBPPence: number | null;
-  specialServiceSingleGBPPence: number | null;
+  airportExpressSingleGBPPence: number | null;
+  airportExpressReturnGBPPence: number | null;
   nightExtraBaseGBPPence: number | null;
   nightExtraPerZoneGBPPence: number | null;
+  sightseeingDayGBPPence: number | null;
+  sightseeingSingleGBPPence: number | null;
 }
 
 function requirePence(value: number | null, what: string): number {
@@ -73,12 +76,34 @@ export function longDistanceSingleFareGBPPence(config: FareConfig, miles: number
   return base + Math.round(perMile * miles);
 }
 
-// DESIGN.md §9 "Special services (e.g. airport): flat fare regardless of
-// zones" — a player-flagged special service (distinct from a real fixed
+// Airport Express (DESIGN.md §9's "special services (e.g. airport)",
+// narrowed to specifically the player-flaggable airport route type —
+// DESIGN.md §10 — confirmed 2026-10-31; distinct from a real fixed
 // contract like AIR/Airlink 100, which already has its own hardcoded real
-// fares elsewhere and doesn't go through this at all).
-export function specialServiceSingleFareGBPPence(config: FareConfig): number {
-  return requirePence(config.specialServiceSingleGBPPence, "the special-service flat fare");
+// fares elsewhere and doesn't go through this at all). Single and Return
+// are both independently player-set — NOT the standard 1.6x Return
+// multiplier below, since AIR's own real fares (§10) don't follow that
+// ratio either (Single £6, Return £8.50 — 1.4167x, not 1.6x), confirming
+// Airport Express's own Return genuinely needs its own figure.
+export function airportExpressSingleFareGBPPence(config: FareConfig): number {
+  return requirePence(config.airportExpressSingleGBPPence, "the Airport Express single fare");
+}
+
+export function airportExpressReturnFareGBPPence(config: FareConfig): number {
+  return requirePence(config.airportExpressReturnGBPPence, "the Airport Express return fare");
+}
+
+// DESIGN.md §9 "Sightseeing tickets... a separate ticket type from the
+// ordinary families, sold in two forms at different prices: a hop-on
+// hop-off day ticket and a single trip round the loop. Sightseeing fares
+// sit outside the zone system and outside capping" — both independently
+// player-set, no formula.
+export function sightseeingDayFareGBPPence(config: FareConfig): number {
+  return requirePence(config.sightseeingDayGBPPence, "the sightseeing hop-on hop-off day ticket");
+}
+
+export function sightseeingSingleFareGBPPence(config: FareConfig): number {
+  return requirePence(config.sightseeingSingleGBPPence, "the sightseeing single-trip fare");
 }
 
 // DESIGN.md §9 "Night services add an extra base fee and an extra
@@ -91,13 +116,49 @@ export function nightSurchargeGBPPence(config: FareConfig, zoneCount: number): n
   return extraBase + extraPerZone * zoneCount;
 }
 
+const FIVE_PENCE = 5;
+
+// Shared by the Return formula and the NETWORK markup below — both round
+// UP (never to nearest, never down) to the nearest 5p, per the user's own
+// confirmed wording for each.
+function roundUpToNearest5pGBPPence(amountGBPPence: number): number {
+  return Math.ceil(amountGBPPence / FIVE_PENCE) * FIVE_PENCE;
+}
+
 // Fixed game constant (confirmed by the user, 2026-10-30), not a
 // per-depot-group setting: "Return is 1.6x a single rounded up to the
 // nearest 5p." Rounding up (not to nearest) is deliberate — confirmed
 // wording, not assumed.
 const RETURN_MULTIPLIER = 1.6;
-const FIVE_PENCE = 5;
 
 export function returnFareGBPPence(singleFareGBPPence: number): number {
-  return Math.ceil((singleFareGBPPence * RETURN_MULTIPLIER) / FIVE_PENCE) * FIVE_PENCE;
+  return roundUpToNearest5pGBPPence(singleFareGBPPence * RETURN_MULTIPLIER);
+}
+
+// NETWORK (confirmed 2026-10-31): not an independently player-set price —
+// "city+country and Airport Express rolled into one as a separate more
+// expensive ticket... a percentage more than city+country... rounded up
+// to the nearest 5p... the same percentage on all types of ticket, day
+// 7-day etc." So NETWORK's own Day/Weekly prices (28-day tickets dropped
+// entirely, 2026-10-31) are each COMPUTED from the matching Combined
+// (city+country) price, times one
+// player-set markup percentage, not typed in directly — the "Airport
+// Express rolled in" part is a coverage statement (a NETWORK ticket also
+// covers Airport Express services), not a pricing input: the formula only
+// ever reads the Combined price and the percentage, never Airport
+// Express's own fares.
+export function networkFareGBPPence(combinedFareGBPPence: number, markupPercent: number): number {
+  return roundUpToNearest5pGBPPence(combinedFareGBPPence * (1 + markupPercent / 100));
+}
+
+// Town zones (T107, confirmed 2026-10-31): never independently priced —
+// always exactly 70% of the parent Country/Island zone's own matching
+// 1-zone figure (its banded single, or its Day/Weekly), rounded up
+// to the nearest 5p, the same convention as Return and NETWORK above. Once
+// a journey leaves the town and crosses into/through other zones, the town
+// has no effect on zone-counting at all — it always just counts as 1 zone
+// of its parent; that's a future RAPTOR-journey-planner concern (Phase 4's
+// planner doesn't exist yet), not something this function needs to model.
+export function townFareGBPPence(parentOneZoneFareGBPPence: number): number {
+  return roundUpToNearest5pGBPPence(parentOneZoneFareGBPPence * 0.7);
 }

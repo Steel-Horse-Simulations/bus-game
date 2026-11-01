@@ -330,10 +330,32 @@ export async function mountDutyPanel(router: Router): Promise<void> {
       // grouped by depot — a section header just needs to fire on change.
       if (duty.depotId !== lastDepotId) {
         const sectionHeader = document.createElement("div");
+        sectionHeader.style.display = "flex";
+        sectionHeader.style.alignItems = "center";
+        sectionHeader.style.gap = "6px";
         sectionHeader.style.fontWeight = "600";
         sectionHeader.style.borderBottom = "1px solid var(--border)";
         sectionHeader.style.paddingBottom = "4px";
-        sectionHeader.textContent = depotById(duty.depotId)?.name ?? `Depot ${duty.depotId}`;
+
+        const nameLabel = document.createElement("span");
+        nameLabel.textContent = depotById(duty.depotId)?.name ?? `Depot ${duty.depotId}`;
+        sectionHeader.appendChild(nameLabel);
+
+        const depotIdForClear = duty.depotId;
+        const clearAllButton = document.createElement("button");
+        clearAllButton.className = "btn btn-danger";
+        clearAllButton.style.marginLeft = "auto";
+        clearAllButton.style.fontWeight = "normal";
+        clearAllButton.textContent = "Clear all";
+        clearAllButton.title = "Delete every duty at this depot";
+        clearAllButton.addEventListener("click", async () => {
+          const toDelete = duties.filter((d) => d.depotId === depotIdForClear);
+          await Promise.all(toDelete.map((d) => window.duties.delete(d.id)));
+          if (toDelete.some((d) => d.id === activeDutyId)) activeDutyId = null;
+          await refresh();
+        });
+        sectionHeader.appendChild(clearAllButton);
+
         blocks.push({ el: sectionHeader, span: numCols, isHeader: true });
         lastDepotId = duty.depotId;
       }

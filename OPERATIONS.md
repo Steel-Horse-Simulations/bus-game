@@ -1539,6 +1539,19 @@ rail (§8b, "leaves the timetable alone and tells the player" where it can't
 solve congestion without breaking a locked constraint) — the commercial
 team has the identical constraint, just for a different kind of change.
 
+**Two more fixed guard rails, confirmed 2026-10-31 (T108) when
+ferry-linked long-distance routes were being designed:**
+- **A ferry connection time is a fixed anchor** the optimiser builds
+  around, never retimes — the same "ferry locks" category CLAUDE.md's own
+  hard-parts list already names, now with a concrete source: a route
+  calling at a ferry terminal (DESIGN.md §1 "Islands and ferries") is
+  timed against the real sailing, and the optimiser must never move that
+  journey in a way that breaks the connection.
+- **Skye's own real fixed-timetable services, and Route 398, must never
+  be touched by the commercial-team optimiser at all** — they always run
+  on their real, author-supplied timetables (UK-EXPANSION.md's Skye
+  content), not a candidate for retiming the way an ordinary route is.
+
 ## 14. Tour guides
 
 Casual staff paid **per tour**, hired externally or from travel centre staff.
@@ -1573,9 +1586,65 @@ Fuelling at the player's own depot is **cheaper**; fuelling on the road costs
 more, which quietly disadvantages outstations since a bus parked at one cannot be
 fuelled there.
 
-**Chargers** have limited capacity and are bought as the fleet grows. They share
-power: **two buses charging slowly, or one at 1.5x that speed**. Chargers need no
-maintenance and do not wear out.
+**Chargers** have limited capacity and are bought as the fleet grows. Chargers
+need no maintenance and do not wear out.
+
+**Per-charger power sharing** (real figures, confirmed 2026-11-01, replacing
+an earlier "two buses charging slowly, or one at 1.5x that speed"
+placeholder): each charger unit is **200kW of hardware capacity**, but caps
+a **single bus at 150kW**, not the full 200kW. With two buses plugged into
+the same unit, the split is **dynamic, not a fixed 100/100** — each bus
+draws whatever it can actually accept (see the SOC taper below), and the
+charger always pushes its full available 200kW across both if there's
+demand to absorb it. Two buses both still below 80% SOC genuinely do split
+100kW/100kW, since neither is tapered yet. But once one of them crosses
+80% and tapers down, the **other speeds up to take the freed capacity**
+(up to its own 150kW single-bus cap) — and when one finishes outright, the
+remaining bus gets the full 150kW. This is a property of one charger unit;
+the separate depot-wide grid connection limit still applies on top of it
+across every charger on site, below.
+
+**Yutong through-charging** (confirmed 2026-11-01, restricted to
+**Outstations, Tiny and Small depots only** — a Main depot's buses can't
+use it): Yutong's electric models can be **plugged into each other**,
+daisy-chaining up to
+**4 vehicles** off a single charger connection, sharing that one charger's
+power evenly between however many are chained in. The same dynamic
+reallocation as the two-bus floor-charger case above applies, generalised
+to the whole chain: while every chained bus is still below 80% SOC they
+split the charger's output evenly between them (so 4 Yutongs share 50kW
+each off one 200kW unit); as each one crosses 80% and tapers, its unused
+share gets redistributed across whichever chained buses can still accept
+it. The charger's own 150kW single-bus cap still applies to whichever
+vehicle in the chain is, at any moment, the only one left still drawing
+power.
+
+**Charging slows above 80% SOC** — real li-ion/LFP cell behaviour (the
+exact curve isn't published by any bus manufacturer; this is a reasonable
+stand-in, not a sourced figure, same caution as the diesel/hydrogen pump
+rates below being calibrated to reference points rather than a spec
+sheet): a bus charges at its full available rate (whatever the per-charger
+sharing rule above gives it) up to **80% SOC**, then **half that rate from
+80–90%**, then **a quarter of that rate from 90–100%**.
+
+**Depot-wide grid throttling** (confirmed 2026-11-01): the per-charger
+sharing rule above is local to one charger unit; the depot's own grid
+connection limit (below) is site-wide. When total demand across every
+charger on site would exceed that limit, **every charger throttles down
+equally** (the same proportional cut applied everywhere, not some buses
+prioritised over others) so the site's total draw stays within the grid
+connection — and **speeds back up** as buses finish or taper off and
+demand drops, the same way a single shared charger's two buses trade
+capacity above.
+
+**Battery storage covers grid shortfall** (confirmed 2026-11-01): if the
+depot has battery storage installed (above, £300/kWh), it discharges to
+make up the gap once the grid connection limit is reached, up to its own
+**max discharge rate of 1C** — a 100kWh battery can put out up to 100kW —
+reducing or avoiding the equal-throttling above rather than letting buses
+charge slower than they need to. The battery drains as it does this and
+needs its own overnight recharge window like anything else drawing off
+the same grid.
 
 **Charger hire.** The operations director can let outside companies, including
 hauliers, use depot chargers during the day while buses are out — modelled on
@@ -1593,6 +1662,17 @@ built at a stop, bus station or interchange the player owns** — the same
 ownership rule applies identically across all three site types (DESIGN.md
 §4, §5, §5a). This stop/station-level buffer is separate from a depot's own
 battery storage below, which is priced and capped per depot tier instead.
+
+**Pantograph power tiers** (confirmed 2026-11-01): a pantograph charging
+point comes in **100kW, 200kW or 300kW**, chosen per installation — each
+step up is an **upgrade** on top of the base £3,500-per-stop
+infrastructure price (VEHICLE-SPECS.md), not three separate flat prices.
+**£750 per level** if the higher tier is chosen at installation itself
+(so +£750 for 200kW, +£1,500 for 300kW, bought from new). Retrofitting an
+existing point up a level later costs more: **£1,250 for a single later
+upgrade** (100kW→200kW or 200kW→300kW), or **£2,000 to jump both levels in
+one later upgrade** (100kW→300kW directly — cheaper than two separate
+£1,250 single-level retrofits).
 
 ### Depot infrastructure
 
@@ -1616,6 +1696,36 @@ and covers every kind of depot capital infrastructure, not just energy.
   depot's grid connection limit is reached, more chargers can still be
   built, but every charger on site shares that same limit, so buses charge
   slower and some may not finish a full overnight charge.
+- **Drop-down (overhead) chargers**, for depots with more than 30 electric
+  buses (confirmed 2026-11-01): every electric vehicle beyond the 30th at
+  one depot needs its own dedicated overhead drop-down charger instead of
+  a floor one — there isn't physical space for 30+ individual floor
+  chargers and the buses to manoeuvre around them. Each drop-down charger
+  is **150kW, dedicated to a single bus** (no two-bus sharing — the
+  dynamic-split rule above is for floor chargers only), but still subject
+  to the same 80%+ SOC taper and the same depot-wide grid throttling as
+  every other charger on site. Drop-down chargers need an overhead
+  **framework (gantry)** to mount them, built in **rows of 5** — the
+  gantry is a one-off structural cost **per row**, separate from the
+  £3,500-per-unit charger price (below), which still applies per
+  drop-down charger exactly as it does for a floor one. Chargers within a
+  row don't all have to be bought at once — the framework can sit
+  under-populated while the fleet grows into it — but the **gantry's own
+  cost is charged once per complete row of 5**, whether or not every
+  charger in that row is filled yet. Build time **2 weeks**; price
+  **£13,000 per row of 5** (confirmed 2026-11-01 — a simple steel
+  structure, "nothing fancy").
+- **Depot charging capacity display** (confirmed 2026-11-01): a depot's
+  own overview shows its **maximum simultaneous charging capacity** — the
+  number of buses it can have plugged in and charging at once, not how
+  fast. This is a pure count, unaffected by the depot-wide grid throttling
+  above (which only slows charging down, never blocks a bus from plugging
+  in): **(floor chargers × 2) + (drop-down chargers × 1)**. At an
+  Outstation, Tiny or Small depot, Yutong through-charging (above) can
+  push an individual floor charger's own occupancy up to 4 instead of 2,
+  but that depends on which vehicles are actually plugged in at the time,
+  so it's shown as a live bonus on top of this headline figure, not baked
+  into it.
 
 **Prices** (one-off, per unit, not monthly):
 
@@ -1625,12 +1735,16 @@ and covers every kind of depot capital infrastructure, not just energy.
 | Diesel tank | £8,000 for the 10,000-litre minimum, then **£4,000 per extra 5,000-litre step** |
 | Hydrogen pump | £20,400 (1.7× the diesel pump) |
 | Hydrogen tank | £12,750 for the 1,500kg minimum, then **£4,250 per extra 500kg** (≈£8.50/kg — 1.7× the diesel tank's own per-litre rate, for equivalent bus range) |
-| Charger point | £3,500 |
+| Charger point (floor or drop-down) | £3,500 |
+| Overhead gantry (drop-down chargers, per row of 5) | £13,000 |
 | Grid connection — 100kW | £15,000 |
 | Grid connection — 250kW | £40,000 |
 | Grid connection — 500kW | £90,000 |
 | Grid connection — 1MW | £190,000 |
 | Grid connection — 2MW | £400,000 |
+| Grid connection — 2.5MW | £500,000 |
+| Grid connection — 3MW | £600,000 |
+| Grid connection — 3.5MW | £700,000 |
 | Solar | £1,100 per kW |
 | Battery | £300 per kWh |
 | Workshop bay | £25,000 (needs staff, §9 "Engineering and maintenance") |
@@ -1640,14 +1754,21 @@ and covers every kind of depot capital infrastructure, not just energy.
 
 **Caps per depot tier** (depot tiers themselves are §2 "Depots" → "Types" —
 an outstation has no staff and cannot fuel, clean or maintain anything at
-all, so none of this table applies there beyond its existing overnight
-parking):
+all beyond electric charging (below), so none of this table applies there
+otherwise, beyond its existing overnight parking):
 
 | Tier | Caps |
 |---|---|
-| Tiny depot | Parking 10, wash bay 1, **nothing else** |
+| Outstation | Overnight parking only (§2's own 5-bus cap), charger points 2, grid up to 100kW, **nothing else** |
+| Tiny depot | Parking 10, wash bay 1, charger points 5, grid up to 100kW, **nothing else** |
 | Small depot | Parking 40, diesel pump 1, hydrogen pump 1, charger points uncapped, grid up to 500kW, workshop bay 2, inspection pit 1, wash bay 1 |
-| Main depot | Parking uncapped, diesel pumps 12, hydrogen pumps uncapped, charger points uncapped, grid up to 2MW, workshop bays 12, inspection pits 6, wash bays 4 |
+| Main depot | Parking uncapped, diesel pumps 12, hydrogen pumps uncapped, charger points uncapped, grid up to 3.5MW, workshop bays 12, inspection pits 6, wash bays 4 |
+
+Outstations and Tiny depots getting charger points at all is a
+2026-11-01 change — electric buses need overnight charging regardless of
+staffing, unlike diesel/hydrogen refuelling which genuinely needs a
+pump and someone to run it. Both tiers are capped to the smallest grid
+tier (100kW) since they're small sites with no other infrastructure.
 
 Solar, battery, diesel tanks and hydrogen tanks have **no cap at any tier
 except tiny**, which can have **none** of them at all.

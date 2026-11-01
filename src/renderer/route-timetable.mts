@@ -29,9 +29,11 @@ const MINUTES_PER_DAY = 24 * 60;
 
 // A service is defined by a start and end time of day, with frequency
 // generating everything between (DESIGN.md §7 "Defining a service").
-// Deliberately capped within one calendar day — a service running past
-// midnight needs the day-crossing handling Airlink 100's real overnight
-// timetable has, which is out of scope for this generator.
+// `endMinutes < startMinutes` means the service **wraps past midnight**
+// (confirmed 2026-11-01, live user report — night services genuinely need
+// a single band like 23:45→03:45, not two artificial same-day bands
+// stitched together) rather than being rejected outright, which is what
+// this function used to do unconditionally.
 export function validateFrequency(
   startMinutes: number,
   endMinutes: number,
@@ -46,15 +48,18 @@ export function validateFrequency(
   if (!Number.isInteger(endMinutes) || endMinutes < 0 || endMinutes >= MINUTES_PER_DAY) {
     return "The end time must be within a single day.";
   }
-  if (endMinutes < startMinutes) {
-    return "The end time can't be before the start time.";
-  }
   return null;
 }
 
 // Every departure a service generates, in minutes from midnight —
 // DESIGN.md §7's "frequency is a generator that writes repeated departures
-// into the timetable, not an alternative model."
+// into the timetable, not an alternative model." A wrapping service
+// (endMinutes < startMinutes) generates into the next day's minutes
+// first, then wraps each one back into 0–1439 for output — e.g.
+// 23:45→03:45 every 30 produces [1425, 1455→15, 1485→45, ...], matching
+// how the rest of this file already treats "minutes" as a flat 0–1439 set
+// regardless of generation order (validateNightWindow and
+// validateNightFinishTime already reason about wraparound this same way).
 export function generateDepartureMinutes(
   startMinutes: number,
   endMinutes: number,
@@ -62,8 +67,9 @@ export function generateDepartureMinutes(
 ): number[] {
   const error = validateFrequency(startMinutes, endMinutes, intervalMinutes);
   if (error) throw new Error(error);
+  const effectiveEnd = endMinutes < startMinutes ? endMinutes + MINUTES_PER_DAY : endMinutes;
   const out: number[] = [];
-  for (let t = startMinutes; t <= endMinutes; t += intervalMinutes) out.push(t);
+  for (let t = startMinutes; t <= effectiveEnd; t += intervalMinutes) out.push(t % MINUTES_PER_DAY);
   return out;
 }
 
@@ -85,16 +91,37 @@ export interface TimeBand {
 }
 
 // Bands may touch (one's end equals the next's start — the natural shape
-// of contiguous bands covering a whole day) but not overlap.
-export function validateTimeBands(bands: readonly TimeBand[]): string | null {
-  if (bands.length === 0) {
-    return "At least one time-of-day band is needed.";
+// of contiguous bands covering a whole day) but not overlap. An empty band
+// list is valid on its own (2026-10-31, live user request: "when making
+// timetables I should be able to add custom departures without having to
+// have a time band") — a timetable built entirely from custom departures,
+// with no generator band at all, is a real, legitimate shape; the combined
+// "needs at least a band or a custom departure" rule is enforced where
+// both are in scope together (the save flow), not here.
+//
+// A wrapping band (endMinutes < startMinutes, confirmed 2026-11-01) is
+// split into its two real same-day pieces — [start, 1440) and [0, end] —
+// before the overlap check, so a band like 23:45→03:45 correctly overlaps
+// a 03:00→06:00 band (via its [0,225] piece) without the sort-by-start
+// trick that works for ordinary bands putting its two halves on opposite
+// ends of the sorted list and never comparing them to what's actually
+// adjacent in real time.
+function daySubIntervals(b: TimeBand): { startMinutes: number; endMinutes: number }[] {
+  if (b.endMinutes < b.startMinutes) {
+    return [
+      { startMinutes: b.startMinutes, endMinutes: MINUTES_PER_DAY },
+      { startMinutes: 0, endMinutes: b.endMinutes },
+    ];
   }
+  return [{ startMinutes: b.startMinutes, endMinutes: b.endMinutes }];
+}
+
+export function validateTimeBands(bands: readonly TimeBand[]): string | null {
   for (const b of bands) {
     const error = validateFrequency(b.startMinutes, b.endMinutes, b.intervalMinutes);
     if (error) return error;
   }
-  const sorted = [...bands].sort((a, b) => a.startMinutes - b.startMinutes);
+  const sorted = bands.flatMap(daySubIntervals).sort((a, b) => a.startMinutes - b.startMinutes);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].startMinutes < sorted[i - 1].endMinutes) {
       return "Time-of-day bands can't overlap.";
@@ -105,13 +132,16 @@ export function validateTimeBands(bands: readonly TimeBand[]): string | null {
 
 // Every departure across every band, merged and de-duplicated (two
 // touching bands sharing an exact boundary minute would otherwise both
-// generate it) and sorted into one ascending list.
+// generate it) and sorted into one ascending list. A wrapping band
+// (endMinutes < startMinutes) generates past midnight the same way
+// generateDepartureMinutes does, above.
 export function generateDepartureMinutesForBands(bands: readonly TimeBand[]): number[] {
   const error = validateTimeBands(bands);
   if (error) throw new Error(error);
   const out = new Set<number>();
   for (const b of bands) {
-    for (let t = b.startMinutes; t <= b.endMinutes; t += b.intervalMinutes) out.add(t);
+    const effectiveEnd = b.endMinutes < b.startMinutes ? b.endMinutes + MINUTES_PER_DAY : b.endMinutes;
+    for (let t = b.startMinutes; t <= effectiveEnd; t += b.intervalMinutes) out.add(t % MINUTES_PER_DAY);
   }
   return [...out].sort((a, b) => a - b);
 }
@@ -145,6 +175,52 @@ export function mergeCustomDepartures(
   customMinutes: readonly number[],
 ): number[] {
   return [...new Set([...minutes, ...customMinutes])].sort((a, b) => a - b);
+}
+
+// Route types (2026-10-31, tightened 2026-11-01): a Night-type route's
+// whole timetable — every band-generated minute AND every custom
+// departure — has to fall within the real window UK-EXPANSION.md §10
+// gives ("Operating window: typically 2345–0400"), wrapping past
+// midnight, but the *last* departure must be no later than 03:45, not
+// 04:00 — 1425 = 23:45, 225 = 03:45 (minutes from midnight, same
+// convention as everything else in this file). See
+// NIGHT_FINISH_LATEST_MINUTES below for the separate "must actually
+// arrive by 04:15" rule, which needs the route's running time and so
+// can't live in this departure-only check.
+const NIGHT_WINDOW_START_MINUTES = 23 * 60 + 45;
+const NIGHT_WINDOW_END_MINUTES = 3 * 60 + 45;
+
+export function validateNightWindow(minutes: readonly number[]): string | null {
+  const outside = minutes.find((m) => m < NIGHT_WINDOW_START_MINUTES && m > NIGHT_WINDOW_END_MINUTES);
+  if (outside === undefined) return null;
+  const hh = String(Math.floor(outside / 60)).padStart(2, "0");
+  const mm = String(outside % 60).padStart(2, "0");
+  return `A Night-type route's timetable must stay within 23:45–03:45 — ${hh}:${mm} is outside that window.`;
+}
+
+// The latest a Night-type route's last service may actually arrive at its
+// final destination — confirmed 2026-11-01 as a separate, later cutoff
+// from the last-departure one above (03:45 to start, 04:15 to finish).
+// Takes the route's own running time (seconds, point 0 to the final
+// point) since that's the only way to know when the *latest* departure
+// actually finishes. Only the latest departure needs checking: every
+// earlier departure in the same overnight window finishes earlier too.
+const NIGHT_FINISH_LATEST_MINUTES = 4 * 60 + 15;
+
+export function validateNightFinishTime(minutes: readonly number[], runningTimeSeconds: number): string | null {
+  if (minutes.length === 0) return null;
+  const effectiveMinutesSinceWindowStart = (m: number) => (m - NIGHT_WINDOW_START_MINUTES + 1440) % 1440;
+  const latestDeparture = minutes.reduce((latest, m) =>
+    effectiveMinutesSinceWindowStart(m) > effectiveMinutesSinceWindowStart(latest) ? m : latest,
+  );
+  const runningMinutes = Math.ceil(runningTimeSeconds / 60);
+  const finishEffective = effectiveMinutesSinceWindowStart(latestDeparture) + runningMinutes;
+  const maxFinishEffective = effectiveMinutesSinceWindowStart(NIGHT_FINISH_LATEST_MINUTES);
+  if (finishEffective <= maxFinishEffective) return null;
+  const finishMinute = (latestDeparture + runningMinutes) % 1440;
+  const hh = String(Math.floor(finishMinute / 60)).padStart(2, "0");
+  const mm = String(finishMinute % 60).padStart(2, "0");
+  return `A Night-type route's last service departs at ${String(Math.floor(latestDeparture / 60)).padStart(2, "0")}:${String(latestDeparture % 60).padStart(2, "0")} and wouldn't finish until ${hh}:${mm} — the last service must finish by 04:15.`;
 }
 
 // DESIGN.md §7's own suggestion of the shape ("AM peak, inter-peak, PM

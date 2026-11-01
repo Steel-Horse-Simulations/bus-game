@@ -4,7 +4,33 @@
 // (DESIGN.md: "bands set by the player"), stored as whole pence
 // (fare_configs' own SCHEMA comment in db.mts) but edited here in pounds,
 // since nobody wants to type "240" to mean £2.40.
+//
+// Reworked 2026-10-31 after a live user design discussion:
+// (1) Fields are now gated on whether the depot group actually has a zone
+//     of that type — a depot group with no city zones (Skye) doesn't need
+//     city fields cluttering the panel. (2) Any field the depot group
+//     genuinely needs but hasn't set yet is surfaced two ways: the
+//     toggle button gets a red border if ANY depot group is missing
+//     something, and the depot-group dropdown marks each affected group
+//     with a 🔴 prefix — `createDropdown` only takes plain strings, so
+//     this is a label prefix, not a drawn ring, the simplest way to get
+//     a real visual marker without changing a shared component many
+//     other panels also use. (3) Airport Express replaces "special
+//     service" with its own Single/Return. (4) NETWORK is no longer
+//     player-typed at all — it's a percentage markup on the Combined
+//     price, computed and shown read-only (fare-pricing.mts's
+//     networkFareGBPPence). (5) Sightseeing gained its own two prices,
+//     per DESIGN.md's already-specified shape.
+//
+// Reworked again the same day (route types): Night/Airport Express/
+// Sightseeing/Long-distance sections are no longer a manual toggle or
+// shown unconditionally — each is gated on the depot group actually
+// having a route of that type (routes.routeType), the same derived
+// principle City/Country/Island zones already used. The old "runs night
+// services" checkbox is gone entirely; routes drive it now.
 import { createDropdown } from "./dropdown";
+import { networkFareGBPPence, townFareGBPPence } from "./fare-pricing.mts";
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 function penceToPoundsString(pence: number | null): string {
   if (pence === null) return "";
@@ -23,12 +49,89 @@ function poundsStringToPence(value: string): number | null {
   return Math.round(pounds * 100);
 }
 
+function formatPence(pence: number | null): string {
+  return pence === null ? "—" : `£${(pence / 100).toFixed(2)}`;
+}
+
+const MISSING_MARKER = "🔴 ";
+
+// The one shared rule behind both field visibility (render, below) and
+// the missing-field indicator — a depot group's own real zones/routes
+// decide what it actually needs, so the two can never disagree about
+// what "needed" means. Reworked 2026-10-31 (route types): Night/Airport
+// Express/Sightseeing/Long-distance are no longer manual toggles or
+// shown unconditionally — each is gated on the depot group actually
+// having a route of that type (routes.routeType), the same derived
+// principle this already used for City/Country/Island zones.
+export function fareRequirements(zones: FareZone[], routes: Route[], config: FareConfig) {
+  const hasCity = zones.some((z) => z.zoneType === "city");
+  const hasCountry = zones.some((z) => z.zoneType === "country");
+  const hasIsland = zones.some((z) => z.zoneType === "island");
+  const needsNight = routes.some((r) => r.routeType === "night");
+  return {
+    hasCity,
+    hasCountry,
+    hasIsland,
+    needsCombined: hasCity && hasCountry,
+    needsNetwork: hasCity && hasCountry && zones.length > 3,
+    needsNight,
+    needsIslandNight: needsNight && hasIsland,
+    needsAirportExpress: routes.some((r) => r.routeType === "airport_express"),
+    needsSightseeing: routes.some((r) => r.routeType === "sightseeing"),
+    needsLongDistance: routes.some((r) => r.routeType === "long_distance"),
+  };
+}
+
+export function missingFields(zones: FareZone[], routes: Route[], bands: CountryZoneBand[], islandBands: IslandZoneBand[], config: FareConfig): string[] {
+  const req = fareRequirements(zones, routes, config);
+  const missing: string[] = [];
+  if (req.hasCity) {
+    if (config.citySingleGBPPence === null) missing.push("City single fare");
+    if (config.cityDayGBPPence === null) missing.push("City Day");
+    if (config.cityWeeklyGBPPence === null) missing.push("City Weekly");
+  }
+  if (req.hasCountry) {
+    if (bands.length === 0) missing.push("Country zone bands");
+    if (config.countryDayGBPPence === null) missing.push("Country Day");
+    if (config.countryWeeklyGBPPence === null) missing.push("Country Weekly");
+  }
+  if (req.needsCombined) {
+    if (config.combinedDayGBPPence === null) missing.push("Combined Day");
+    if (config.combinedWeeklyGBPPence === null) missing.push("Combined Weekly");
+  }
+  if (req.needsNetwork && config.networkMarkupPercent === null) missing.push("Network markup");
+  if (req.needsNight) {
+    if (config.nightExtraBaseGBPPence === null) missing.push("Night extra base fee");
+    if (config.nightExtraPerZoneGBPPence === null) missing.push("Night extra per zone");
+    if (config.lateGBPPence === null) missing.push("LATE");
+  }
+  if (req.hasIsland) {
+    if (islandBands.length === 0) missing.push("Island zone bands");
+    if (config.islandDayGBPPence === null) missing.push("Island Day");
+    if (config.islandWeeklyGBPPence === null) missing.push("Island Weekly");
+  }
+  if (req.needsIslandNight && config.islandLateGBPPence === null) missing.push("Island LATE");
+  if (req.needsAirportExpress) {
+    if (config.airportExpressSingleGBPPence === null) missing.push("Airport Express Single");
+    if (config.airportExpressReturnGBPPence === null) missing.push("Airport Express Return");
+  }
+  if (req.needsSightseeing) {
+    if (config.sightseeingDayGBPPence === null) missing.push("Sightseeing day ticket");
+    if (config.sightseeingSingleGBPPence === null) missing.push("Sightseeing single");
+  }
+  if (req.needsLongDistance) {
+    if (config.longDistanceBaseGBPPence === null) missing.push("Long distance base fare");
+    if (config.longDistancePerMileGBPPence === null) missing.push("Long distance per mile");
+  }
+  return missing;
+}
+
 export async function mountFarePricingPanel(): Promise<void> {
   const toggle = document.createElement("button");
   toggle.className = "btn";
   toggle.textContent = "Fare pricing";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   // Confirmed live (2026-10-31) that 1400px overlapped "Place stop"
   // (1379.9-1456px) — every other bottom toggle button's own real
   // rendered position was measured first this time, not guessed; 1600px
@@ -64,22 +167,58 @@ export async function mountFarePricingPanel(): Promise<void> {
   let selectedDepotGroupId: number | null = null;
   let config: FareConfig | null = null;
   let bands: CountryZoneBand[] = [];
+  let islandBands: IslandZoneBand[] = [];
+  let zones: FareZone[] = [];
+  let routes: Route[] = [];
+  // Missing-field count per depot group, across ALL groups — drives the
+  // toggle's red border and the dropdown's 🔴 markers. Recomputed
+  // whenever anything is saved, not just on panel open, so the markers
+  // never go stale while the panel stays open.
+  let missingByGroup = new Map<number, string[]>();
   let errorMessage = "";
 
   function currentDepotGroup(): DepotGroup | undefined {
     return depotGroups.find((g) => g.id === selectedDepotGroupId);
   }
 
+  async function reloadMissingIndicators(): Promise<void> {
+    const allRoutes = await window.routes.list();
+    const entries = await Promise.all(
+      depotGroups.map(async (g) => {
+        const [groupZones, groupConfig, groupBands, groupIslandBands] = await Promise.all([
+          window.fareZones.listForDepotGroup(g.id),
+          window.farePricing.getConfig(g.id),
+          window.farePricing.listCountryZoneBands(g.id),
+          window.farePricing.listIslandZoneBands(g.id),
+        ]);
+        const groupRoutes = allRoutes.filter((r) => r.depotGroupId === g.id);
+        return [g.id, missingFields(groupZones, groupRoutes, groupBands, groupIslandBands, groupConfig)] as const;
+      }),
+    );
+    missingByGroup = new Map(entries);
+    const anyMissing = [...missingByGroup.values()].some((m) => m.length > 0);
+    toggle.style.border = anyMissing ? "2px solid #ef4444" : "";
+  }
+
   async function reloadConfig(): Promise<void> {
     if (selectedDepotGroupId === null) {
       config = null;
       bands = [];
+      islandBands = [];
+      zones = [];
+      routes = [];
       return;
     }
-    [config, bands] = await Promise.all([
+    let allRoutes: Route[];
+    [config, bands, islandBands, zones, allRoutes] = await Promise.all([
       window.farePricing.getConfig(selectedDepotGroupId),
       window.farePricing.listCountryZoneBands(selectedDepotGroupId),
+      window.farePricing.listIslandZoneBands(selectedDepotGroupId),
+      window.fareZones.listForDepotGroup(selectedDepotGroupId),
+      window.routes.list(),
     ]);
+    routes = allRoutes.filter((r) => r.depotGroupId === selectedDepotGroupId);
+    await reloadMissingIndicators();
   }
 
   function showError(err: unknown): void {
@@ -87,8 +226,7 @@ export async function mountFarePricingPanel(): Promise<void> {
   }
 
   // One label + £ input + Set button, sharing the save/error/re-render
-  // plumbing every field below needs — reduces this panel's own 18 fields
-  // plus the band table to one repeated shape instead of 18 near-copies.
+  // plumbing every field below needs.
   function moneyField(container: HTMLElement, label: string, currentPence: number | null, onSet: (pence: number | null) => Promise<void>): void {
     const row = document.createElement("div");
     row.style.display = "flex";
@@ -144,67 +282,22 @@ export async function mountFarePricingPanel(): Promise<void> {
     container.appendChild(heading);
   }
 
-  function render(): void {
-    body.replaceChildren();
-
-    if (depotGroups.length === 0) {
-      const note = document.createElement("div");
-      note.style.color = "var(--text-muted)";
-      note.textContent = "Create a depot group first — fares belong to one.";
-      body.appendChild(note);
-      return;
-    }
-
-    const groupLabel = document.createElement("div");
-    groupLabel.className = "label-muted";
-    groupLabel.textContent = "Depot group";
-    body.appendChild(groupLabel);
-
-    const groupDropdown = createDropdown(
-      depotGroups.map((g) => g.name),
-      currentDepotGroup()?.name ?? depotGroups[0].name,
-      async (name) => {
-        selectedDepotGroupId = depotGroups.find((g) => g.name === name)?.id ?? null;
-        await reloadConfig();
-        render();
-      },
-    );
-    groupDropdown.el.style.marginBottom = "8px";
-    body.appendChild(groupDropdown.el);
-
-    if (!config) return;
-    const cfg = config;
-    const groupId = selectedDepotGroupId!;
-
-    sectionHeading(body, "Single fares");
-    moneyField(body, "City (flat)", cfg.citySingleGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { citySingleGBPPence: pence }),
-    );
-    moneyField(body, "Beyond depot group (per mile)", cfg.beyondDepotGroupPerMileGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { beyondDepotGroupPerMileGBPPence: pence }),
-    );
-    moneyField(body, "Long distance — base fare", cfg.longDistanceBaseGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { longDistanceBaseGBPPence: pence }),
-    );
-    moneyField(body, "Long distance — per mile", cfg.longDistancePerMileGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { longDistancePerMileGBPPence: pence }),
-    );
-    moneyField(body, "Special service (flat)", cfg.specialServiceSingleGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { specialServiceSingleGBPPence: pence }),
-    );
-    moneyField(body, "Night — extra base fee", cfg.nightExtraBaseGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { nightExtraBaseGBPPence: pence }),
-    );
-    moneyField(body, "Night — extra per zone", cfg.nightExtraPerZoneGBPPence, (pence) =>
-      window.farePricing.setConfigFields(groupId, { nightExtraPerZoneGBPPence: pence }),
-    );
-
-    sectionHeading(body, "Country zone bands");
+  // Shared by Country's and Island's own zone-band editors (T107 — Island
+  // bands are a separate table from Country's, never priced against one
+  // another, but the editing UI itself — one price per exact zone count,
+  // add/edit/delete — is identical, so this is the one shared component
+  // rather than a second near-copy of the same ~90 lines.
+  function zoneBandEditor(
+    container: HTMLElement,
+    bands: CountryZoneBand[] | IslandZoneBand[],
+    setBand: (zoneCount: number, priceGBPPence: number) => Promise<void>,
+    deleteBand: (zoneCount: number) => Promise<void>,
+  ): void {
     const bandsNote = document.createElement("div");
     bandsNote.style.fontSize = "11px";
     bandsNote.style.color = "var(--text-muted)";
     bandsNote.textContent = "One price per exact zone count — e.g. set zones 2 and 3 to the same price to band them together.";
-    body.appendChild(bandsNote);
+    container.appendChild(bandsNote);
 
     for (const band of bands) {
       const row = document.createElement("div");
@@ -243,7 +336,7 @@ export async function mountFarePricingPanel(): Promise<void> {
           render();
           return;
         }
-        await window.farePricing.setCountryZoneBand(groupId, band.zoneCount, pence);
+        await setBand(band.zoneCount, pence);
         errorMessage = "";
         await reloadConfig();
         render();
@@ -254,13 +347,13 @@ export async function mountFarePricingPanel(): Promise<void> {
       deleteButton.className = "btn";
       deleteButton.textContent = "Delete";
       deleteButton.addEventListener("click", async () => {
-        await window.farePricing.deleteCountryZoneBand(groupId, band.zoneCount);
+        await deleteBand(band.zoneCount);
         await reloadConfig();
         render();
       });
       row.appendChild(deleteButton);
 
-      body.appendChild(row);
+      container.appendChild(row);
     }
 
     const addBandRow = document.createElement("div");
@@ -292,39 +385,306 @@ export async function mountFarePricingPanel(): Promise<void> {
         render();
         return;
       }
-      await window.farePricing.setCountryZoneBand(groupId, zoneCount, pence);
+      await setBand(zoneCount, pence);
       errorMessage = "";
       await reloadConfig();
       render();
     });
     addBandRow.append(zoneCountInput, priceInput, addButton);
-    body.appendChild(addBandRow);
+    container.appendChild(addBandRow);
+  }
 
-    sectionHeading(body, "Ticket families");
-    moneyField(body, "LATE", cfg.lateGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { lateGBPPence: pence }));
-    moneyField(body, "NETWORK", cfg.networkGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { networkGBPPence: pence }));
+  function render(): void {
+    body.replaceChildren();
 
-    sectionHeading(body, "Capping / Day, Weekly, 28-day (city)");
-    moneyField(body, "City — Day", cfg.cityDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { cityDayGBPPence: pence }));
-    moneyField(body, "City — Weekly", cfg.cityWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { cityWeeklyGBPPence: pence }));
-    moneyField(body, "City — 28-day", cfg.city28DayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { city28DayGBPPence: pence }));
+    if (depotGroups.length === 0) {
+      const note = document.createElement("div");
+      note.style.color = "var(--text-muted)";
+      note.textContent = "Create a depot group first — fares belong to one.";
+      body.appendChild(note);
+      return;
+    }
 
-    sectionHeading(body, "Capping / Day, Weekly, 28-day (country)");
-    moneyField(body, "Country — Day", cfg.countryDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { countryDayGBPPence: pence }));
-    moneyField(body, "Country — Weekly", cfg.countryWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { countryWeeklyGBPPence: pence }));
-    moneyField(body, "Country — 28-day", cfg.country28DayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { country28DayGBPPence: pence }));
+    const groupLabel = document.createElement("div");
+    groupLabel.className = "label-muted";
+    groupLabel.textContent = "Depot group";
+    body.appendChild(groupLabel);
 
-    sectionHeading(body, "Capping / Day, Weekly, 28-day (city + country combined)");
-    moneyField(body, "Combined — Day", cfg.combinedDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { combinedDayGBPPence: pence }));
-    moneyField(body, "Combined — Weekly", cfg.combinedWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { combinedWeeklyGBPPence: pence }));
-    moneyField(body, "Combined — 28-day", cfg.combined28DayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { combined28DayGBPPence: pence }));
+    // 🔴-prefixed labels for any group with something missing — see
+    // missingFields's own header comment for why this is a plain string
+    // prefix rather than a drawn marker.
+    const groupOptions = depotGroups.map((g) => ({
+      group: g,
+      label: (missingByGroup.get(g.id)?.length ?? 0) > 0 ? `${MISSING_MARKER}${g.name}` : g.name,
+    }));
+    const selectedOption = groupOptions.find((o) => o.group.id === selectedDepotGroupId) ?? groupOptions[0];
+    const groupDropdown = createDropdown(
+      groupOptions.map((o) => o.label),
+      selectedOption.label,
+      async (label) => {
+        selectedDepotGroupId = groupOptions.find((o) => o.label === label)?.group.id ?? null;
+        await reloadConfig();
+        render();
+      },
+    );
+    groupDropdown.el.style.marginBottom = "8px";
+    body.appendChild(groupDropdown.el);
 
-    const cappingNote = document.createElement("div");
-    cappingNote.style.fontSize = "11px";
-    cappingNote.style.color = "var(--text-muted)";
-    cappingNote.style.marginTop = "6px";
-    cappingNote.textContent = "These Day/Weekly/28-day prices also double as the automatic capping thresholds (DESIGN.md §9) — there's no separate cap figure to set.";
-    body.appendChild(cappingNote);
+    if (!config) return;
+    const cfg = config;
+    const groupId = selectedDepotGroupId!;
+    const req = fareRequirements(zones, routes, cfg);
+
+    sectionHeading(body, "Single fares");
+    if (req.hasCity) {
+      moneyField(body, "City (flat)", cfg.citySingleGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { citySingleGBPPence: pence }),
+      );
+    }
+    moneyField(body, "Beyond depot group (per mile)", cfg.beyondDepotGroupPerMileGBPPence, (pence) =>
+      window.farePricing.setConfigFields(groupId, { beyondDepotGroupPerMileGBPPence: pence }),
+    );
+
+    if (req.needsLongDistance) {
+      moneyField(body, "Long distance — base fare", cfg.longDistanceBaseGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { longDistanceBaseGBPPence: pence }),
+      );
+      moneyField(body, "Long distance — per mile", cfg.longDistancePerMileGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { longDistancePerMileGBPPence: pence }),
+      );
+    }
+
+    if (req.hasCountry) {
+      sectionHeading(body, "Country zone bands");
+      zoneBandEditor(
+        body,
+        bands,
+        (zoneCount, pence) => window.farePricing.setCountryZoneBand(groupId, zoneCount, pence),
+        (zoneCount) => window.farePricing.deleteCountryZoneBand(groupId, zoneCount),
+      );
+    }
+
+    if (req.needsAirportExpress) {
+      sectionHeading(body, "Airport Express");
+      const airportNote = document.createElement("div");
+      airportNote.style.fontSize = "11px";
+      airportNote.style.color = "var(--text-muted)";
+      airportNote.textContent = "The player-flaggable airport route type (DESIGN.md §10) — Return is its own price, not the standard Return formula.";
+      body.appendChild(airportNote);
+      moneyField(body, "Single", cfg.airportExpressSingleGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { airportExpressSingleGBPPence: pence }),
+      );
+      moneyField(body, "Return", cfg.airportExpressReturnGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { airportExpressReturnGBPPence: pence }),
+      );
+    }
+
+    if (req.needsSightseeing) {
+      sectionHeading(body, "Sightseeing");
+      moneyField(body, "Hop-on hop-off day ticket", cfg.sightseeingDayGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { sightseeingDayGBPPence: pence }),
+      );
+      moneyField(body, "Single trip", cfg.sightseeingSingleGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { sightseeingSingleGBPPence: pence }),
+      );
+    }
+
+    if (req.needsNight) {
+      sectionHeading(body, "Night services");
+      const nightNote = document.createElement("div");
+      nightNote.style.fontSize = "11px";
+      nightNote.style.color = "var(--text-muted)";
+      nightNote.textContent = "Shown because this depot group has at least one Night-type route (route types, not a manual toggle).";
+      body.appendChild(nightNote);
+      moneyField(body, "LATE", cfg.lateGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { lateGBPPence: pence }));
+      moneyField(body, "Night — extra base fee", cfg.nightExtraBaseGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { nightExtraBaseGBPPence: pence }),
+      );
+      moneyField(body, "Night — extra per zone", cfg.nightExtraPerZoneGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { nightExtraPerZoneGBPPence: pence }),
+      );
+    }
+
+    if (req.hasCity) {
+      sectionHeading(body, "Capping / Day, Weekly (city)");
+      moneyField(body, "City — Day", cfg.cityDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { cityDayGBPPence: pence }));
+      moneyField(body, "City — Weekly", cfg.cityWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { cityWeeklyGBPPence: pence }));
+    }
+
+    if (req.hasCountry) {
+      sectionHeading(body, "Capping / Day, Weekly (country)");
+      moneyField(body, "Country — Day", cfg.countryDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { countryDayGBPPence: pence }));
+      moneyField(body, "Country — Weekly", cfg.countryWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { countryWeeklyGBPPence: pence }));
+    }
+
+    if (req.needsCombined) {
+      sectionHeading(body, "Capping / Day, Weekly (city + country combined)");
+      moneyField(body, "Combined — Day", cfg.combinedDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { combinedDayGBPPence: pence }));
+      moneyField(body, "Combined — Weekly", cfg.combinedWeeklyGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { combinedWeeklyGBPPence: pence }));
+
+      const cappingNote = document.createElement("div");
+      cappingNote.style.fontSize = "11px";
+      cappingNote.style.color = "var(--text-muted)";
+      cappingNote.style.marginTop = "6px";
+      cappingNote.textContent = "These Day/Weekly prices also double as the automatic capping thresholds (DESIGN.md §9) — there's no separate cap figure to set.";
+      body.appendChild(cappingNote);
+    }
+
+    if (req.needsNetwork) {
+      sectionHeading(body, "NETWORK (city + country + Airport Express)");
+      const networkNote = document.createElement("div");
+      networkNote.style.fontSize = "11px";
+      networkNote.style.color = "var(--text-muted)";
+      networkNote.textContent = "Not its own price — a percentage on top of the matching Combined price, rounded up to the nearest 5p, same percentage for Day/Weekly.";
+      body.appendChild(networkNote);
+
+      const percentRow = document.createElement("div");
+      percentRow.style.display = "flex";
+      percentRow.style.alignItems = "center";
+      percentRow.style.gap = "6px";
+      percentRow.style.padding = "3px 0";
+      const percentLabel = document.createElement("span");
+      percentLabel.style.flex = "1";
+      percentLabel.style.fontSize = "12px";
+      percentLabel.textContent = "Markup over Combined";
+      const percentInput = document.createElement("input");
+      percentInput.className = "field";
+      percentInput.type = "number";
+      percentInput.step = "0.5";
+      percentInput.min = "0";
+      percentInput.placeholder = "not set";
+      percentInput.value = cfg.networkMarkupPercent === null ? "" : String(cfg.networkMarkupPercent);
+      percentInput.style.width = "70px";
+      const percentSuffix = document.createElement("span");
+      percentSuffix.className = "label-muted";
+      percentSuffix.textContent = "%";
+      const percentSetButton = document.createElement("button");
+      percentSetButton.className = "btn";
+      percentSetButton.textContent = "Set";
+      percentSetButton.addEventListener("click", async () => {
+        const trimmed = percentInput.value.trim();
+        const percent = trimmed === "" ? null : Number(trimmed);
+        if (percent !== null && (!Number.isFinite(percent) || percent < 0)) {
+          errorMessage = "Give the network markup a percentage.";
+          render();
+          return;
+        }
+        await window.farePricing.setConfigFields(groupId, { networkMarkupPercent: percent });
+        errorMessage = "";
+        await reloadConfig();
+        render();
+      });
+      percentRow.append(percentLabel, percentInput, percentSuffix, percentSetButton);
+      body.appendChild(percentRow);
+
+      // Computed, read-only — never stored directly (fare_configs has no
+      // network_*_gbp_pence columns at all any more).
+      const computedRows: [string, number | null][] = [
+        ["NETWORK — Day", cfg.combinedDayGBPPence],
+        ["NETWORK — Weekly", cfg.combinedWeeklyGBPPence],
+      ];
+      for (const [label, combinedPence] of computedRows) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "6px";
+        row.style.padding = "3px 0";
+        const labelEl = document.createElement("span");
+        labelEl.style.flex = "1";
+        labelEl.style.fontSize = "12px";
+        labelEl.style.color = "var(--text-muted)";
+        labelEl.textContent = label;
+        const valueEl = document.createElement("span");
+        valueEl.style.fontWeight = "600";
+        const computable = combinedPence !== null && cfg.networkMarkupPercent !== null;
+        valueEl.textContent = computable ? formatPence(networkFareGBPPence(combinedPence!, cfg.networkMarkupPercent!)) : "— (set Combined and the markup first)";
+        row.append(labelEl, valueEl);
+        body.appendChild(row);
+      }
+    }
+
+    if (req.hasIsland) {
+      sectionHeading(body, "Island");
+      const islandNote = document.createElement("div");
+      islandNote.style.fontSize = "11px";
+      islandNote.style.color = "var(--text-muted)";
+      islandNote.textContent =
+        "Sits entirely outside the city/country/combined/network system (T107) — its own single, Day/Weekly and LATE, never mixed with the fares above. A NETWORK ticket still covers travel on island services as a coverage benefit, but that doesn't change any price here.";
+      body.appendChild(islandNote);
+
+      sectionHeading(body, "Island zone bands");
+      zoneBandEditor(
+        body,
+        islandBands,
+        (zoneCount, pence) => window.farePricing.setIslandZoneBand(groupId, zoneCount, pence),
+        (zoneCount) => window.farePricing.deleteIslandZoneBand(groupId, zoneCount),
+      );
+
+      sectionHeading(body, "Island — Day, Weekly");
+      moneyField(body, "Island — Day", cfg.islandDayGBPPence, (pence) => window.farePricing.setConfigFields(groupId, { islandDayGBPPence: pence }));
+      moneyField(body, "Island — Weekly", cfg.islandWeeklyGBPPence, (pence) =>
+        window.farePricing.setConfigFields(groupId, { islandWeeklyGBPPence: pence }),
+      );
+
+      if (req.needsIslandNight) {
+        moneyField(body, "Island — LATE", cfg.islandLateGBPPence, (pence) =>
+          window.farePricing.setConfigFields(groupId, { islandLateGBPPence: pence }),
+        );
+      }
+    }
+
+    const towns = zones.filter((z) => z.zoneType === "town");
+    if (towns.length > 0) {
+      sectionHeading(body, "Town zones");
+      const townsNote = document.createElement("div");
+      townsNote.style.fontSize = "11px";
+      townsNote.style.color = "var(--text-muted)";
+      townsNote.textContent =
+        "Never priced directly — always 70% of the parent zone's own 1-zone figures, rounded up to the nearest 5p. Set the parent's own prices above to fill these in.";
+      body.appendChild(townsNote);
+
+      for (const town of towns) {
+        const parent = zones.find((z) => z.id === town.parentZoneId);
+        const parentHeading = document.createElement("div");
+        parentHeading.style.fontSize = "12px";
+        parentHeading.style.fontWeight = "600";
+        parentHeading.style.marginTop = "8px";
+        parentHeading.textContent = parent ? `${town.name} (inside ${parent.name})` : `${town.name} (no parent zone found)`;
+        body.appendChild(parentHeading);
+
+        if (!parent) continue;
+
+        // The parent's own 1-zone single + Day/Weekly, whichever type it
+        // is — Town never mixes city/country/island, only whatever its own
+        // one parent actually is.
+        const parentOneZonePence = parent.zoneType === "island" ? (islandBands.find((b) => b.zoneCount === 1)?.priceGBPPence ?? null) : parent.zoneType === "country" ? (bands.find((b) => b.zoneCount === 1)?.priceGBPPence ?? null) : null;
+        const parentDay = parent.zoneType === "island" ? cfg.islandDayGBPPence : parent.zoneType === "country" ? cfg.countryDayGBPPence : null;
+        const parentWeekly = parent.zoneType === "island" ? cfg.islandWeeklyGBPPence : parent.zoneType === "country" ? cfg.countryWeeklyGBPPence : null;
+
+        const computedRows: [string, number | null][] = [
+          ["Single", parentOneZonePence],
+          ["Day", parentDay],
+          ["Weekly", parentWeekly],
+        ];
+        for (const [label, parentPence] of computedRows) {
+          const row = document.createElement("div");
+          row.style.display = "flex";
+          row.style.alignItems = "center";
+          row.style.gap = "6px";
+          row.style.padding = "3px 0";
+          const labelEl = document.createElement("span");
+          labelEl.style.flex = "1";
+          labelEl.style.fontSize = "12px";
+          labelEl.style.color = "var(--text-muted)";
+          labelEl.textContent = label;
+          const valueEl = document.createElement("span");
+          valueEl.style.fontWeight = "600";
+          valueEl.textContent = parentPence === null ? `— (set ${parent.name}'s own ${label.toLowerCase()} first)` : formatPence(townFareGBPPence(parentPence));
+          row.append(labelEl, valueEl);
+          body.appendChild(row);
+        }
+      }
+    }
 
     if (errorMessage) {
       const error = document.createElement("div");
@@ -343,8 +703,15 @@ export async function mountFarePricingPanel(): Promise<void> {
     if (panelOpen) {
       depotGroups = await window.depotGroups.list();
       if (selectedDepotGroupId === null) selectedDepotGroupId = depotGroups[0]?.id ?? null;
+      await reloadMissingIndicators();
       await reloadConfig();
       render();
     }
   });
+
+  // The red border needs to reflect reality even while the panel is
+  // closed (so opening the game later still shows it), so it's computed
+  // once right away too, not only the first time the toggle is clicked.
+  depotGroups = await window.depotGroups.list();
+  await reloadMissingIndicators();
 }

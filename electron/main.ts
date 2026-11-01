@@ -57,6 +57,7 @@ import {
   setDealerEntranceMode,
   deleteDealerEntrance,
   deleteDealer,
+  setDealerEntrancesComplete,
   createStopGroup,
   listStopGroupIds,
   type IconColour,
@@ -75,8 +76,13 @@ import {
   deleteDeadMileageRoute,
   createRepaintShop,
   listRepaintShops,
-  setRepaintShopWeeklyCapacity,
+  setRepaintShopConcurrentCapacity,
+  setRepaintShopTurnaroundDays,
   deleteRepaintShop,
+  listAllRepaintShopEntrances,
+  addRepaintShopEntrance,
+  setRepaintShopEntranceMode,
+  deleteRepaintShopEntrance,
   createDuty,
   deleteDuty,
   setDutyLocked,
@@ -102,15 +108,30 @@ import {
   renameFareZone,
   setFareZoneType,
   setFareZoneColour,
+  mergeFareZone,
   deleteFareZone,
   type FareZoneType,
   type FareZonePoint,
+  createLongDistanceSection,
+  listLongDistanceSections,
+  renameLongDistanceSection,
+  setLongDistanceSectionPoints,
+  deleteLongDistanceSection,
+  type RouteSegment,
+  type RouteType,
+  depotGroupHasRouteType,
   getFareConfig,
   setFareConfigFields,
+  getGameClock,
+  setGameClock,
+  type GameClock,
   type FareConfig,
   setCountryZoneBand,
   deleteCountryZoneBand,
   listCountryZoneBands,
+  setIslandZoneBand,
+  deleteIslandZoneBand,
+  listIslandZoneBands,
 } from "./db.mts";
 
 // Single default save for now — no save-slot UI exists yet (Phase 1 is
@@ -257,6 +278,8 @@ function registerRouteHandlers(): void {
       variationLetter: string | null,
       composedFromRouteIds: number[],
       hailAndRideSections: RouteHailAndRideSection[],
+      segments: RouteSegment[],
+      routeType: RouteType,
     ) =>
       createRoute(
         save,
@@ -272,9 +295,14 @@ function registerRouteHandlers(): void {
         variationLetter,
         composedFromRouteIds,
         hailAndRideSections,
+        segments,
+        routeType,
       ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
+  ipcMain.handle("routes:depotGroupHasRouteType", (_e, depotGroupId: number, routeType: RouteType) =>
+    depotGroupHasRouteType(save, depotGroupId, routeType),
+  );
   ipcMain.handle(
     "routes:update",
     (
@@ -292,6 +320,8 @@ function registerRouteHandlers(): void {
       variationLetter: string | null,
       composedFromRouteIds: number[],
       hailAndRideSections: RouteHailAndRideSection[],
+      segments: RouteSegment[],
+      routeType: RouteType,
     ) =>
       updateRoute(
         save,
@@ -308,6 +338,8 @@ function registerRouteHandlers(): void {
         variationLetter,
         composedFromRouteIds,
         hailAndRideSections,
+        segments,
+        routeType,
       ),
   );
   ipcMain.handle("routes:refreshComposedPoints", (_e, id: number, points: RoutePoint[]) =>
@@ -408,6 +440,7 @@ function registerDealerHandlers(): void {
   ipcMain.handle("dealers:setEntranceMode", (_e, id: number, mode: DealerEntranceMode) => setDealerEntranceMode(save, id, mode));
   ipcMain.handle("dealers:deleteEntrance", (_e, id: number) => deleteDealerEntrance(save, id));
   ipcMain.handle("dealers:delete", (_e, id: number) => deleteDealer(save, id));
+  ipcMain.handle("dealers:setEntrancesComplete", (_e, id: number, isComplete: boolean) => setDealerEntrancesComplete(save, id, isComplete));
 }
 
 // Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
@@ -514,13 +547,22 @@ function registerBasketAndOrderHandlers(): void {
 
 function registerRepaintShopHandlers(): void {
   ipcMain.handle("repaintShops:list", () => listRepaintShops(save));
-  ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, weeklyCapacity: number) =>
-    createRepaintShop(save, name, lon, lat, weeklyCapacity),
+  ipcMain.handle("repaintShops:create", (_e, name: string, lon: number, lat: number, concurrentCapacity: number, turnaroundDays: number) =>
+    createRepaintShop(save, name, lon, lat, concurrentCapacity, turnaroundDays),
   );
-  ipcMain.handle("repaintShops:setWeeklyCapacity", (_e, id: number, weeklyCapacity: number) =>
-    setRepaintShopWeeklyCapacity(save, id, weeklyCapacity),
+  ipcMain.handle("repaintShops:setConcurrentCapacity", (_e, id: number, concurrentCapacity: number) =>
+    setRepaintShopConcurrentCapacity(save, id, concurrentCapacity),
+  );
+  ipcMain.handle("repaintShops:setTurnaroundDays", (_e, id: number, turnaroundDays: number) =>
+    setRepaintShopTurnaroundDays(save, id, turnaroundDays),
   );
   ipcMain.handle("repaintShops:delete", (_e, id: number) => deleteRepaintShop(save, id));
+  ipcMain.handle("repaintShops:listAllEntrances", () => listAllRepaintShopEntrances(save));
+  ipcMain.handle("repaintShops:addEntrance", (_e, repaintShopId: number, lon: number, lat: number, mode: DealerEntranceMode) =>
+    addRepaintShopEntrance(save, repaintShopId, lon, lat, mode),
+  );
+  ipcMain.handle("repaintShops:setEntranceMode", (_e, id: number, mode: DealerEntranceMode) => setRepaintShopEntranceMode(save, id, mode));
+  ipcMain.handle("repaintShops:deleteEntrance", (_e, id: number) => deleteRepaintShopEntrance(save, id));
 }
 
 function registerLiveryHandlers(): void {
@@ -545,15 +587,28 @@ function registerFareZoneHandlers(): void {
   ipcMain.handle("fareZones:listAll", () => listAllFareZones(save));
   ipcMain.handle(
     "fareZones:create",
-    (_e, depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour?: string) =>
-      createFareZone(save, depotGroupId, name, zoneType, points, colour),
+    (_e, depotGroupId: number, name: string, zoneType: FareZoneType, points: FareZonePoint[], colour: string | undefined, parentZoneId: number | null) =>
+      createFareZone(save, depotGroupId, name, zoneType, points, colour, parentZoneId ?? null),
   );
   ipcMain.handle("fareZones:rename", (_e, zoneId: number, name: string) => renameFareZone(save, zoneId, name));
-  ipcMain.handle("fareZones:setType", (_e, zoneId: number, zoneType: FareZoneType) =>
-    setFareZoneType(save, zoneId, zoneType),
+  ipcMain.handle("fareZones:setType", (_e, zoneId: number, zoneType: FareZoneType, parentZoneId?: number | null) =>
+    setFareZoneType(save, zoneId, zoneType, parentZoneId ?? null),
   );
   ipcMain.handle("fareZones:setColour", (_e, zoneId: number, colour: string) => setFareZoneColour(save, zoneId, colour));
   ipcMain.handle("fareZones:delete", (_e, zoneId: number) => deleteFareZone(save, zoneId));
+  ipcMain.handle("fareZones:merge", (_e, sourceZoneId: number, targetZoneId: number) => mergeFareZone(save, sourceZoneId, targetZoneId));
+}
+
+function registerLongDistanceSectionHandlers(): void {
+  ipcMain.handle("longDistanceSections:list", () => listLongDistanceSections(save));
+  ipcMain.handle("longDistanceSections:create", (_e, name: string, points: RoutePoint[]) =>
+    createLongDistanceSection(save, name, points),
+  );
+  ipcMain.handle("longDistanceSections:rename", (_e, id: number, name: string) => renameLongDistanceSection(save, id, name));
+  ipcMain.handle("longDistanceSections:setPoints", (_e, id: number, points: RoutePoint[]) =>
+    setLongDistanceSectionPoints(save, id, points),
+  );
+  ipcMain.handle("longDistanceSections:delete", (_e, id: number) => deleteLongDistanceSection(save, id));
 }
 
 function registerFarePricingHandlers(): void {
@@ -568,6 +623,18 @@ function registerFarePricingHandlers(): void {
   ipcMain.handle("farePricing:deleteCountryZoneBand", (_e, depotGroupId: number, zoneCount: number) =>
     deleteCountryZoneBand(save, depotGroupId, zoneCount),
   );
+  ipcMain.handle("farePricing:listIslandZoneBands", (_e, depotGroupId: number) => listIslandZoneBands(save, depotGroupId));
+  ipcMain.handle("farePricing:setIslandZoneBand", (_e, depotGroupId: number, zoneCount: number, priceGBPPence: number) =>
+    setIslandZoneBand(save, depotGroupId, zoneCount, priceGBPPence),
+  );
+  ipcMain.handle("farePricing:deleteIslandZoneBand", (_e, depotGroupId: number, zoneCount: number) =>
+    deleteIslandZoneBand(save, depotGroupId, zoneCount),
+  );
+}
+
+function registerGameClockHandlers(): void {
+  ipcMain.handle("gameClock:get", () => getGameClock(save));
+  ipcMain.handle("gameClock:set", (_e, clock: GameClock) => setGameClock(save, clock));
 }
 
 function registerStopGroupHandlers(): void {
@@ -672,7 +739,9 @@ app.whenReady().then(async () => {
   registerVehicleHandlers();
   registerBasketAndOrderHandlers();
   registerFareZoneHandlers();
+  registerLongDistanceSectionHandlers();
   registerFarePricingHandlers();
+  registerGameClockHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

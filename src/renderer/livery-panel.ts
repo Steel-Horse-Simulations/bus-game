@@ -1,6 +1,7 @@
 // Minimal livery settings (OPERATIONS.md §4): list and add liveries, and set
 // each support vehicle icon's black/white override per livery. "Automatic"
 // clears the override, so the icon goes back to the contrast pick.
+import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 const ICONS: { key: SupportIconKey; label: string }[] = [
   { key: "spanner", label: "Spanner" },
   { key: "person", label: "Person" },
@@ -13,7 +14,7 @@ export function mountLiveryPanel(): void {
   toggle.className = "btn";
   toggle.textContent = "Liveries";
   toggle.style.position = "absolute";
-  toggle.style.bottom = "8px";
+  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
   toggle.style.left = "1000px";
   toggle.style.zIndex = "2";
   document.body.appendChild(toggle);
@@ -21,7 +22,7 @@ export function mountLiveryPanel(): void {
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
-  panel.style.bottom = "44px";
+  panel.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
   panel.style.left = "1000px";
   panel.style.zIndex = "2";
   panel.style.width = "360px";

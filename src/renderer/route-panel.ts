@@ -118,7 +118,13 @@ function stopLabel(point: RoutePoint): string {
 
 type Mode =
   | { kind: "list" }
-  | { kind: "drawing"; editRoute?: Route; variationOf?: Route }
+  // "choosing-type" (route types, 2026-10-31): the "+ New route" button's
+  // own first step, asking what kind of route this is before drawing
+  // starts — editRoute/variationOf both inherit their source's own type
+  // unprompted (see route-draw.ts's startEditing/startVariation), so this
+  // step only ever applies to a genuinely new route.
+  | { kind: "choosing-type" }
+  | { kind: "drawing"; editRoute?: Route; variationOf?: Route; newRouteType?: RouteType }
   | { kind: "timetable"; route: Route };
 
 export async function mountRoutePanel(map: maplibregl.Map, router: Router): Promise<void> {
@@ -161,7 +167,12 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
   slot.style.left = "0";
   slot.style.bottom = "0";
   slot.style.width = "320px";
-  slot.style.zIndex = "2";
+  // Above the bottom bar's own z-index (bottom-bar.ts, 3) — confirmed
+  // 2026-11-01, live user request: "can the route list be on top of the
+  // bottom bar please" — so the list's own bottom edge isn't covered by
+  // it. Only the list itself was asked for; the timetable slot below is
+  // still behind the bar for now.
+  slot.style.zIndex = "4";
   document.body.appendChild(slot);
 
   // The right-hand slot, occupied only in timetable mode — "the timetable
@@ -206,11 +217,13 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     if (next.kind === "list") {
       slot.appendChild(buildListPanel());
       void refreshList();
+    } else if (next.kind === "choosing-type") {
+      slot.appendChild(buildChooseTypePanel());
     } else if (next.kind === "drawing") {
       slot.appendChild(drawController.el);
       if (next.variationOf) drawController.startVariation(next.variationOf);
       else if (next.editRoute) drawController.startEditing(next.editRoute);
-      else drawController.startDrawing();
+      else drawController.startDrawing(next.newRouteType ?? "ordinary");
     } else {
       // Cleared up front — buildLockedRoutePanel's first render runs before
       // createRouteTimetableEditor's own async day-type load resolves, so
@@ -229,6 +242,71 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
       );
       timetableSlot.appendChild(editor.el);
     }
+  }
+
+  // --- choosing-type mode (route types, 2026-10-31) ---
+
+  const ROUTE_TYPE_LABELS: Record<RouteType, string> = {
+    ordinary: "Ordinary",
+    night: "Night service",
+    sightseeing: "Sightseeing",
+    airport_express: "Airport Express",
+    long_distance: "Long-distance",
+  };
+  const ROUTE_TYPE_BY_LABEL: Record<string, RouteType> = {
+    Ordinary: "ordinary",
+    "Night service": "night",
+    Sightseeing: "sightseeing",
+    "Airport Express": "airport_express",
+    "Long-distance": "long_distance",
+  };
+
+  function buildChooseTypePanel(): HTMLElement {
+    const panel = document.createElement("div");
+    panel.className = "panel panel-flush";
+    panel.style.height = "100%";
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+
+    const header = document.createElement("div");
+    header.className = "panel-header";
+    header.textContent = "New route — what type?";
+    panel.appendChild(header);
+
+    const body = document.createElement("div");
+    body.style.padding = "12px";
+
+    let chosenType: RouteType = "ordinary";
+    const dropdown = createDropdown(Object.values(ROUTE_TYPE_LABELS), ROUTE_TYPE_LABELS[chosenType], (label) => {
+      chosenType = ROUTE_TYPE_BY_LABEL[label];
+    });
+    dropdown.el.style.marginBottom = "12px";
+    body.appendChild(dropdown.el);
+
+    const note = document.createElement("div");
+    note.className = "label-muted";
+    note.style.fontSize = "11px";
+    note.style.marginBottom = "12px";
+    note.textContent =
+      "Night services are limited to a 23:45–03:45 last departure, finishing by 04:15 at the latest; the fare-pricing panel shows the relevant fields automatically once a route of that type exists.";
+    body.appendChild(note);
+
+    const buttonRow = document.createElement("div");
+    buttonRow.style.display = "flex";
+    buttonRow.style.gap = "6px";
+    const startButton = document.createElement("button");
+    startButton.className = "btn";
+    startButton.textContent = "Start drawing";
+    startButton.addEventListener("click", () => setMode({ kind: "drawing", newRouteType: chosenType }));
+    const cancelButton = document.createElement("button");
+    cancelButton.className = "btn";
+    cancelButton.textContent = "Cancel";
+    cancelButton.addEventListener("click", () => setMode({ kind: "list" }));
+    buttonRow.append(startButton, cancelButton);
+    body.appendChild(buttonRow);
+
+    panel.appendChild(body);
+    return panel;
   }
 
   // --- list mode ---
@@ -250,7 +328,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     const newButton = document.createElement("button");
     newButton.className = "btn";
     newButton.textContent = "+ New route";
-    newButton.addEventListener("click", () => setMode({ kind: "drawing" }));
+    newButton.addEventListener("click", () => setMode({ kind: "choosing-type" }));
     header.appendChild(title);
     header.appendChild(newButton);
     panel.appendChild(header);
@@ -363,7 +441,11 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     const sub = document.createElement("div");
     sub.className = "label-muted";
     const stopCount = route.points.filter((p) => p.kind === "stop").length;
-    sub.textContent = `${route.orientation}, ${stopCount} stop${stopCount === 1 ? "" : "s"}`;
+    // Route type shown here (2026-11-01, live user question: "does it say
+    // what type of route a route is?" — it didn't) — "Ordinary" included
+    // too, not just the special types, so every row reads consistently
+    // rather than special-casing the common case into silence.
+    sub.textContent = `${route.orientation}, ${stopCount} stop${stopCount === 1 ? "" : "s"}, ${ROUTE_TYPE_LABELS[route.routeType]}`;
     info.appendChild(title);
     info.appendChild(sub);
     row.appendChild(info);

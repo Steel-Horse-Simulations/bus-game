@@ -1,4 +1,6 @@
 mod boundary;
+mod coastline;
+mod ferry_routes;
 mod graph_build;
 mod landuse;
 mod railway;
@@ -114,6 +116,8 @@ fn main() {
     let mut combined_venue_ways: Vec<crate::venues::Venue> = Vec::new();
     let mut combined_railway_station_ways: Vec<crate::railway::RailwayStation> = Vec::new();
     let mut combined_platform_ways: Vec<crate::railway::Platform> = Vec::new();
+    let mut combined_ferry_route_ways: Vec<crate::ferry_routes::FerryRoute> = Vec::new();
+    let mut combined_coastline_raw_ways: Vec<crate::coastline::RawCoastlineWay> = Vec::new();
     let mut combined_way_stats = road_graph::WayStats::default();
 
     let mut node_count = 0usize;
@@ -186,6 +190,8 @@ fn main() {
         combined_venue_ways.extend(sc.venue_ways);
         combined_railway_station_ways.extend(sc.railway_station_ways);
         combined_platform_ways.extend(sc.platform_ways);
+        combined_ferry_route_ways.extend(sc.ferry_route_ways);
+        combined_coastline_raw_ways.extend(sc.coastline_raw_ways);
     }
 
     // Reassembled into the same shapes the rest of this file already
@@ -216,6 +222,8 @@ fn main() {
         venue_ways: combined_venue_ways,
         railway_station_ways: combined_railway_station_ways,
         platform_ways: combined_platform_ways,
+        ferry_route_ways: combined_ferry_route_ways,
+        coastline_raw_ways: combined_coastline_raw_ways,
     };
 
     eprintln!(
@@ -556,5 +564,40 @@ fn main() {
     println!(
         "  saved              {settlements_path} ({:.1} MB)",
         settlements_bytes as f64 / 1_000_000.0
+    );
+
+    let ferry_route_count = scan.ferry_route_ways.len();
+    let ferry_route_data = ferry_routes::FerryRouteData { routes: scan.ferry_route_ways };
+    println!("\nFerry routes:");
+    println!("  routes             {ferry_route_count}");
+    for r in &ferry_route_data.routes {
+        println!(
+            "    {:<30} {:.1} km ({} point(s))",
+            r.name.as_deref().unwrap_or("(unnamed)"),
+            r.distance_m / 1000.0,
+            r.geometry.len()
+        );
+    }
+
+    let ferry_routes_path = pbf_dir.join("ferry_routes.bin").to_string_lossy().to_string();
+    let ferry_routes_bytes =
+        ferry_routes::save(&ferry_route_data, &ferry_routes_path).expect("failed to save ferry route data");
+    println!(
+        "  saved              {ferry_routes_path} ({:.1} MB)",
+        ferry_routes_bytes as f64 / 1_000_000.0
+    );
+
+    let raw_coastline_way_count = scan.coastline_raw_ways.len();
+    let coastline_chains = coastline::assemble_chains(scan.coastline_raw_ways);
+    let coastline_data = coastline::CoastlineData { chains: coastline_chains };
+    println!("\nCoastline:");
+    println!("  raw ways           {raw_coastline_way_count}");
+    println!("  assembled chains   {}", coastline_data.chains.len());
+
+    let coastline_path = pbf_dir.join("coastline.bin").to_string_lossy().to_string();
+    let coastline_bytes = coastline::save(&coastline_data, &coastline_path).expect("failed to save coastline data");
+    println!(
+        "  saved              {coastline_path} ({:.1} MB)",
+        coastline_bytes as f64 / 1_000_000.0
     );
 }
