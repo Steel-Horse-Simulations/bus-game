@@ -413,6 +413,15 @@ export async function mountLongDistanceSectionsTool(map: maplibregl.Map, router:
 
         const nameText = document.createElement("div");
         nameText.style.flex = "1";
+        // Live report, 2026-11-01: "the delete button doesn't fit in the
+        // menu though" — a flex item's default min-width is auto, which
+        // for nowrap text means its own full rendered width, not 0; with
+        // a long stop name that's wider than the row has room for, it
+        // refused to shrink at all and pushed the × button straight out
+        // of the panel instead of actually eliding the text. Same root
+        // cause already fixed once for the route-type dropdown elsewhere
+        // in this project.
+        nameText.style.minWidth = "0";
         nameText.style.overflow = "hidden";
         nameText.style.textOverflow = "ellipsis";
         nameText.style.whiteSpace = "nowrap";

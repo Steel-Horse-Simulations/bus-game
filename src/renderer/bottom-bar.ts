@@ -111,6 +111,21 @@ export const BOTTOM_BAR_CLEARANCE_PX = 96;
 function buildClockCluster(): HTMLElement {
   const cluster = document.createElement("div");
   cluster.className = "bottom-bar-clock";
+  // Live report, 2026-11-01: "the date, its hidden behind the route list"
+  // — this used to be a DOM child of `bar` itself, which caps it at the
+  // bar's OWN z-index (3) no matter what z-index the clock element tries
+  // to set on itself, since a descendant can never escape its own
+  // stacking context's ceiling. route-panel.ts's list slot sits at
+  // z-index 4 (confirmed above the bar on its own explicit request), so
+  // it always painted over the clock. Appended straight to `document.body`
+  // instead — a true sibling, not a descendant — with its own fixed
+  // position replacing the old "centred inside the bar via top:50%"
+  // trick, and a z-index above every panel this game currently has.
+  cluster.style.position = "fixed";
+  cluster.style.left = "16px";
+  cluster.style.bottom = "0";
+  cluster.style.height = `${BAR_HEIGHT_PX}px`;
+  cluster.style.zIndex = "5";
 
   const pauseButton = document.createElement("button");
   pauseButton.type = "button";
@@ -170,7 +185,7 @@ export function mountBottomBar(onSelect?: (section: BottomBarSection) => void): 
   bar.style.zIndex = "3";
   bar.style.display = "flex";
 
-  bar.appendChild(buildClockCluster());
+  document.body.appendChild(buildClockCluster());
 
   const buttons = new Map<BottomBarSection, HTMLButtonElement>();
 

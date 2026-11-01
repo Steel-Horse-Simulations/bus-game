@@ -86,18 +86,29 @@ export function coastlineWalkBetween(
   return walked;
 }
 
-// Clips a drawn zone's own closed outline back to the real coastline
-// wherever one of its edges crosses open water. Deliberately bounded, not
-// a general polygon-boolean-intersection (no geometry library exists in
-// this project): only an edge crossing the SAME coastline chain exactly
-// twice gets its water-side portion replaced by a walk along that chain —
-// 0 crossings leaves the edge untouched (fully on land, or nowhere near
-// the coast); any other case (1 crossing, 3+, or crossings landing on
-// different chains — e.g. a genuine open-water crossing to an island
-// where the two shores belong to separate, unconnected coastline chains)
-// is left as the original straight edge rather than guessed at. A shape
-// that needs the harder case is better left for the player to notice and
-// adjust than silently gotten wrong.
+// Equirectangular projection centred on a given latitude — shared by
+// nearestPointOnCoastline and coastlineFollowBetween below, consistent
+// with `point_to_segment_closest` in `rust/game-wasm/src/lib.rs`, close
+// enough at this scale that the two don't need to match bit-for-bit.
+const DEG_TO_RAD = Math.PI / 180;
+const EARTH_RADIUS_M = 6_371_000;
+function metresDistance(a: FareZonePoint, b: FareZonePoint): number {
+  const cosLat = Math.cos(a.lat * DEG_TO_RAD);
+  const dx = (b.lon - a.lon) * DEG_TO_RAD * cosLat * EARTH_RADIUS_M;
+  const dy = (b.lat - a.lat) * DEG_TO_RAD * EARTH_RADIUS_M;
+  return Math.hypot(dx, dy);
+}
+
+export interface CoastlineSnap {
+  point: FareZonePoint;
+  chainIndex: number;
+  // Index of the coastline edge the point fell on: chain[edgeIndex] ->
+  // chain[edgeIndex + 1] — same convention as CoastlineCrossing above,
+  // needed so a following click on the same chain can walk the real
+  // shoreline between the two via coastlineFollowBetween.
+  edgeIndex: number;
+}
+
 // Nearest point on any real coastline chain to a click, with a max-distance
 // cutoff — the click-time counterpart to clipRingToCoastline's own
 // after-the-fact clip. Added 2026-11-01, live bug report: "the fare zone
@@ -107,20 +118,16 @@ export function coastlineWalkBetween(
 // never applies to a genuine open-water crossing to a separate landmass
 // (Skye's own case: its coastline is its own chain, unconnected to the
 // mainland's), so a zone boundary meant to hug an island's own coast had
-// nothing pulling it onto the shoreline at all. Equirectangular projection
-// centred on the click's own latitude (consistent with
-// `point_to_segment_closest` in `rust/game-wasm/src/lib.rs`, close enough
-// at this scale that the two don't need to match bit-for-bit).
-export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: FareZonePoint[][], maxDistanceM: number): FareZonePoint | null {
-  const DEG_TO_RAD = Math.PI / 180;
-  const EARTH_RADIUS_M = 6_371_000;
+// nothing pulling it onto the shoreline at all.
+export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: FareZonePoint[][], maxDistanceM: number): CoastlineSnap | null {
   const cosLat = Math.cos(point.lat * DEG_TO_RAD);
   const toXY = (p: FareZonePoint): [number, number] => [p.lon * DEG_TO_RAD * cosLat * EARTH_RADIUS_M, p.lat * DEG_TO_RAD * EARTH_RADIUS_M];
   const [px, py] = toXY(point);
 
   let bestDist = Infinity;
-  let best: FareZonePoint | null = null;
-  for (const chain of coastlineChains) {
+  let best: CoastlineSnap | null = null;
+  for (let c = 0; c < coastlineChains.length; c++) {
+    const chain = coastlineChains[c];
     for (let i = 0; i < chain.length - 1; i++) {
       const [ax, ay] = toXY(chain[i]);
       const [bx, by] = toXY(chain[i + 1]);
@@ -133,11 +140,34 @@ export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: F
       const dist = Math.hypot(px - cx, py - cy);
       if (dist < bestDist) {
         bestDist = dist;
-        best = { lon: (cx / (cosLat * EARTH_RADIUS_M)) / DEG_TO_RAD, lat: (cy / EARTH_RADIUS_M) / DEG_TO_RAD };
+        best = { point: { lon: (cx / (cosLat * EARTH_RADIUS_M)) / DEG_TO_RAD, lat: (cy / EARTH_RADIUS_M) / DEG_TO_RAD }, chainIndex: c, edgeIndex: i };
       }
     }
   }
   return bestDist <= maxDistanceM ? best : null;
+}
+
+// How far apart (metres, straight-line) two consecutive coastline-snapped
+// clicks can be and still have the real shoreline traced between them —
+// beyond this it's just a straight line instead, the same "jump big gaps,
+// but follow if I manually do it" design already confirmed for the
+// (not yet built) building-cluster snap, applied here on live request,
+// 2026-11-01: "snapping to the coast line should work like the other
+// snapping for building." 2km is close enough to clearly be the same
+// little bay/headland the player is tracing by hand, while not silently
+// tracing hundreds of kilometres of coast between two faraway clicks that
+// both merely happen to land on the same chain.
+const COASTLINE_FOLLOW_MAX_GAP_M = 2000;
+
+// Walks the real coastline between two consecutive snapped clicks, or
+// returns null for a "big gap" the caller should just connect with a
+// straight line instead: a different chain entirely (two separate
+// landmasses), or too far apart along the same one even though it's
+// technically the same chain.
+export function coastlineFollowBetween(from: CoastlineSnap, to: CoastlineSnap, coastlineChains: FareZonePoint[][]): FareZonePoint[] | null {
+  if (from.chainIndex !== to.chainIndex) return null;
+  if (metresDistance(from.point, to.point) > COASTLINE_FOLLOW_MAX_GAP_M) return null;
+  return coastlineWalkBetween(coastlineChains[from.chainIndex], from.edgeIndex, from.point, to.edgeIndex, to.point);
 }
 
 export function clipRingToCoastline(points: FareZonePoint[], coastlineChains: FareZonePoint[][]): FareZonePoint[] {

@@ -31,7 +31,7 @@ import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
-import { clipRingToCoastline, nearestPointOnCoastline } from "./coastline-clip.mts";
+import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type CoastlineSnap } from "./coastline-clip.mts";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
@@ -195,9 +195,24 @@ function zonesToGeojson(zones: FareZone[]): GeoJSON.FeatureCollection {
       const holes = zones
         .filter((other) => other.id !== z.id && fullyContains(z, other))
         .map((other) => [...other.points.map((p) => [p.lon, p.lat]), [other.points[0].lon, other.points[0].lat]]);
+      // A merged zone (mergeFareZone, T122) keeps both shapes as separate
+      // rows sharing the same name/type/colour — fine for the fill and
+      // border, which just look like one zone's two pieces, but every
+      // zone got its own label, so a merged zone's name showed twice on
+      // the map and visibly read as two separate zones rather than one.
+      // Live correction, 2026-11-01: "merged zones shouldn't show as 2
+      // separate things, they should be combined." The underlying shapes
+      // genuinely are still two separate rows (no geometry union — see
+      // mergeFareZone's own comment on why), so this only fixes what's
+      // actually visible: the label shows once, on whichever row has the
+      // lowest id among every zone sharing this exact name/type/depot
+      // group, the others' labels are suppressed.
+      const isDuplicateLabel = zones.some(
+        (other) => other.id < z.id && other.depotGroupId === z.depotGroupId && other.name === z.name && other.zoneType === z.zoneType,
+      );
       return {
         type: "Feature",
-        properties: { id: z.id, name: z.name, zoneType: z.zoneType, colour: z.colour },
+        properties: { id: z.id, name: isDuplicateLabel ? "" : z.name, zoneType: z.zoneType, colour: z.colour },
         geometry: { type: "Polygon", coordinates: [ring, ...holes] },
       };
     }),
@@ -405,6 +420,13 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // ("follow the road until the next point if it is also on a road",
   // 2026-10-30). Reset whenever drawing starts/stops/undoes.
   let lastPointWasRoadSnapped = false;
+  // Same idea, for the coastline (live user request, 2026-11-01: "snapping
+  // to the coast line should work like the other snapping for building,
+  // jump big gaps but follow if I mannualy do it") — carries the full
+  // CoastlineSnap (not just a boolean) since coastlineFollowBetween needs
+  // the previous point's own chain/edge location, not just whether it was
+  // a coastline point at all.
+  let lastCoastlineSnap: CoastlineSnap | null = null;
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
 
@@ -470,6 +492,12 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     for (const zone of zones) {
       const row = document.createElement("div");
       row.style.display = "flex";
+      // Live report, 2026-11-01: "Merge into and delete in fare zones
+      // don't fit in the menu" — adding the Merge dropdown pushed this
+      // row past its own panel's width. `flex-wrap` lets the controls
+      // that don't fit move to a second line instead of being pushed
+      // out of the visible panel entirely.
+      row.style.flexWrap = "wrap";
       row.style.alignItems = "center";
       row.style.gap = "6px";
       row.style.padding = "4px 0";
@@ -478,6 +506,12 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       nameInput.className = "field";
       nameInput.value = zone.name;
       nameInput.style.flex = "1";
+      // Same root cause as the point-list delete button elsewhere in this
+      // batch: a flex item's default min-width is auto (its own full
+      // content width for an <input>, not 0), which without this override
+      // refuses to shrink and pushes the row's other controls out
+      // instead.
+      nameInput.style.minWidth = "80px";
       row.appendChild(nameInput);
 
       const typeDropdown = createDropdown(Object.values(ZONE_TYPE_LABELS), ZONE_TYPE_LABELS[zone.zoneType], async (label) => {
@@ -752,6 +786,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         const countToRemove = draftClickPointCounts.pop() ?? 1;
         draftPoints.splice(draftPoints.length - countToRemove, countToRemove);
         lastPointWasRoadSnapped = false;
+        lastCoastlineSnap = null;
         updateDraftLayers();
         render();
       });
@@ -777,6 +812,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftPoints = [];
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
+        lastCoastlineSnap = null;
         toggle.classList.remove("is-active");
         updateDraftLayers();
         render();
@@ -794,6 +830,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftPoints = [];
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
+        lastCoastlineSnap = null;
         errorMessage = "";
         toggle.classList.add("is-active");
         updateDraftLayers();
@@ -824,6 +861,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       draftPoints.push(zoneSnap);
       draftClickPointCounts.push(1);
       lastPointWasRoadSnapped = false;
+      lastCoastlineSnap = null;
       updateDraftLayers();
       render();
       return;
@@ -852,11 +890,19 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     // reserved for the rarer case of deliberately drawing a straight line
     // out over genuinely open water (e.g. crossing a strait to a separate
     // island's own coastline chain).
+    //
+    // **Third correction, 2026-11-01**: shift was also silently doing
+    // nothing at all on a plain click — not a logic bug here, but
+    // MapLibre's own default Shift+drag box-zoom claiming the mousedown
+    // before this handler ever saw it (fixed once, globally, in
+    // main.ts's own `map.boxZoom.disable()`, not here).
     const shiftHeld = (e.originalEvent as MouseEvent).shiftKey;
 
     const coastlineSnap = shiftHeld ? null : nearestPointOnCoastline({ lon: e.lngLat.lng, lat: e.lngLat.lat }, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
     const roadSnap = shiftHeld || coastlineSnap ? null : snapToRoad(router, e.lngLat);
     const previousPoint = draftPoints[draftPoints.length - 1];
+    const coastlineFollow =
+      coastlineSnap && lastCoastlineSnap && previousPoint ? coastlineFollowBetween(lastCoastlineSnap, coastlineSnap, coastlineChains) : null;
     // Road-following (2026-10-30, "when snapping to a road it should
     // follow the road until the next point if it is also on a road"):
     // only when BOTH this click and the previous point landed on a road —
@@ -883,12 +929,23 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       if (newPoints.length === 0) newPoints.push(roadSnap);
       draftPoints.push(...newPoints);
       draftClickPointCounts.push(newPoints.length);
+    } else if (coastlineFollow) {
+      // Coastline-following (2026-11-01, "snapping to the coast line
+      // should work like the other snapping for building, jump big gaps
+      // but follow if I mannualy do it") — mirrors road-following above,
+      // except coastlineFollowBetween itself decides whether the two
+      // clicks are close enough along the SAME chain to trace in detail
+      // (null for a big gap or a different landmass, in which case this
+      // falls through to the plain single-point branch below instead).
+      draftPoints.push(...coastlineFollow.slice(1));
+      draftClickPointCounts.push(coastlineFollow.length - 1);
     } else {
-      const point = coastlineSnap ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
+      const point = coastlineSnap?.point ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
       draftPoints.push(point);
       draftClickPointCounts.push(1);
     }
     lastPointWasRoadSnapped = roadSnap !== null;
+    lastCoastlineSnap = coastlineSnap;
     updateDraftLayers();
     render();
   });

@@ -162,14 +162,12 @@ body {
   border-color: var(--border-accent);
 }
 
-/* The live game-clock cluster, docked to the bar's own left edge via
-   absolute positioning so it doesn't fight the centred nav-button
-   group's own flex layout (bottom-bar.ts's buildClockCluster). */
+/* The live game-clock cluster. Appended directly to document.body, not
+   nested inside the bar (bottom-bar.ts's buildClockCluster has the full
+   reason — a descendant can't escape its parent's own z-index ceiling,
+   which hid the clock behind the route list), so its own position/
+   z-index are set inline in JS; this just covers its internal layout. */
 .bottom-bar-clock {
-  position: absolute;
-  left: 16px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: 10px;

@@ -1,7 +1,7 @@
 // Manual verification for coastline-clip.mts (31 October hand-off item 2,
 // OPEN-ITEMS.md), run directly with `npx tsx
 // src/renderer/coastline-clip.verify.mts`.
-import { segmentIntersection, findCoastlineCrossings, coastlineWalkBetween, clipRingToCoastline, nearestPointOnCoastline, type FareZonePoint } from "./coastline-clip.mts";
+import { segmentIntersection, findCoastlineCrossings, coastlineWalkBetween, clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type FareZonePoint } from "./coastline-clip.mts";
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
@@ -163,7 +163,8 @@ assert(
   const click = { lon: -6.305, lat: 57.45 }; // ~300m west of the chain at this latitude
   const snapped = nearestPointOnCoastline(click, [chain], 500);
   assert(snapped !== null, "a click within the cutoff snaps to the coastline");
-  assert(snapped !== null && Math.abs(snapped.lon - -6.3) < 1e-6, "the snapped point lands exactly on the chain, not partway to it");
+  assert(snapped !== null && Math.abs(snapped.point.lon - -6.3) < 1e-6, "the snapped point lands exactly on the chain, not partway to it");
+  assert(snapped !== null && snapped.chainIndex === 0 && snapped.edgeIndex === 0, "the snap also reports which chain/edge it landed on, for coastlineFollowBetween");
 }
 
 {
@@ -182,7 +183,51 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
   const nearChain: FareZonePoint[] = [{ lon: 1.001, lat: 0 }, { lon: 1.001, lat: 1 }];
   const farChain: FareZonePoint[] = [{ lon: 5, lat: 0 }, { lon: 5, lat: 1 }];
   const snapped = nearestPointOnCoastline({ lon: 1, lat: 0.5 }, [farChain, nearChain], 1_000_000);
-  assert(snapped !== null && Math.abs(snapped.lon - 1.001) < 1e-9, "the globally nearest chain wins, regardless of array order");
+  assert(snapped !== null && Math.abs(snapped.point.lon - 1.001) < 1e-9, "the globally nearest chain wins, regardless of array order");
+  assert(snapped !== null && snapped.chainIndex === 1, "the reported chainIndex points at the actual winning chain (nearChain, index 1), not array position 0");
+}
+
+// --- coastlineFollowBetween ---
+
+{
+  // Two coastline snaps close together on the same chain, with a real
+  // inland dip between them — should trace the real shoreline, the same
+  // "jump big gaps but follow if I manually do it" design confirmed for
+  // the (not yet built) building-cluster snap.
+  const bayChain: FareZonePoint[] = [
+    { lon: -6.3, lat: 57.300 },
+    { lon: -6.3, lat: 57.302 },
+    { lon: -6.29, lat: 57.304 }, // the real inland dip
+    { lon: -6.3, lat: 57.306 },
+    { lon: -6.3, lat: 57.308 },
+  ];
+  const from = nearestPointOnCoastline({ lon: -6.305, lat: 57.301 }, [bayChain], 1000)!;
+  const to = nearestPointOnCoastline({ lon: -6.305, lat: 57.307 }, [bayChain], 1000)!;
+  const followed = coastlineFollowBetween(from, to, [bayChain]);
+  assert(followed !== null, "two close coastline snaps on the same chain are followed, not left as null");
+  assert(followed !== null && followed.some((p) => p.lon === -6.29 && p.lat === 57.304), "the real inland dip between them is actually included, not skipped");
+}
+
+{
+  // Two snaps on different chains (e.g. two separate landmasses) — never
+  // followed, regardless of distance.
+  const chainA: FareZonePoint[] = [{ lon: 0, lat: 0 }, { lon: 0, lat: 1 }];
+  const chainB: FareZonePoint[] = [{ lon: 0.001, lat: 0 }, { lon: 0.001, lat: 1 }];
+  const chains = [chainA, chainB];
+  const from = nearestPointOnCoastline({ lon: -0.001, lat: 0.5 }, chains, 1000)!;
+  const to = nearestPointOnCoastline({ lon: 0.0015, lat: 0.5 }, chains, 1000)!;
+  assert(from.chainIndex === 0 && to.chainIndex === 1, "sanity: the two snaps really did land on different chains");
+  assert(coastlineFollowBetween(from, to, chains) === null, "two snaps on different chains are never followed, however close together");
+}
+
+{
+  // Two snaps on the SAME chain but genuinely far apart along it — a big
+  // gap, left as null so the caller just connects them with a straight
+  // line instead of tracing a huge stretch of coast.
+  const longChain: FareZonePoint[] = [{ lon: -6.3, lat: 50 }, { lon: -6.3, lat: 60 }];
+  const from = nearestPointOnCoastline({ lon: -6.301, lat: 50.1 }, [longChain], 1000)!;
+  const to = nearestPointOnCoastline({ lon: -6.301, lat: 59.9 }, [longChain], 1000)!;
+  assert(coastlineFollowBetween(from, to, [longChain]) === null, "two snaps far apart on the same chain are a big gap, left as null");
 }
 
 console.log("All coastline-clip checks passed.");

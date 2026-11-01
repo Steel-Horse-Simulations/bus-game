@@ -72,6 +72,16 @@ map.addControl(
     customAttribution: "© OpenMapTiles © OpenStreetMap contributors",
   }),
 );
+// MapLibre's own default Shift+drag box-zoom interaction was never
+// disabled, and directly conflicted with every "hold Shift to bypass
+// snapping" feature in the game (found live, 2026-11-01: "shift still
+// does nothing, it still wont add a point" in fare-zone-drawing.ts) —
+// MapLibre's BoxZoomHandler claims the mousedown as soon as Shift is
+// held, before the game's own click handler ever sees it, so a plain
+// Shift+click (no drag) silently did nothing at all. No feature in this
+// game uses box-zoom itself, so it's disabled outright rather than
+// trying to selectively re-enable/disable it per tool.
+map.boxZoom.disable();
 // A live user request: "I've also just found out I can rotate the map,
 // can there be a button to snap the map to facing North again please" —
 // MapLibre's own compass control does exactly this already (click resets
