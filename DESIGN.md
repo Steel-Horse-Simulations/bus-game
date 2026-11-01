@@ -1136,39 +1136,93 @@ number** rather than stacking as six separate bonuses.
 
 ## 9. Fares and ticketing
 
-Fare zones are drawn on the map by the player, in the style of Lothian's. Each
-zone is typed **city**, **country**, **island** or **town** (the last two
-added 2026-10-31, T107). The **depot group** is the unit of ticket validity
-and of fare capping.
+**Reworked 2026-11-01** — a live, multi-message design discussion replaced
+large parts of this section's own fare model. The real anchor is Lothian
+Buses' own published fares (screenshot supplied directly, 2026-11-01):
+Adult Single £2.40, Child Single £1.20, Night Single £3.50, City DAY £6.00
+(TapTapCap auto-capped £5.70), City LATE £5.50 (6pm–4:30am, day **and**
+night services), NETWORK £14.00, City WEEK £26.50 (**TapTapCap-only — there
+is no separately-purchasable walk-up Weekly ticket in Lothian's own real
+fare structure at all**, only the automatic cap). That last point turned
+out to matter: it's not just a real-world curiosity, it's the direct real
+precedent for this game's own new rule that Weekly is purely an automatic
+cap threshold, never a ticket a passenger buys up front.
+
+**Ordinary, Night and Airport Express fares are all fixed, company-wide
+game constants, not a per-depot-group player setting any more** —
+confirmed directly: "I think having this done by the player is too
+complex... fixed prices set once in code and just shown to the player,"
+then Airport Express folded into the same fixed bucket too (2026-11-01,
+with its own real reference screenshot — Lothian's Airlink Service 100:
+Adult Single **£6.00**, Adult Open Return **£8.50**, Child Single £3.00,
+Child Return £4.25, Family Return £22.00 — matching this section's own
+existing "AIR's own Single £6/Return £8.50" reference exactly). **Only
+Sightseeing stays player-set per depot group.** Every depot group's own
+fare-pricing panel, for Ordinary/Night/Airport Express fares, becomes a
+read-only display of these fixed figures rather than an editable one —
+not yet built, this section records the confirmed target. (Lothian's own
+real fares include Child and Family figures throughout — recorded here as
+real reference data in case child/family tickets are taken up as their
+own feature later, but that's not yet an actual concept in this game's
+fare model and nothing here should be read as adding one.)
+
+Fare zones are still drawn on the map by the player, in the style of
+Lothian's. Each zone is typed **city**, **country**, **island** or
+**town**. The **depot group** is the unit of ticket validity and of fare
+capping.
 
 ### Zone types
 
-- **City** — flat single fare, no zone counting.
-- **Country** — banded by zone count, bands set by the player.
-- **Island** — banded by zone count too, its own separate set of bands from
-  Country's. Geometrically exclusive with City/Country — an Island zone can
-  never share land with a City or Country zone — but a depot group can still
-  have an Island zone alongside City/Country zones elsewhere on its map; the
-  exclusion is purely geometric, not a depot-group-wide restriction.
+- **City** — every city has up to **two** City zones, an inner **Zone A**
+  and an outer **Zone B** (confirmed 2026-11-01) — **except London, which
+  is out of scope for this rule and will be handled separately when
+  reached.** A and B share one flat single fare between them (**£2.40**,
+  the real Lothian figure) — there is no "combined A+B" fare and no
+  per-mile pricing within the city at all; the A/B split only starts to
+  matter once a journey leaves the city (exact mechanism still pending —
+  the user is supplying Lothian's own Country fares next before this is
+  finalised).
+- **Country** (i.e. anywhere beyond the city) and **Island** — **no
+  longer banded by zone count.** Both now price Singles the same way
+  Long-distance routes already do: a **base fee plus a price per mile**,
+  real distance once the journey planner exists (Phase 4, RAPTOR — not
+  built yet, so this is the confirmed target, not yet wired to anything).
+  Island's own base fee is confirmed at **£2.40** (the same figure as the
+  City flat fare, not a coincidence — both anchor to Lothian's own real
+  Single price); Island's per-mile rate, and Country's own base fee and
+  per-mile rate, are **still pending** — the user is supplying Lothian's
+  real Country fares next specifically to ground these numbers, rather
+  than guessing at them. Geometrically, Island stays exclusive with
+  City/Country (an Island zone can never share land with a City or
+  Country zone) — a depot group can still have an Island zone alongside
+  City/Country zones elsewhere on its map; the exclusion is purely
+  geometric, not a depot-group-wide restriction. Both Country and Island
+  keep their own Dayrider (Day ticket), priced as its own flat figure (see
+  "Single fares" and "Capping" below), not per-mile — a day ticket
+  inherently doesn't scale with distance.
 - **Town** — declares exactly one Country or Island zone as its parent,
   never a City one, and must at least **partially overlap** it (relaxed
   2026-11-01 — a live user report, with a real example, showed a town can
   genuinely straddle the boundary into a second zone, so full containment
   was dropped; it still needs some real overlap with its declared parent,
-  not none at all). Never independently priced: always **70% of its
-  parent zone's own 1-zone figure**, rounded up to the nearest 5p, for a
-  trip that stays entirely within the town. Once a journey leaves the
+  not none at all). **No longer priced as a percentage of its parent** —
+  confirmed 2026-11-01 as a flat, fixed **£2** single fare, company-wide,
+  for a trip that stays entirely within the town (superseding the earlier
+  "70% of the parent's own 1-zone figure" rule). Once a journey leaves the
   town and crosses into or through other zones, the town has no further
   effect on zone-counting — it always just counts as 1 zone of its parent.
-  **Where a town's own area genuinely spans into a second, different
-  zone** (confirmed 2026-11-01): a trip touching the part of the town
-  that overlaps the second zone uses whichever of the two zones is more
-  expensive, compared **per fare type** (a Single might go one way, a
-  Weekly the other, independently) — not yet wired into any actual
-  journey-fare calculation, since that doesn't exist yet (RAPTOR, Phase
-  4); confirmed as the rule for whenever that's built, same "confirmed
-  but not yet actionable" treatment already given to other phase-gated
-  rules in this section (e.g. the ferry operator's monthly payout).
+  **Town's own Dayrider** is computed from the same real Lothian Day/Single
+  ratio used for Weekly below, applied to the town's own £2 single, rounded
+  up to the nearest 5p. **Where a town's own area genuinely spans into a
+  second, different zone** (confirmed 2026-11-01): a trip touching the
+  part of the town that overlaps the second zone uses whichever of the two
+  zones is more expensive, compared **per fare type** (a Single might go
+  one way, a Weekly the other, independently) — not yet wired into any
+  actual journey-fare calculation, since that doesn't exist yet (RAPTOR,
+  Phase 4); confirmed as the rule for whenever that's built, same
+  "confirmed but not yet actionable" treatment already given to other
+  phase-gated rules in this section (e.g. the ferry operator's monthly
+  payout).
 
 ### Ferry and joint tickets (T107, confirmed 2026-10-31)
 
@@ -1255,81 +1309,98 @@ areas. The 7.5% only applies to commercial mainland-hub routes
 
 | Case | Pricing |
 |---|---|
-| Within a city zone group | Flat fare, no zone counting |
-| Within a country zone group | Banded by zone count, bands set by the player |
-| Within an island zone group | Banded by zone count, its own separate bands from country's |
-| Within a town zone | 70% of the parent zone's own 1-zone figure, rounded up to the nearest 5p |
-| Beyond the originating depot group | Fixed price per mile |
-| Long-distance routes | No zones — base fare plus price per mile |
-| Airport Express routes | Flat single and flat return, each independently set — not the standard 1.6x return multiplier below |
-| Sightseeing | Its own two prices, entirely outside the zone system — see below |
+| Within a city (zone A, zone B, or crossing between them) | Flat **£2.40**, fixed in code |
+| Within a country zone, or beyond the city | Base fee + price per mile, fixed in code — **figures pending**, next from Lothian's real Country fares |
+| Within an island zone | Base fee **£2.40** + price per mile, fixed in code — **per-mile rate pending**, same reason |
+| Within a town zone | Flat **£2**, fixed in code (no longer a percentage of the parent — see "Zone types" above) |
+| Long-distance routes | No zones — base fare plus price per mile, player-set (unchanged) |
+| Airport Express routes | Flat Single **£6.00** and flat Return **£8.50**, fixed in code (real Lothian Airlink figures) — not the standard 1.6x return multiplier below |
+| Sightseeing | Its own two prices, player-set per depot group, entirely outside the zone system — see below |
 
-Where a journey crosses between city and country zones, the higher base price
-applies, then the additional price for the type of zone being travelled through.
+**Return** is a fixed game constant for every ticket family that isn't
+independently set: **1.6x a single, rounded up to the nearest 5p** — except
+Airport Express, which has its own fixed return fare instead (its real
+fares don't follow that ratio either: £6.00 Single/£8.50 Return is 1.4167x).
 
-**Return** is a fixed game constant, not a per-depot-group setting: **1.6x a
-single, rounded up to the nearest 5p** — except Airport Express, which has
-its own independently-set return fare instead (its real fares don't follow
-that ratio either, e.g. AIR's own Single £6/Return £8.50 is 1.4167x).
-
-Night services add an extra base fee and an extra per-zone fee on top of
-whatever the journey's own base single fare already is, both set by the
-player — shown only for a depot group that actually has a Night-type route
-(see "Route types and fares" below), not a manual per-service toggle.
-
-Lothian's real figures for reference: country singles are 1 zone (or 2 if A/B)
-£2.40, 2–3 zones £3.40, then £1 per zone to £6.40 at 6 zones; city singles a
-flat £2.40; night singles 1 zone £3.50, 2–3 £5.50, 4–6 £8.50.
+Night fares are also fixed in code now, alongside Ordinary and Airport
+Express (see the section intro above) — the exact extra-fee figures
+aren't separately reconfirmed yet, but Lothian's own real Night Single is
+**£3.50** against a £2.40 day-service City Single, a real anchor point for
+whenever those are finalised.
 
 ### Sightseeing tickets
 A separate ticket type from the ordinary families, sold in two forms at
 different prices: a **hop-on hop-off day ticket** and a **single trip** round the
-loop. Sightseeing fares sit outside the zone system and outside capping.
-Shown only for a depot group with at least one Sightseeing-type route.
+loop. Sightseeing fares sit outside the zone system and outside capping, and
+are the **only** fare family still set by the player, per depot group.
 
 ### Ticket families
-Single, return, day, weekly, **LATE** (evening, priced between a single
-and a day ticket) and **NETWORK** (everything, including Airport Express).
-**28-day tickets were dropped entirely** (confirmed 2026-10-31) — the list
-above is complete, not a subset.
-
-Weekly tickets are bought up front, after which the passenger travels free
-for that week.
+Single, return, day, **weekly** (now purely an automatic cap threshold, not
+a separately-purchasable ticket — see "Capping" below), **LATE** (evening,
+£5.50 real Lothian figure, valid 6pm–4:30am on day **and** night services)
+and **NETWORK** (everything, including Airport Express). **28-day and
+family tickets are not part of this game's fare model** (28-day dropped
+twice now, most recently 2026-11-01 alongside this whole rework; family
+tickets were never adopted even though Lothian/Airlink's own real fares
+include them — see the section intro above) — the list above is complete,
+not a subset.
 
 ### NETWORK
 Not an independently player-set price — a **percentage markup over the
 Combined (city+country) price**, applied identically to both Day and Weekly,
-rounded up to the nearest 5p. Only shown (and only needed) for a depot group
-that has both City and Country zones and more than 3 zones in total. A
-NETWORK ticket also covers travel on Island and Airport Express services as
-a coverage benefit — that doesn't change how the price itself is computed,
-which only ever reads the Combined price and the markup percentage.
+rounded up to the nearest 5p. **The markup percentage itself is now a real,
+fixed figure** (confirmed 2026-11-01) rather than player-set: Lothian's own
+real NETWORK (£14.00) against City DAY (£6.00) — **≈2.333x**, i.e. a
+**+133% markup**. Only shown (and only needed) for a depot group that has
+both City and Country zones and more than 3 zones in total. A NETWORK
+ticket covers travel on **all Ordinary, Night and Airport Express services
+in the depot group**, plus Island (confirmed 2026-11-01) — that doesn't
+change how the price itself is computed, which only ever reads the
+Combined price and the fixed markup percentage.
 
 ### Capping
-Caps apply **automatically** once a passenger reaches them, behaving like a day
-ticket bought retroactively. Three tiers — city zones, country zones, and
-city and country combined — but **there are no separate cap figures to
-set**: each tier's own Day and Weekly ticket price doubles as its capping
-threshold. Island, Sightseeing and NETWORK all sit entirely outside this
-system, priced on their own with no capping at all.
+**Reintroduced 2026-11-01** (was briefly removed, then brought back with a
+real-world restriction) — caps apply **automatically**, but **only on
+buses fitted with a tap-on tap-off ticket machine** (TICKETING.md's own
+machine tiers — which tier actually has tap-on tap-off isn't cross-checked
+here yet). This mirrors Lothian's own real TapTapCap system directly: City
+WEEK (£26.50) has **no separate walk-up price at all** in Lothian's real
+fares, only the TapTapCap automatic cap — the same is true in-game now,
+Weekly is never a ticket a passenger buys up front, only a threshold
+reached automatically by tapping on a tap-on tap-off-equipped bus.
 
-Lothian's figures for reference: City DAY £6.00, Country DAY £6.30, City&Country
-DAY £9.60; weekly £26.50 / £25.00 / £38.50.
+Caps are limited to the **Day and Weekly** thresholds only — **28-day
+tickets don't exist any more at all** (see "Ticket families" above) and
+**NETWORK is never capped into**, matching the existing "NETWORK sits
+outside capping" rule. Island, Sightseeing and NETWORK all still sit
+entirely outside the capping system, priced on their own.
 
-Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are in
-`reference/`.
+**Weekly is no longer independently set by the player** — it's computed
+automatically from whatever the (now fixed-in-code) Day price is, via a
+real fixed ratio: Lothian's own City WEEK (£26.50) against City DAY
+(£6.00) — **≈4.4167x**, rounded up to the nearest 5p. The same ratio
+applies uniformly wherever a Weekly figure is needed (Country, Island,
+Town), not a separate ratio per zone type.
+
+Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are
+in `reference/`, plus two real screenshots supplied directly 2026-11-01
+(Lothian's own City fares, and Airlink's own fares) — see this section's
+own intro above for the real figures read from them.
 
 ### Route types and fares
 Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
 Airport Express or Long-distance (UK-EXPANSION.md §10 for Night's own real
 operating window and its mandatory N-prefix numbering). Which fare sections
-above actually show in the fare-pricing panel is **derived from the depot
-group's real zones and routes**, never a manual toggle: Night fields need a
-Night-type route, Airport Express fields need an Airport Express-type
-route, Sightseeing fields need a Sightseeing-type route, Long-distance
-fields need a Long-distance-type route — the same derived-visibility
-principle City/Country/Island zone fields already use (shown only when
-that zone type actually exists on the map).
+actually show in the fare-pricing panel is still **derived from the depot
+group's real zones and routes**, never a manual toggle — but as of
+2026-11-01, most of them show **read-only**, not editable: Ordinary, Night
+and Airport Express fields are fixed, company-wide figures (see the section
+intro above), shown only when the depot group actually has a route of that
+type but not changeable there. **Sightseeing stays fully player-set**, and
+**Long-distance stays fully player-set** too (its own base-fare-plus-per-
+mile model was never part of this rework) — both still need a route of
+their own type to show, same derived-visibility principle City/Country/
+Island zone fields already use.
 
 ### £2 fare cap (Highland, SPT and Aberdeen)
 Modelled on the real Scottish schemes. Three zones (extended to Aberdeen,
