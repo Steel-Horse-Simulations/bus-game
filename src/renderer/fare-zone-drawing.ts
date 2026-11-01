@@ -81,6 +81,12 @@ const SNAP_RADIUS_PX = 14;
 // unrelated stretch of coast.
 const COASTLINE_SNAP_DISTANCE_M = 200;
 
+// How close (screen pixels, same convention as SNAP_RADIUS_PX) the eraser
+// brush reaches from the cursor — wider than the snap radius since this
+// is meant to be forgiving to drag over a cluster of points, not a
+// precise single-point pick.
+const ERASE_BRUSH_RADIUS_PX = 18;
+
 function otherToolActive(): boolean {
   return routeDrawState.isDrawing || placeStopState.isPlacing || placeDepotState.isPlacing || placeDealerState.isPlacing;
 }
@@ -137,7 +143,7 @@ function snapToExistingZones(map: maplibregl.Map, lngLat: maplibregl.LngLat, zon
 // all near this point), in which case the caller falls back to the raw
 // click, mirroring every other map tool's own `snap_to_any_road` fallback
 // pattern (depot-placement.ts, dealer-placement.ts).
-function snapToRoad(router: Router, lngLat: maplibregl.LngLat): FareZonePoint | null {
+function snapToRoad(router: Router, lngLat: { lng: number; lat: number }): FareZonePoint | null {
   const snapped = router.snap_to_any_road(lngLat.lng, lngLat.lat);
   return snapped.length === 2 ? { lon: snapped[0], lat: snapped[1] } : null;
 }
@@ -415,6 +421,15 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // array entry, so undoing a road-followed stretch removes the whole
   // stretch in one go, matching what the player actually did.
   const draftClickPointCounts: number[] = [];
+  // "Eraser brush" toggle (live user request, 2026-11-01: "I should also
+  // be able to remove individual points with a rubber type brush") —
+  // while active, dragging over the map removes any draft point within
+  // ERASE_BRUSH_RADIUS_PX of the cursor, continuously as it moves, rather
+  // than only being able to undo the single most recent click. Disables
+  // the map's own drag-to-pan while held, the same class of fix as the
+  // Shift+box-zoom conflict found earlier the same day — without it, a
+  // drag meant to erase would instead pan the map underneath the cursor.
+  let isErasing = false;
   // Whether the most recently added point was snapped to a road — checked
   // on the NEXT click to decide whether to road-follow between the two
   // ("follow the road until the next point if it is also on a road",
@@ -429,6 +444,29 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   let lastCoastlineSnap: CoastlineSnap | null = null;
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
+
+  // Re-derives both "was the current last point snapped" flags from
+  // whatever point is ACTUALLY left in draftPoints, rather than just
+  // wiping them — live bug report, 2026-11-01: "if I undo a section then
+  // it will only do a straight line after." Undo previously reset both
+  // flags unconditionally, even when the point it left behind really was
+  // still a coastline/road point, so the very next click could never
+  // follow from it. Draft points carry no "how was this snapped" tag of
+  // their own, so this re-queries at the leftover point's own exact
+  // coordinates — if it really was a snap, the same query lands back on
+  // it (at ~0 distance), correctly restoring the follow state; if it
+  // wasn't (a raw Shift click, a zone-to-zone snap), it just reflects
+  // whatever's genuinely nearest now, never wrong, only ever a convenience.
+  function recomputeLastSnapState(): void {
+    const last = draftPoints[draftPoints.length - 1];
+    if (!last) {
+      lastPointWasRoadSnapped = false;
+      lastCoastlineSnap = null;
+      return;
+    }
+    lastCoastlineSnap = nearestPointOnCoastline(last, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
+    lastPointWasRoadSnapped = lastCoastlineSnap === null && snapToRoad(router, { lng: last.lon, lat: last.lat }) !== null;
+  }
 
   function currentDepotGroup(): DepotGroup | undefined {
     return depotGroups.find((g) => g.id === selectedDepotGroupId);
@@ -448,6 +486,36 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   function updateDraftLayers(): void {
     (map.getSource(DRAFT_LINE_SOURCE_ID) as maplibregl.GeoJSONSource).setData(draftLineGeojson(draftPoints));
     (map.getSource(DRAFT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource).setData(draftPointsGeojson(draftPoints));
+  }
+
+  // Removes every draft point within the brush radius of a screen
+  // position — the eraser brush's own core operation, called from both a
+  // plain click (erase at that one spot) and a drag (erase continuously
+  // as the cursor moves). After erasing, draftClickPointCounts (which
+  // only makes sense as "how many points did THIS click add," in order)
+  // no longer has a coherent relationship to what's left, so it's reset
+  // to one entry per remaining point — "Undo point" still works after an
+  // erase, just one point at a time rather than one road-followed/
+  // coastline-followed stretch at a time, which is the closest sane
+  // fallback once the brush has made arbitrary interior removals.
+  function eraseNear(screenPoint: maplibregl.Point): void {
+    const before = draftPoints.length;
+    draftPoints = draftPoints.filter((p) => map.project([p.lon, p.lat]).dist(screenPoint) > ERASE_BRUSH_RADIUS_PX);
+    if (draftPoints.length === before) return;
+    draftClickPointCounts.length = 0;
+    for (let i = 0; i < draftPoints.length; i++) draftClickPointCounts.push(1);
+    recomputeLastSnapState();
+    updateDraftLayers();
+    render();
+  }
+
+  // Turns the eraser brush off and gives the map its own drag-to-pan back
+  // — called from every place drawing itself ends or restarts, so a
+  // leftover "erasing" state (and a permanently-disabled map drag) can
+  // never survive past the draft it was armed for.
+  function stopErasing(): void {
+    isErasing = false;
+    map.dragPan.enable();
   }
 
   function showError(err: unknown): void {
@@ -767,7 +835,9 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       const hint = document.createElement("div");
       hint.style.color = "var(--text-muted)";
       hint.style.marginBottom = "4px";
-      hint.textContent = `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Shift to place the point exactly where clicked, ignoring roads and the coastline — useful for a deliberate straight line out over open water.`;
+      hint.textContent = isErasing
+        ? "Erasing — click or drag over points to remove them. Click \"Erasing — click to stop\" when done."
+        : `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Shift to place the point exactly where clicked, ignoring roads and the coastline — useful for a deliberate straight line out over open water. Use "Erase points" to remove points with a brush instead of one at a time.`;
       drawSection.appendChild(hint);
 
       const controls = document.createElement("div");
@@ -785,12 +855,26 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         // one go, matching what the player actually did.
         const countToRemove = draftClickPointCounts.pop() ?? 1;
         draftPoints.splice(draftPoints.length - countToRemove, countToRemove);
-        lastPointWasRoadSnapped = false;
-        lastCoastlineSnap = null;
+        recomputeLastSnapState();
         updateDraftLayers();
         render();
       });
       controls.appendChild(undo);
+
+      const eraseToggle = document.createElement("button");
+      eraseToggle.className = "btn";
+      eraseToggle.textContent = isErasing ? "Erasing — click to stop" : "Erase points";
+      eraseToggle.classList.toggle("is-active", isErasing);
+      eraseToggle.disabled = draftPoints.length === 0 && !isErasing;
+      eraseToggle.addEventListener("click", () => {
+        isErasing = !isErasing;
+        // Dragging to erase would otherwise also pan the map underneath
+        // the cursor — the same class of conflict as the Shift+box-zoom
+        // one found earlier the same day.
+        map.dragPan[isErasing ? "disable" : "enable"]();
+        render();
+      });
+      controls.appendChild(eraseToggle);
 
       const finish = document.createElement("button");
       finish.className = "btn";
@@ -799,6 +883,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       finish.addEventListener("click", () => {
         fareZoneDrawState.isDrawing = false;
         pendingZone = true;
+        stopErasing();
         toggle.classList.remove("is-active");
         render();
       });
@@ -813,6 +898,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
         lastCoastlineSnap = null;
+        stopErasing();
         toggle.classList.remove("is-active");
         updateDraftLayers();
         render();
@@ -849,8 +935,36 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     }
   }
 
+  // Eraser-brush drag: mousedown arms it and erases once at that spot
+  // (covers a plain click too, not just a drag), mousemove keeps erasing
+  // continuously while the button stays down, mouseup/mouseleave ends the
+  // drag. Kept separate from the ordinary "click" handler below, which
+  // explicitly ignores clicks while erasing — mousedown already did the
+  // single-click case, so click would otherwise double up on it.
+  let isErasingDrag = false;
+  map.on("mousedown", (e) => {
+    if (!fareZoneDrawState.isDrawing || !isErasing || otherToolActive()) return;
+    isErasingDrag = true;
+    eraseNear(e.point);
+  });
+  map.on("mousemove", (e) => {
+    if (!isErasingDrag) return;
+    eraseNear(e.point);
+  });
+  map.on("mouseup", () => {
+    isErasingDrag = false;
+  });
+  // A real mouseup released outside the map canvas (dragged off the
+  // edge) never reaches map.on("mouseup", ...) at all — a window-level
+  // listener as a safety net so the drag can't get stuck "on" past
+  // wherever the cursor actually left the canvas.
+  window.addEventListener("mouseup", () => {
+    isErasingDrag = false;
+  });
+
   map.on("click", (e) => {
     if (!fareZoneDrawState.isDrawing || otherToolActive()) return;
+    if (isErasing) return; // handled by mousedown/mousemove above, not here
 
     // Zone-to-zone snapping wins outright when it applies (see
     // snapToExistingZones's own comment) — no road-following in that case,

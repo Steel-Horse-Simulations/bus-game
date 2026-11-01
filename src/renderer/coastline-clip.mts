@@ -161,16 +161,52 @@ export function coastlineFollowBetween(from: CoastlineSnap, to: CoastlineSnap, c
   return coastlineWalkBetween(coastlineChains[from.chainIndex], from.edgeIndex, from.point, to.edgeIndex, to.point);
 }
 
+interface BoundingBox {
+  minLon: number;
+  maxLon: number;
+  minLat: number;
+  maxLat: number;
+}
+
+function boundingBoxOf(points: readonly FareZonePoint[]): BoundingBox {
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  for (const p of points) {
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+  }
+  return { minLon, maxLon, minLat, maxLat };
+}
+
+function boxesOverlap(a: BoundingBox, b: BoundingBox): boolean {
+  return a.minLon <= b.maxLon && a.maxLon >= b.minLon && a.minLat <= b.maxLat && a.maxLat >= b.minLat;
+}
+
 export function clipRingToCoastline(points: FareZonePoint[], coastlineChains: FareZonePoint[][]): FareZonePoint[] {
   if (coastlineChains.length === 0 || points.length < 3) return points;
+  // Performance (live report, 2026-11-01: "saving a zone creates
+  // incredibly long freezes if its a complicated zone") — this used to
+  // check every ring edge against every point of the ENTIRE coastline
+  // dataset (now hundreds of thousands of points across the extract,
+  // after T125/T127's own gap-bridging work made it far more detailed),
+  // with the cost multiplying by however many edges the zone has —
+  // exactly matching "freezes... if it's a complicated zone." Filtered
+  // once, up front, to only the chains whose own bounding box could
+  // possibly matter to THIS ring at all, rather than per edge.
+  const ringBox = boundingBoxOf(points);
+  const relevantChains = coastlineChains.filter((chain) => boxesOverlap(ringBox, boundingBoxOf(chain)));
   const result: FareZonePoint[] = [];
   for (let i = 0; i < points.length; i++) {
     const p1 = points[i];
     const p2 = points[(i + 1) % points.length];
     result.push(p1);
-    const crossings = findCoastlineCrossings(p1, p2, coastlineChains);
+    const crossings = findCoastlineCrossings(p1, p2, relevantChains);
     if (crossings.length === 2 && crossings[0].chainIndex === crossings[1].chainIndex) {
-      const chain = coastlineChains[crossings[0].chainIndex];
+      const chain = relevantChains[crossings[0].chainIndex];
       result.push(...coastlineWalkBetween(chain, crossings[0].edgeIndex, crossings[0].point, crossings[1].edgeIndex, crossings[1].point));
     }
   }
