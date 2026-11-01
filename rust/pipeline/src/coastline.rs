@@ -9,19 +9,24 @@
 /// clipping itself happens client-side (`fare-zone-drawing.ts`), this
 /// artefact only supplies the real geometry to clip against.
 ///
-/// Scope, flagged rather than silently assumed: `assemble_chains` only
-/// joins ways head-to-tail in a consistent direction (one way's own last
-/// node exactly matching another way's own first node) — real OSM
+/// Scope, flagged rather than silently assumed: `assemble_chains` joins
+/// ways head-to-tail, trying both directions at each end (a way's first
+/// node matching where the chain currently is, or its last node matching
+/// — the latter needs that way walked in reverse to continue). Real OSM
 /// coastline tagging conventionally keeps a consistent direction along
-/// one coast (sea on the right of the way), so consecutive ways along a
-/// real stretch usually do chain this way, but a way needing to be
-/// *reversed* to join, or a genuine branch point, is not handled: the
-/// chain simply stops there rather than guessing. A gap in the real data
-/// (a missing way, or a dangling end at the extract boundary) likewise
-/// just ends that chain early. For the Scotland+border extract this
-/// covers the common case without attempting a fully general, planet-
-/// scale coastline assembler — a bounded, pragmatic approach, not a
-/// complete one.
+/// one coast, but not perfectly everywhere a real extract has been edited
+/// by different contributors over time — live user report, 2026-11-01,
+/// confirmed by reading this function: drawing a fare zone along a real
+/// stretch of Skye's coast kept falling back to a straight line in
+/// places it shouldn't have, because ways needing a reversed join were
+/// splitting one real continuous coastline into several separate chain
+/// objects. A genuine branch point is still not handled: the chain picks
+/// whichever unused candidate it finds first rather than guessing which
+/// branch is "the" coastline. A gap in the real data (a missing way, or a
+/// dangling end at the extract boundary) likewise just ends that chain
+/// early. For the whole-UK+Ireland+IoM extract this covers the common
+/// case without attempting a fully general, planet-scale coastline
+/// assembler — a bounded, pragmatic approach, not a complete one.
 use std::collections::HashMap;
 
 pub use game_data::{CoastlineChain, CoastlineData};
@@ -77,21 +82,40 @@ pub fn assemble_chains(raw: Vec<RawCoastlineWay>) -> Vec<CoastlineChain> {
 
         loop {
             // Grow forward: some unused way starts exactly where this
-            // chain currently ends.
+            // chain currently ends (joined as drawn)...
             if let Some(&next_idx) = by_start.get(&last_node).and_then(|c| c.iter().find(|&&idx| !used[idx])) {
                 used[next_idx] = true;
                 geometry.extend(raw[next_idx].geometry.iter().skip(1));
                 last_node = raw[next_idx].last_node;
                 continue;
             }
+            // ...or some unused way ENDS exactly where this chain
+            // currently ends — that way continues the real coastline too,
+            // just walked in reverse.
+            if let Some(&next_rev_idx) = by_end.get(&last_node).and_then(|c| c.iter().find(|&&idx| !used[idx])) {
+                used[next_rev_idx] = true;
+                geometry.extend(raw[next_rev_idx].geometry.iter().rev().skip(1));
+                last_node = raw[next_rev_idx].first_node;
+                continue;
+            }
             // Grow backward: some unused way ends exactly where this chain
-            // currently starts.
+            // currently starts (joined as drawn)...
             if let Some(&prev_idx) = by_end.get(&first_node).and_then(|c| c.iter().find(|&&idx| !used[idx])) {
                 used[prev_idx] = true;
                 let mut prefix = raw[prev_idx].geometry.clone();
                 prefix.extend(geometry.into_iter().skip(1));
                 geometry = prefix;
                 first_node = raw[prev_idx].first_node;
+                continue;
+            }
+            // ...or some unused way STARTS exactly where this chain
+            // currently starts — needs to be reversed and prepended.
+            if let Some(&prev_rev_idx) = by_start.get(&first_node).and_then(|c| c.iter().find(|&&idx| !used[idx])) {
+                used[prev_rev_idx] = true;
+                let mut prefix: Vec<(i32, i32)> = raw[prev_rev_idx].geometry.iter().rev().cloned().collect();
+                prefix.extend(geometry.into_iter().skip(1));
+                geometry = prefix;
+                first_node = raw[prev_rev_idx].last_node;
                 continue;
             }
             break;
@@ -138,6 +162,31 @@ mod tests {
         let chains = assemble_chains(raw);
         assert_eq!(chains.len(), 1, "all three join into a single chain");
         assert_eq!(chains[0].geometry, vec![(0, 0), (10, 10), (20, 20), (30, 30)]);
+    }
+
+    #[test]
+    fn a_way_needing_a_reversed_join_still_chains_forward() {
+        // Way A: node 1 -> node 2. Way B: node 3 -> node 2 (its own LAST
+        // node, not first, matches where the chain currently ends) —
+        // real OSM coastline tagging direction isn't perfectly consistent
+        // everywhere a real extract has been edited over time. B must be
+        // walked in reverse (2 -> 3) to continue the real coastline.
+        let raw = vec![way(1, 2, &[(0, 0), (10, 10)]), way(3, 2, &[(20, 20), (10, 10)])];
+        let chains = assemble_chains(raw);
+        assert_eq!(chains.len(), 1, "a way needing a reversed join still joins into one chain, not two");
+        assert_eq!(chains[0].geometry, vec![(0, 0), (10, 10), (20, 20)], "the reversed way's own geometry is walked in the right direction, not just appended as-is");
+    }
+
+    #[test]
+    fn a_way_needing_a_reversed_join_still_chains_backward() {
+        // Way A (the seed): node 2 -> node 3. Way B: node 2 -> node 1 —
+        // its own FIRST node matches where the chain currently starts, so
+        // a normal backward join (which looks for a LAST-node match)
+        // wouldn't find it; B needs to be reversed (1 -> 2) and prepended.
+        let raw = vec![way(2, 3, &[(10, 10), (20, 20)]), way(2, 1, &[(10, 10), (0, 0)])];
+        let chains = assemble_chains(raw);
+        assert_eq!(chains.len(), 1, "a way needing a reversed backward join still joins into one chain");
+        assert_eq!(chains[0].geometry, vec![(0, 0), (10, 10), (20, 20)], "the reversed-and-prepended way's own geometry reads in the right direction");
     }
 
     #[test]
