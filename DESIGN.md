@@ -1310,8 +1310,8 @@ areas. The 7.5% only applies to commercial mainland-hub routes
 | Case | Pricing |
 |---|---|
 | Within a city (zone A, zone B, or crossing between them) | Flat **£2.40**, fixed in code |
-| Within a country zone, or beyond the city | Base fee + price per mile, fixed in code — **figures pending**, next from Lothian's real Country fares |
-| Within an island zone | Base fee **£2.40** + price per mile, fixed in code — **per-mile rate pending**, same reason |
+| On a bus that leaves the city zones at all ("Country" — see "City-only vs Country buses" below) | Base fee + price per mile, fixed in code — **real reference data now in hand (below), the actual base fee/per-mile conversion is still open** |
+| Within an island zone | Base fee **£2.40** + price per mile, fixed in code — **per-mile rate pending**, same open conversion question |
 | Within a town zone | Flat **£2**, fixed in code (no longer a percentage of the parent — see "Zone types" above) |
 | Long-distance routes | No zones — base fare plus price per mile, player-set (unchanged) |
 | Airport Express routes | Flat Single **£6.00** and flat Return **£8.50**, fixed in code (real Lothian Airlink figures) — not the standard 1.6x return multiplier below |
@@ -1323,10 +1323,26 @@ Airport Express, which has its own fixed return fare instead (its real
 fares don't follow that ratio either: £6.00 Single/£8.50 Return is 1.4167x).
 
 Night fares are also fixed in code now, alongside Ordinary and Airport
-Express (see the section intro above) — the exact extra-fee figures
-aren't separately reconfirmed yet, but Lothian's own real Night Single is
-**£3.50** against a £2.40 day-service City Single, a real anchor point for
-whenever those are finalised.
+Express (see the section intro above).
+
+**Lothian's real Single reference data** (screenshots supplied directly,
+2026-11-01 — these are Lothian's own real **zone-banded** fares, the model
+this game is deliberately moving away from for Country/Island; recorded
+here as the grounding data for working out a sensible base-fee-plus-
+per-mile equivalent, not as a zone-banded model to actually build):
+
+| Zones | Day Single | Night Single |
+|---|---|---|
+| 1 (or 2 if A/B) | £2.40 | £3.50 |
+| 2 or 3 | £3.40 | £5.50 |
+| 4 | £4.40 | £8.50 (4–6 banded together) |
+| 5 | £5.40 | " |
+| 6 | £6.40 | " |
+
+**Still genuinely open, not guessed at**: converting this real zone-banded
+data into a base-fee-plus-per-mile formula needs either a real sense of how
+many miles each of Lothian's own zone steps actually covers, or an agreed
+method for approximating it — flagged for the user rather than invented.
 
 ### Sightseeing tickets
 A separate ticket type from the ordinary families, sold in two forms at
@@ -1337,13 +1353,26 @@ are the **only** fare family still set by the player, per depot group.
 ### Ticket families
 Single, return, day, **weekly** (now purely an automatic cap threshold, not
 a separately-purchasable ticket — see "Capping" below), **LATE** (evening,
-£5.50 real Lothian figure, valid 6pm–4:30am on day **and** night services)
-and **NETWORK** (everything, including Airport Express). **28-day and
-family tickets are not part of this game's fare model** (28-day dropped
-twice now, most recently 2026-11-01 alongside this whole rework; family
-tickets were never adopted even though Lothian/Airlink's own real fares
-include them — see the section intro above) — the list above is complete,
-not a subset.
+valid 6pm–4:30am on day **and** night services) and **NETWORK** (everything,
+including Airport Express). **28-day and family tickets are not part of
+this game's fare model** (28-day dropped twice now, most recently
+2026-11-01 alongside this whole rework; family tickets were never adopted
+even though Lothian/Airlink's own real fares include them — see the
+section intro above) — the list above is complete, not a subset.
+
+### City-only vs Country buses (ticket validity)
+Confirmed 2026-11-01, from Lothian's own real Day ticket wording ("Country
+DAY... not valid on Lothian Buses" — Lothian's own City and Country
+services are run as genuinely separate operations in reality, each with
+tickets that don't cross over). Replicated in-game at the **route** level,
+not read off a passenger's own journey: a route counts as **City-only** if
+it never leaves the city zones (A/B) anywhere along its length, and counts
+as **Country** the moment it leaves the city zones at all, even once. A
+City-only ticket (City DAY/LATE/the City cap) only validates on City-only
+routes; a Country ticket only on Country routes; City&Country (Combined)
+covers both. Not yet wired into any actual ticket-validity checking, since
+there's no journey/ticketing engine yet (Phase 4/TICKETING.md) — recorded
+as the confirmed rule for when there is one.
 
 ### NETWORK
 Not an independently player-set price — a **percentage markup over the
@@ -1363,11 +1392,12 @@ Combined price and the fixed markup percentage.
 real-world restriction) — caps apply **automatically**, but **only on
 buses fitted with a tap-on tap-off ticket machine** (TICKETING.md's own
 machine tiers — which tier actually has tap-on tap-off isn't cross-checked
-here yet). This mirrors Lothian's own real TapTapCap system directly: City
-WEEK (£26.50) has **no separate walk-up price at all** in Lothian's real
-fares, only the TapTapCap automatic cap — the same is true in-game now,
-Weekly is never a ticket a passenger buys up front, only a threshold
-reached automatically by tapping on a tap-on tap-off-equipped bus.
+here yet). This mirrors Lothian's own real TapTapCap system directly: every
+real Weekly figure below has **no separate walk-up price at all** in
+Lothian's real fares, only the TapTapCap automatic cap — the same is true
+in-game now, Weekly is never a ticket a passenger buys up front, only a
+threshold reached automatically by tapping on a tap-on tap-off-equipped
+bus.
 
 Caps are limited to the **Day and Weekly** thresholds only — **28-day
 tickets don't exist any more at all** (see "Ticket families" above) and
@@ -1377,15 +1407,30 @@ entirely outside the capping system, priced on their own.
 
 **Weekly is no longer independently set by the player** — it's computed
 automatically from whatever the (now fixed-in-code) Day price is, via a
-real fixed ratio: Lothian's own City WEEK (£26.50) against City DAY
-(£6.00) — **≈4.4167x**, rounded up to the nearest 5p. The same ratio
-applies uniformly wherever a Weekly figure is needed (Country, Island,
-Town), not a separate ratio per zone type.
+real fixed ratio from Lothian's own figures, rounded up to the nearest 5p.
+
+**Lothian's full real reference data** (screenshots supplied directly,
+2026-11-01 — City-only, Country-only and City&Country/Combined are three
+genuinely separate real products, matching the three-way City/Country/
+Combined split this game's own fare config already has):
+
+| Tier | Day (walk-up) | Day (TapTapCap) | Late | Week (TapTapCap only) |
+|---|---|---|---|---|
+| City | £6.00 | £5.70 | £5.50 | £26.50 |
+| Country | £6.30 | £6.20 | £6.20 | £25.00 |
+| City&Country (Combined) | £9.60 | £9.30 | £9.30 | £38.50 |
+
+**Genuinely open, flagged rather than silently picked**: the real Day→Week
+ratio isn't the same across all three tiers (City ≈4.42x, Country ≈3.97x,
+Combined ≈4.01x) — whether this game uses one single ratio everywhere
+(and if so, which tier's real ratio) or a separate ratio per tier needs
+the user's own call, not an assumption.
 
 Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are
-in `reference/`, plus two real screenshots supplied directly 2026-11-01
-(Lothian's own City fares, and Airlink's own fares) — see this section's
-own intro above for the real figures read from them.
+in `reference/`, plus real screenshots supplied directly 2026-11-01
+(Lothian's own City fares, Airlink's own fares, and Lothian's own Country
+fares) — see this section's own tables above for the real figures read
+from them.
 
 ### Route types and fares
 Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
