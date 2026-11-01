@@ -44,6 +44,8 @@ const ZONES_SOURCE_ID = "fare-zones";
 const ZONES_FILL_LAYER_ID = "fare-zones-fill";
 const ZONES_OUTLINE_LAYER_ID = "fare-zones-outline";
 const ZONES_LABEL_LAYER_ID = "fare-zones-label";
+const TOWN_BORDER_SOURCE_ID = "fare-zones-town-border";
+const TOWN_BORDER_LAYER_ID = "fare-zones-town-border";
 const DRAFT_LINE_SOURCE_ID = "fare-zone-draft-line";
 const DRAFT_LINE_LAYER_ID = "fare-zone-draft-line";
 const DRAFT_POINTS_SOURCE_ID = "fare-zone-draft-points";
@@ -202,6 +204,41 @@ function zonesToGeojson(zones: FareZone[]): GeoJSON.FeatureCollection {
   };
 }
 
+// A town zone's border is hidden everywhere it's fully surrounded by its
+// own parent (the fill colour already shows it there, and a visible
+// border there just looked bad — see the border's own paint comment at
+// TOWN_BORDER_LAYER_ID). But live feedback, 2026-11-01, following the
+// relaxed partial-overlap rule (T121): "it should still be visible if
+// its on the edge of a zone" — where a town's own edge actually leaves
+// its parent (now possible since full containment is no longer
+// required), hiding it entirely makes it impossible to see where the
+// town really extends to. Walks each town's own ring edge by edge
+// (wrapping back to the first point) and keeps only the edges where
+// EITHER endpoint sits outside the parent's ring — an edge with both
+// endpoints inside is fully interior and stays hidden, same reasoning
+// `fullyContains`'s own point-by-point check already uses elsewhere in
+// this file. A town with no resolvable parent (shouldn't happen, but a
+// save file could end up here) shows its WHOLE border, the safe default.
+function townVisibleBorderSegments(zones: FareZone[]): GeoJSON.FeatureCollection {
+  const features: GeoJSON.Feature[] = [];
+  for (const zone of zones) {
+    if (zone.zoneType !== "town") continue;
+    const parent = zones.find((z) => z.id === zone.parentZoneId);
+    for (let i = 0; i < zone.points.length; i++) {
+      const a = zone.points[i];
+      const b = zone.points[(i + 1) % zone.points.length];
+      const bothInsideParent = parent !== undefined && pointInRing(a, parent.points) && pointInRing(b, parent.points);
+      if (bothInsideParent) continue;
+      features.push({
+        type: "Feature",
+        properties: { colour: zone.colour },
+        geometry: { type: "LineString", coordinates: [[a.lon, a.lat], [b.lon, b.lat]] },
+      });
+    }
+  }
+  return { type: "FeatureCollection", features };
+}
+
 function draftLineGeojson(points: FareZonePoint[]): GeoJSON.FeatureCollection {
   if (points.length < 2) return { type: "FeatureCollection", features: [] };
   // Closes the ring visually once there are enough points to actually be a
@@ -255,6 +292,18 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     source: ZONES_SOURCE_ID,
     layout: { "text-field": ["get", "name"], "text-size": 13 },
     paint: { "text-color": "#18181b", "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
+  });
+  // Only the portion of a town zone's border that actually leaves its
+  // parent — see townVisibleBorderSegments's own comment. A separate
+  // source/layer rather than another `case` on ZONES_OUTLINE_LAYER_ID,
+  // since this needs per-EDGE visibility (computed in JS against the
+  // parent's own ring), not a per-FEATURE paint expression.
+  map.addSource(TOWN_BORDER_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: TOWN_BORDER_LAYER_ID,
+    type: "line",
+    source: TOWN_BORDER_SOURCE_ID,
+    paint: { "line-color": ["get", "colour"], "line-width": 3 },
   });
 
   map.addSource(DRAFT_LINE_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
@@ -371,6 +420,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     // the one being edited) is what makes snapping to a neighbouring
     // depot group's boundary possible in the first place.
     (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData(zonesToGeojson(allZones));
+    (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData(townVisibleBorderSegments(allZones));
   }
 
   function updateDraftLayers(): void {
@@ -871,6 +921,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // showing every zone regardless. Cleared on close, repopulated by
       // reloadZones()+render() above the next time the panel opens.
       (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+      (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
     }
   });
 }
