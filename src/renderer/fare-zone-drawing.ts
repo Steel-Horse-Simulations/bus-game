@@ -934,9 +934,11 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // should work like the other snapping for building, jump big gaps
       // but follow if I mannualy do it") — mirrors road-following above,
       // except coastlineFollowBetween itself decides whether the two
-      // clicks are close enough along the SAME chain to trace in detail
-      // (null for a big gap or a different landmass, in which case this
-      // falls through to the plain single-point branch below instead).
+      // clicks are on the SAME chain to trace in detail (null only for a
+      // genuinely different, unconnected chain, in which case this falls
+      // through to the plain single-point branch below instead — no
+      // distance cutoff, see coastlineFollowBetween's own comment for why
+      // one was tried and then removed).
       draftPoints.push(...coastlineFollow.slice(1));
       draftClickPointCounts.push(coastlineFollow.length - 1);
     } else {

@@ -190,10 +190,11 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
 // --- coastlineFollowBetween ---
 
 {
-  // Two coastline snaps close together on the same chain, with a real
-  // inland dip between them — should trace the real shoreline, the same
-  // "jump big gaps but follow if I manually do it" design confirmed for
-  // the (not yet built) building-cluster snap.
+  // Two coastline snaps on the same chain, with a real inland dip between
+  // them — should trace the real shoreline. "Close together" isn't load-
+  // bearing here any more (see the far-apart test below) — kept at this
+  // scale only because it's a convenient way to place a real dip between
+  // two snap points for the assertion.
   const bayChain: FareZonePoint[] = [
     { lon: -6.3, lat: 57.300 },
     { lon: -6.3, lat: 57.302 },
@@ -204,7 +205,7 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
   const from = nearestPointOnCoastline({ lon: -6.305, lat: 57.301 }, [bayChain], 1000)!;
   const to = nearestPointOnCoastline({ lon: -6.305, lat: 57.307 }, [bayChain], 1000)!;
   const followed = coastlineFollowBetween(from, to, [bayChain]);
-  assert(followed !== null, "two close coastline snaps on the same chain are followed, not left as null");
+  assert(followed !== null, "two coastline snaps on the same chain are followed, not left as null");
   assert(followed !== null && followed.some((p) => p.lon === -6.29 && p.lat === 57.304), "the real inland dip between them is actually included, not skipped");
 }
 
@@ -221,13 +222,19 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
 }
 
 {
-  // Two snaps on the SAME chain but genuinely far apart along it — a big
-  // gap, left as null so the caller just connects them with a straight
-  // line instead of tracing a huge stretch of coast.
+  // Two snaps on the SAME chain but genuinely far apart along it — still
+  // followed in full. Corrected 2026-11-01 from a live screenshot ("This
+  // should all be snapping," a clearly-continuous real stretch of coast
+  // several kilometres long falling back to straight lines): there is no
+  // distance cutoff any more. "Jump big gaps" only ever meant a different,
+  // unconnected chain (covered by the dedicated test above) — not "far
+  // apart along the one you're actually tracing."
   const longChain: FareZonePoint[] = [{ lon: -6.3, lat: 50 }, { lon: -6.3, lat: 60 }];
   const from = nearestPointOnCoastline({ lon: -6.301, lat: 50.1 }, [longChain], 1000)!;
   const to = nearestPointOnCoastline({ lon: -6.301, lat: 59.9 }, [longChain], 1000)!;
-  assert(coastlineFollowBetween(from, to, [longChain]) === null, "two snaps far apart on the same chain are a big gap, left as null");
+  const followed = coastlineFollowBetween(from, to, [longChain]);
+  assert(followed !== null, "two snaps on the same chain are followed however far apart, not left as null");
+  assert(followed !== null && followed.length === longChain.length, "the whole chain between them is included, nothing truncated");
 }
 
 console.log("All coastline-clip checks passed.");

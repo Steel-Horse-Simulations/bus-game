@@ -86,18 +86,11 @@ export function coastlineWalkBetween(
   return walked;
 }
 
-// Equirectangular projection centred on a given latitude — shared by
-// nearestPointOnCoastline and coastlineFollowBetween below, consistent
-// with `point_to_segment_closest` in `rust/game-wasm/src/lib.rs`, close
-// enough at this scale that the two don't need to match bit-for-bit.
+// Equirectangular projection centred on a given latitude, consistent with
+// `point_to_segment_closest` in `rust/game-wasm/src/lib.rs` — close enough
+// at this scale that the two don't need to match bit-for-bit.
 const DEG_TO_RAD = Math.PI / 180;
 const EARTH_RADIUS_M = 6_371_000;
-function metresDistance(a: FareZonePoint, b: FareZonePoint): number {
-  const cosLat = Math.cos(a.lat * DEG_TO_RAD);
-  const dx = (b.lon - a.lon) * DEG_TO_RAD * cosLat * EARTH_RADIUS_M;
-  const dy = (b.lat - a.lat) * DEG_TO_RAD * EARTH_RADIUS_M;
-  return Math.hypot(dx, dy);
-}
 
 export interface CoastlineSnap {
   point: FareZonePoint;
@@ -147,26 +140,24 @@ export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: F
   return bestDist <= maxDistanceM ? best : null;
 }
 
-// How far apart (metres, straight-line) two consecutive coastline-snapped
-// clicks can be and still have the real shoreline traced between them —
-// beyond this it's just a straight line instead, the same "jump big gaps,
-// but follow if I manually do it" design already confirmed for the
-// (not yet built) building-cluster snap, applied here on live request,
-// 2026-11-01: "snapping to the coast line should work like the other
-// snapping for building." 2km is close enough to clearly be the same
-// little bay/headland the player is tracing by hand, while not silently
-// tracing hundreds of kilometres of coast between two faraway clicks that
-// both merely happen to land on the same chain.
-const COASTLINE_FOLLOW_MAX_GAP_M = 2000;
-
 // Walks the real coastline between two consecutive snapped clicks, or
-// returns null for a "big gap" the caller should just connect with a
-// straight line instead: a different chain entirely (two separate
-// landmasses), or too far apart along the same one even though it's
-// technically the same chain.
+// null for a genuine "big gap" the caller should connect with a straight
+// line instead. Corrected 2026-11-01 from a live screenshot ("This should
+// all be snapping" — a clearly-continuous stretch of coast several
+// kilometres long was falling back to straight lines): a distance cutoff
+// was wrong here. Re-reading the ORIGINAL building-cluster-snap design
+// this was meant to mirror — "I click in the first and last place I want
+// the boundary and it fills in the middle" — "big gap" was never about
+// how far apart two clicks are, it's about whether they're still on the
+// SAME boundary at all. Two points on the same coastline chain are
+// always the same boundary, however far apart; the genuine "big gap"
+// case (a different, unconnected chain — crossing a strait to a separate
+// landmass) is already fully covered by the chainIndex check alone. A
+// player who wants a deliberate shortcut straight across, say, a loch
+// mouth rather than tracing all the way around it already has Shift for
+// exactly that (bypasses coastline-snapping entirely).
 export function coastlineFollowBetween(from: CoastlineSnap, to: CoastlineSnap, coastlineChains: FareZonePoint[][]): FareZonePoint[] | null {
   if (from.chainIndex !== to.chainIndex) return null;
-  if (metresDistance(from.point, to.point) > COASTLINE_FOLLOW_MAX_GAP_M) return null;
   return coastlineWalkBetween(coastlineChains[from.chainIndex], from.edgeIndex, from.point, to.edgeIndex, to.point);
 }
 
