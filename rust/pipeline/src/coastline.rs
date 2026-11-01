@@ -24,9 +24,16 @@
 /// whichever unused candidate it finds first rather than guessing which
 /// branch is "the" coastline. A gap in the real data (a missing way, or a
 /// dangling end at the extract boundary) likewise just ends that chain
-/// early. For the whole-UK+Ireland+IoM extract this covers the common
-/// case without attempting a fully general, planet-scale coastline
-/// assembler — a bounded, pragmatic approach, not a complete one.
+/// early — except for a genuinely small real gap, which `main.rs` closes
+/// as a separate step straight after, via this module's own
+/// `bridge_nearby_chain_ends` (confirmed from the same live report: even
+/// with the reversed-join fix above, some real stretches of Skye's coast
+/// were STILL falling back to straight lines, because two ways' own
+/// endpoints were a few metres apart rather than the exact same node —
+/// real OSM digitisation slop, not a direction problem at all). For the
+/// whole-UK+Ireland+IoM extract this covers the common case without
+/// attempting a fully general, planet-scale coastline assembler — a
+/// bounded, pragmatic approach, not a complete one.
 use std::collections::HashMap;
 
 pub use game_data::{CoastlineChain, CoastlineData};
@@ -129,6 +136,91 @@ pub fn assemble_chains(raw: Vec<RawCoastlineWay>) -> Vec<CoastlineChain> {
     chains
 }
 
+/// Bridges remaining dangling chain ends that are within a small real-
+/// world tolerance of each other but don't share an exact node id — real
+/// OSM coastline digitization isn't always perfectly snapped where two
+/// contributors' own edits meet. Confirmed directly against the real
+/// data (2026-11-01, live report with screenshots — a fare zone drawn
+/// along Skye's coast kept falling back to straight lines across small,
+/// genuine gaps assemble_chains alone couldn't close): many chain-ends
+/// sit within 1-5m of another chain's own end, clearly the same real
+/// point, not a coincidence. Kept conservative (a small tolerance, not a
+/// wide catch-everything radius) because Skye's own coast also has
+/// plenty of genuinely separate small skerries close together that must
+/// stay separate chains. Greedy nearest-pair-first: repeatedly finds the
+/// single closest pair of still-open ends across every remaining chain
+/// and merges them (reversing one side if needed, the same four-case
+/// direction logic `assemble_chains`'s own loop already uses, just
+/// between two whole chains instead of a way and a growing one), until
+/// no pair is left within tolerance. O(n^2) per round — fine at the
+/// Scotland+border extract's scale (a few thousand ends); a future
+/// whole-UK run with many more chains would want a spatial grid instead
+/// of a flat scan.
+pub fn bridge_nearby_chain_ends(chains: Vec<CoastlineChain>, tolerance_m: f64) -> Vec<CoastlineChain> {
+    const DEG_TO_M_LAT: f64 = 111_000.0;
+    fn dist_m(a: (i32, i32), b: (i32, i32)) -> f64 {
+        let lat = (a.1 as f64 / 1e7 + b.1 as f64 / 1e7) * 0.5;
+        let deg_to_m_lon = DEG_TO_M_LAT * lat.to_radians().cos();
+        let dx = (a.0 - b.0) as f64 / 1e7 * deg_to_m_lon;
+        let dy = (a.1 - b.1) as f64 / 1e7 * DEG_TO_M_LAT;
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    let mut chains: Vec<Vec<(i32, i32)>> = chains.into_iter().map(|c| c.geometry).collect();
+
+    loop {
+        // (chain i, i's matching end is its LAST point, chain j, j's
+        // matching end is its LAST point, distance)
+        let mut best: Option<(usize, bool, usize, bool, f64)> = None;
+        for i in 0..chains.len() {
+            for j in (i + 1)..chains.len() {
+                let i_ends = [(chains[i][0], false), (*chains[i].last().unwrap(), true)];
+                let j_ends = [(chains[j][0], false), (*chains[j].last().unwrap(), true)];
+                for &(i_pt, i_is_last) in &i_ends {
+                    for &(j_pt, j_is_last) in &j_ends {
+                        let d = dist_m(i_pt, j_pt);
+                        if d <= tolerance_m && best.is_none_or(|(_, _, _, _, bd)| d < bd) {
+                            best = Some((i, i_is_last, j, j_is_last, d));
+                        }
+                    }
+                }
+            }
+        }
+        let Some((i, i_is_last, j, j_is_last, _)) = best else { break };
+
+        // Unlike assemble_chains's own exact-node-id joins, the two ends
+        // being bridged here are NOT the same point (that gap is exactly
+        // what's being bridged) — both real points are kept, nothing
+        // skipped as a duplicate.
+        let chain_j = chains.remove(j);
+        let chain_i = std::mem::take(&mut chains[i]);
+        chains[i] = match (i_is_last, j_is_last) {
+            (true, false) => {
+                let mut m = chain_i;
+                m.extend(chain_j);
+                m
+            }
+            (true, true) => {
+                let mut m = chain_i;
+                m.extend(chain_j.into_iter().rev());
+                m
+            }
+            (false, false) => {
+                let mut m: Vec<(i32, i32)> = chain_j.into_iter().rev().collect();
+                m.extend(chain_i);
+                m
+            }
+            (false, true) => {
+                let mut m = chain_j;
+                m.extend(chain_i);
+                m
+            }
+        };
+    }
+
+    chains.into_iter().map(|geometry| CoastlineChain { geometry }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +298,60 @@ mod tests {
         let raw = vec![way(1, 2, &[(0, 0), (10, 10)]), way(50, 51, &[(900, 900), (910, 910)])];
         let chains = assemble_chains(raw);
         assert_eq!(chains.len(), 2, "a missing join partner leaves the chain exactly where the data stops");
+    }
+
+    fn chain(geom: &[(i32, i32)]) -> CoastlineChain {
+        CoastlineChain { geometry: geom.to_vec() }
+    }
+
+    // ~90 e7 units at the equator is ~1m (real distances, not node-id
+    // matches, so plain e7 integer deltas rather than named node ids).
+    const ABOUT_1M: i32 = 90;
+
+    #[test]
+    fn two_chain_ends_a_real_digitisation_gap_apart_get_bridged() {
+        // Chain A's own end and chain B's own start are ~1m apart — not
+        // the same node id at all, but confirmed (2026-11-01, real data
+        // measurement) to be exactly the kind of gap real OSM coastline
+        // digitisation leaves behind.
+        let chains = vec![chain(&[(0, 0), (1000, 0)]), chain(&[(1000 + ABOUT_1M, 0), (2000, 0)])];
+        let bridged = bridge_nearby_chain_ends(chains, 5.0);
+        assert_eq!(bridged.len(), 1, "two ends within tolerance are bridged into one chain");
+        assert_eq!(bridged[0].geometry, vec![(0, 0), (1000, 0), (1000 + ABOUT_1M, 0), (2000, 0)], "both chains' own real geometry is kept, including the small real gap itself");
+    }
+
+    #[test]
+    fn bridging_reverses_a_chain_when_its_matching_end_needs_it() {
+        // Chain A ends at (1000,0). Chain B's own LAST point (not first)
+        // is the one ~1m away — B needs to be walked in reverse to
+        // continue, same direction logic as assemble_chains's own joins.
+        let chains = vec![chain(&[(0, 0), (1000, 0)]), chain(&[(2000, 0), (1000 + ABOUT_1M, 0)])];
+        let bridged = bridge_nearby_chain_ends(chains, 5.0);
+        assert_eq!(bridged.len(), 1, "a reversed match still bridges into one chain");
+        assert_eq!(bridged[0].geometry, vec![(0, 0), (1000, 0), (1000 + ABOUT_1M, 0), (2000, 0)], "the reversed chain's own geometry reads in the right direction");
+    }
+
+    #[test]
+    fn ends_genuinely_far_apart_are_left_as_separate_chains() {
+        // ~1km apart — a real, deliberately separate feature (e.g. a
+        // genuinely separate small skerry close to the mainland), not a
+        // digitisation gap. Must stay unbridged at a conservative
+        // tolerance.
+        let chains = vec![chain(&[(0, 0), (1000, 0)]), chain(&[(1000 + ABOUT_1M * 1000, 0), (2000, 0)])];
+        let bridged = bridge_nearby_chain_ends(chains, 5.0);
+        assert_eq!(bridged.len(), 2, "ends well beyond the tolerance are never bridged");
+    }
+
+    #[test]
+    fn bridging_is_transitive_across_more_than_two_chains() {
+        // A real gap followed by another real gap a little further along
+        // — three originally-separate chains should end up as one.
+        let chains = vec![
+            chain(&[(0, 0), (1000, 0)]),
+            chain(&[(1000 + ABOUT_1M, 0), (2000, 0)]),
+            chain(&[(2000 + ABOUT_1M, 0), (3000, 0)]),
+        ];
+        let bridged = bridge_nearby_chain_ends(chains, 5.0);
+        assert_eq!(bridged.len(), 1, "a chain of real gaps all bridge together into a single chain, not just the first pair");
     }
 }

@@ -589,10 +589,22 @@ fn main() {
 
     let raw_coastline_way_count = scan.coastline_raw_ways.len();
     let coastline_chains = coastline::assemble_chains(scan.coastline_raw_ways);
+    let joined_chain_count = coastline_chains.len();
+    // 25m — real, measured against the actual data (2026-11-01): plenty
+    // of chain-ends sit within 1-5m of another chain's own end (clearly
+    // the same real point, OSM digitisation slop), but no clean natural
+    // break in the distance distribution out to a few hundred metres —
+    // picked wide enough for realistic digitisation error in a remote
+    // area like Skye, conservative enough to stay well clear of distinct
+    // small skerries, which are real separate features that must not
+    // get merged. See bridge_nearby_chain_ends's own doc comment.
+    const COASTLINE_BRIDGE_TOLERANCE_M: f64 = 25.0;
+    let coastline_chains = coastline::bridge_nearby_chain_ends(coastline_chains, COASTLINE_BRIDGE_TOLERANCE_M);
     let coastline_data = coastline::CoastlineData { chains: coastline_chains };
     println!("\nCoastline:");
     println!("  raw ways           {raw_coastline_way_count}");
-    println!("  assembled chains   {}", coastline_data.chains.len());
+    println!("  assembled chains   {joined_chain_count}");
+    println!("  after bridging     {} (within {COASTLINE_BRIDGE_TOLERANCE_M}m)", coastline_data.chains.len());
 
     let coastline_path = pbf_dir.join("coastline.bin").to_string_lossy().to_string();
     let coastline_bytes = coastline::save(&coastline_data, &coastline_path).expect("failed to save coastline data");
