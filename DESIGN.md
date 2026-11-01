@@ -1390,9 +1390,9 @@ Combined price and the fixed markup percentage.
 ### Capping
 **Reintroduced 2026-11-01** (was briefly removed, then brought back with a
 real-world restriction) — caps apply **automatically**, but **only on
-buses fitted with a tap-on tap-off ticket machine** (TICKETING.md's own
-machine tiers — which tier actually has tap-on tap-off isn't cross-checked
-here yet). This mirrors Lothian's own real TapTapCap system directly: every
+buses fitted with a tap-on tap-off ticket machine** — its own real upgrade
+tier (TICKETING.md §3: cheapest/fastest of the three, before Mid and
+Advanced). This mirrors Lothian's own real TapTapCap system directly: every
 real Weekly figure below has **no separate walk-up price at all** in
 Lothian's real fares, only the TapTapCap automatic cap — the same is true
 in-game now, Weekly is never a ticket a passenger buys up front, only a
@@ -1420,17 +1420,37 @@ Combined split this game's own fare config already has):
 | Country | £6.30 | £6.20 | £6.20 | £25.00 |
 | City&Country (Combined) | £9.60 | £9.30 | £9.30 | £38.50 |
 
-**Genuinely open, flagged rather than silently picked**: the real Day→Week
-ratio isn't the same across all three tiers (City ≈4.42x, Country ≈3.97x,
-Combined ≈4.01x) — whether this game uses one single ratio everywhere
-(and if so, which tier's real ratio) or a separate ratio per tier needs
-the user's own call, not an assumption.
+**Confirmed 2026-11-01**: the real Day→Week ratio isn't the same across
+all three tiers (City ≈4.42x, Country ≈3.97x, Combined ≈4.01x) — the game
+uses **three separate ratios, one per tier**, matching the real data
+exactly rather than averaging or picking a single one.
 
 Reference PDFs of the Lothian, Airlink and Lothian Country fares pages are
 in `reference/`, plus real screenshots supplied directly 2026-11-01
 (Lothian's own City fares, Airlink's own fares, and Lothian's own Country
 fares) — see this section's own tables above for the real figures read
 from them.
+
+### Discounted m-ticket bundles (mobile app only)
+Confirmed 2026-11-01, from a real screenshot of Lothian's own app: bulk-
+bought bundles of Day tickets at a real discount over the walk-up price,
+usable one at a time whenever the passenger wants within the bundle's own
+validity window. **Locked until the depot group has bought the "Mobile app
+live bus data" company-wide upgrade** (TICKETING.md §4, £12,000) — not
+available at all before then, mirroring how this is genuinely an app-only
+purchase route in reality too.
+
+Lothian's own real bundle figures (Day tickets only — **no City-only
+bundle is offered in reality**, only Country and City&Country/Combined):
+
+| Tier | 5-pack | Per ticket | 20-pack | Per ticket | vs walk-up |
+|---|---|---|---|---|---|
+| Country | £22.00 | £4.40 | £63.00 | £3.15 | £6.30 walk-up |
+| City&Country (Combined) | £32.50 | £6.50 | £120.00 | £6.00 | £9.60 walk-up |
+
+Not yet wired into any actual purchase flow, since the mobile app itself
+isn't built yet (TICKETING.md) — recorded as the confirmed target for
+when it is.
 
 ### Route types and fares
 Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
