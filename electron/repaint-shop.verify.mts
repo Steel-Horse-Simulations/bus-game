@@ -84,6 +84,19 @@ if (fs.existsSync(realSave)) {
     listRepaintShops(upgraded).every((s) => s.concurrentCapacity > 0 && s.turnaroundDays > 0),
     "a copy of the real save upgrades cleanly, every shop (seeded or not) with sane capacity/turnaround",
   );
+  // Real bug, found and fixed (v48->v49): the v45->v46 rebuild left
+  // repaint_shop_entrances permanently referencing the dropped
+  // "repaint_shops_v45" table — adding a real entrance on an upgraded
+  // real save used to throw "no such table: main.repaint_shops_v45".
+  // Proves the fix, not just that the migration itself doesn't throw.
+  const anyShop = listRepaintShops(upgraded)[0];
+  if (anyShop) {
+    const entrance = addRepaintShopEntrance(upgraded, anyShop.id, 0, 0, "both");
+    assert(
+      listRepaintShopEntrances(upgraded, anyShop.id).some((e) => e.id === entrance.id),
+      "adding a real entrance on the upgraded real save works (repaint_shop_entrances' own dangling FK to a dropped table is fixed)",
+    );
+  }
   upgraded.close();
 } else {
   console.log("skip real save upgrade check: no save at", realSave);

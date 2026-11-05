@@ -8,7 +8,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 49;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -75,6 +75,28 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- express-only route, not a variation. Set together by whatever UI creates
 -- a variation; not validated against "number" itself matching at this
 -- layer.
+-- "is_minor_variation" (DESIGN.md §6, confirmed 2026-11-01 — the real
+-- Skye 56 example, skipping Bernisdale on certain school runs) marks a
+-- variation that shares its parent's exact "number" with no letter at
+-- all, and is ALWAYS live-linked to the parent's current path (see
+-- route-combine-variations.mts's own resolveRoutePoints) rather than
+-- only when the player explicitly builds from a sibling's diversion
+-- (composed_from_route_ids). Mutually exclusive with variation_letter —
+-- a route is a major variation (lettered, opt-in live link) or a minor
+-- one (unlettered, always live-linked), never both — but enforced in
+-- createRoute/updateRoute below, NOT as a CHECK constraint here.
+-- Verified directly (not assumed) that a CHECK referencing
+-- variation_letter would be unsafe: this table has real FK dependents
+-- (route_timetables.route_id, duty_pieces.route_id and others, all
+-- REFERENCES routes(id)), and this project's node:sqlite build rewrites
+-- a dependent table's own FK clause to follow a RENAMEd parent table
+-- (confirmed with a throwaway test — renaming table a to a_old while
+-- b.a_id REFERENCES a(id) exists rewrites b's own schema to say
+-- REFERENCES "a_old"(id) instead), which then makes DROP TABLE a_old
+-- fail with "FOREIGN KEY constraint failed" once real rows exist —
+-- exactly what a CHECK needing the rename-rebuild-drop rebuild pattern
+-- would hit the moment a real save has timetables/duties on any route.
+-- A plain ADD COLUMN (below) sidesteps this entirely.
 -- "composed_from_route_ids" (DESIGN.md §6 "Combining variations") is a JSON
 -- array of other route ids whose own diversions this variation reuses —
 -- empty for an ordinary route or a variation drawn entirely by hand. When
@@ -116,7 +138,8 @@ CREATE TABLE IF NOT EXISTS routes (
   composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
   hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
   segments TEXT NOT NULL DEFAULT '[]',
-  route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance'))
+  route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance')),
+  is_minor_variation INTEGER NOT NULL DEFAULT 0
 );
 
 -- Shared long-distance sections (live design discussion, 2026-10-31) — a
@@ -1236,6 +1259,50 @@ export function openSave(path: string): SaveDb {
     // v46 -> v47: the repaint_bookings table — brand new, created by the
     // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
     // the version number.
+    db.exec("PRAGMA user_version = 47");
+  } else if (currentVersion === 47) {
+    // v47 -> v48: routes gains is_minor_variation (DESIGN.md §6, major/
+    // minor variations — see routes' own CREATE TABLE comment above for
+    // why this is a plain ADD COLUMN, no CHECK, with the mutual-
+    // exclusivity-with-variation_letter rule enforced in createRoute/
+    // updateRoute instead of the database. Every existing row gets 0 (no
+    // route was ever a minor variation before this column existed).
+    db.exec("ALTER TABLE routes ADD COLUMN is_minor_variation INTEGER NOT NULL DEFAULT 0");
+    db.exec("PRAGMA user_version = 48");
+  } else if (currentVersion === 48) {
+    // v48 -> v49: real bug fix, found by testing (not assumed) while
+    // building the v47->v48 migration above. The v45->v46 migration
+    // (repaint_shops' own weekly_capacity -> concurrent_capacity/
+    // turnaround_days rebuild) renamed repaint_shops to
+    // repaint_shops_v45 — and this project's node:sqlite build rewrites
+    // a DEPENDENT table's own FK clause to follow a renamed parent table
+    // (confirmed directly with a throwaway test), so
+    // repaint_shop_entrances' own schema was silently left permanently
+    // saying "REFERENCES repaint_shops_v45(id)", a table that no longer
+    // exists from that point on. Confirmed this is live, not
+    // theoretical: the real save's own repaint_shop_entrances table has
+    // exactly this corruption right now, and inserting a real entrance
+    // into it throws "no such table: main.repaint_shops_v45" on a disposable
+    // copy. Safe to rebuild outright (a rename-recreate-copy-drop, same
+    // pattern as every other rebuild here) since nothing else in the
+    // schema references repaint_shop_entrances itself (checked directly,
+    // not assumed) — copies across any real rows regardless, even though
+    // the real save currently has none.
+    db.exec("ALTER TABLE repaint_shop_entrances RENAME TO repaint_shop_entrances_v48");
+    db.exec(`
+      CREATE TABLE repaint_shop_entrances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repaint_shop_id INTEGER NOT NULL REFERENCES repaint_shops(id),
+        lon REAL NOT NULL,
+        lat REAL NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
+      )
+    `);
+    db.exec(`
+      INSERT INTO repaint_shop_entrances (id, repaint_shop_id, lon, lat, mode)
+      SELECT id, repaint_shop_id, lon, lat, mode FROM repaint_shop_entrances_v48
+    `);
+    db.exec("DROP TABLE repaint_shop_entrances_v48");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1368,6 +1435,7 @@ export interface Route {
   hailAndRideSections: RouteHailAndRideSection[];
   segments: RouteSegment[];
   routeType: RouteType;
+  isMinorVariation: boolean;
 }
 
 // A route's own build sequence (shared long-distance sections, 2026-10-31)
@@ -1399,6 +1467,7 @@ interface RouteRow {
   hail_and_ride_sections: string;
   segments: string;
   route_type: string;
+  is_minor_variation: number;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -1419,6 +1488,7 @@ function routeFromRow(row: RouteRow): Route {
     hailAndRideSections: JSON.parse(row.hail_and_ride_sections) as RouteHailAndRideSection[],
     segments: JSON.parse(row.segments) as RouteSegment[],
     routeType: row.route_type as RouteType,
+    isMinorVariation: row.is_minor_variation !== 0,
   };
 }
 
@@ -1438,10 +1508,14 @@ export function createRoute(
   hailAndRideSections: RouteHailAndRideSection[] = [],
   segments: RouteSegment[] = [],
   routeType: RouteType = "ordinary",
+  isMinorVariation = false,
 ): Route {
+  if (isMinorVariation && variationLetter !== null) {
+    throw new Error("createRoute: a minor variation can't also have a variation letter");
+  }
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       depotGroupId,
@@ -1458,6 +1532,7 @@ export function createRoute(
       JSON.stringify(hailAndRideSections),
       JSON.stringify(segments),
       routeType,
+      isMinorVariation ? 1 : 0,
     );
   return {
     id: Number(result.lastInsertRowid),
@@ -1476,6 +1551,7 @@ export function createRoute(
     hailAndRideSections,
     segments,
     routeType,
+    isMinorVariation,
   };
 }
 
@@ -1505,9 +1581,13 @@ export function updateRoute(
   hailAndRideSections: RouteHailAndRideSection[] = [],
   segments: RouteSegment[] = [],
   routeType: RouteType = "ordinary",
+  isMinorVariation = false,
 ): Route {
+  if (isMinorVariation && variationLetter !== null) {
+    throw new Error("updateRoute: a minor variation can't also have a variation letter");
+  }
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?, is_minor_variation = ?
      WHERE id = ?`,
   ).run(
     depotGroupId,
@@ -1524,6 +1604,7 @@ export function updateRoute(
     JSON.stringify(hailAndRideSections),
     JSON.stringify(segments),
     routeType,
+    isMinorVariation ? 1 : 0,
     id,
   );
   db.prepare("DELETE FROM route_timetables WHERE route_id = ?").run(id);
@@ -1544,6 +1625,7 @@ export function updateRoute(
     hailAndRideSections,
     segments,
     routeType,
+    isMinorVariation,
   };
 }
 
@@ -1645,7 +1727,7 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);

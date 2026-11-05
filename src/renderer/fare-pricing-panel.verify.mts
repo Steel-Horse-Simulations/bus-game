@@ -57,6 +57,7 @@ function route(routeType: RouteType, depotGroupId = 1): Route {
     hailAndRideSections: [],
     segments: [],
     routeType,
+    isMinorVariation: false,
   };
 }
 

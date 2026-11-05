@@ -93,6 +93,7 @@ contextBridge.exposeInMainWorld("routes", {
     hailAndRideSections: RouteHailAndRideSection[],
     segments: RouteSegment[],
     routeType: RouteType,
+    isMinorVariation: boolean,
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -110,6 +111,7 @@ contextBridge.exposeInMainWorld("routes", {
       hailAndRideSections,
       segments,
       routeType,
+      isMinorVariation,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   depotGroupHasRouteType: (depotGroupId: number, routeType: RouteType) =>
@@ -130,6 +132,7 @@ contextBridge.exposeInMainWorld("routes", {
     hailAndRideSections: RouteHailAndRideSection[],
     segments: RouteSegment[],
     routeType: RouteType,
+    isMinorVariation: boolean,
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -148,6 +151,7 @@ contextBridge.exposeInMainWorld("routes", {
       hailAndRideSections,
       segments,
       routeType,
+      isMinorVariation,
     ) as Promise<Route>,
   refreshComposedPoints: (id: number, points: RoutePoint[]) =>
     ipcRenderer.invoke("routes:refreshComposedPoints", id, points) as Promise<void>,

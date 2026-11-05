@@ -285,6 +285,7 @@ function registerRouteHandlers(): void {
       hailAndRideSections: RouteHailAndRideSection[],
       segments: RouteSegment[],
       routeType: RouteType,
+      isMinorVariation: boolean,
     ) =>
       createRoute(
         save,
@@ -302,6 +303,7 @@ function registerRouteHandlers(): void {
         hailAndRideSections,
         segments,
         routeType,
+        isMinorVariation,
       ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
@@ -327,6 +329,7 @@ function registerRouteHandlers(): void {
       hailAndRideSections: RouteHailAndRideSection[],
       segments: RouteSegment[],
       routeType: RouteType,
+      isMinorVariation: boolean,
     ) =>
       updateRoute(
         save,
@@ -345,6 +348,7 @@ function registerRouteHandlers(): void {
         hailAndRideSections,
         segments,
         routeType,
+        isMinorVariation,
       ),
   );
   ipcMain.handle("routes:refreshComposedPoints", (_e, id: number, points: RoutePoint[]) =>

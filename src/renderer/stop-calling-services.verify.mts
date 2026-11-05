@@ -32,6 +32,7 @@ function route(
     hailAndRideSections: [],
     segments: [],
     routeType: "ordinary",
+    isMinorVariation: false,
   };
 }
 

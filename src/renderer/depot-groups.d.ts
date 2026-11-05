@@ -57,6 +57,7 @@ interface Route {
   hailAndRideSections: RouteHailAndRideSection[];
   segments: RouteSegment[];
   routeType: RouteType;
+  isMinorVariation: boolean;
 }
 
 // A route's own build sequence (shared long-distance sections) — see
@@ -93,6 +94,7 @@ interface RoutesApi {
     hailAndRideSections: RouteHailAndRideSection[],
     segments: RouteSegment[],
     routeType: RouteType,
+    isMinorVariation: boolean,
   ): Promise<Route>;
   list(): Promise<Route[]>;
   depotGroupHasRouteType(depotGroupId: number, routeType: RouteType): Promise<boolean>;
@@ -112,6 +114,7 @@ interface RoutesApi {
     hailAndRideSections: RouteHailAndRideSection[],
     segments: RouteSegment[],
     routeType: RouteType,
+    isMinorVariation: boolean,
   ): Promise<Route>;
   refreshComposedPoints(id: number, points: RoutePoint[]): Promise<void>;
   delete(id: number): Promise<void>;
