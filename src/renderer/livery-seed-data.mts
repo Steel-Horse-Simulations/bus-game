@@ -59,8 +59,8 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // No real badge exists yet for this one at all (OPEN-ITEMS.md T98 —
   // "only Highland Council's badge genuinely remains missing"), so there's
   // nothing to sample colours from. Seeded anyway with a plain placeholder
-  // pair so Skye/Caithness's own lock list has a real, selectable row for
-  // every one of their accepted liveries — `livery-badges.mts` simply has
+  // pair so Caithness's own lock list has a real, selectable row for
+  // every one of its accepted liveries — `livery-badges.mts` simply has
   // no image for this name yet, so the buy menu falls back to the colour
   // swatch it already shows for any livery lacking a badge file.
   "Highland Council": { primary: "#4b5563", secondary: "#e5e7eb" },
@@ -90,7 +90,9 @@ export const RESTRICTED_AREA_LIVERIES: Record<string, { accepted: string[]; pref
   "Lewis and Harris": { accepted: ["Hebridean Transport"], preferred: "Hebridean Transport" },
   "North Uist": { accepted: ["North Uist Transport"], preferred: "North Uist Transport" },
   Islay: { accepted: ["Islay Coaches"], preferred: "Islay Coaches" },
-  Skye: { accepted: ["Rapsons", "D&E", "Highland Council"], preferred: "Rapsons" },
+  // Narrowed 2026-11-05 (user request) — previously also accepted D&E and
+  // Highland Council; Skye is now Rapsons-only.
+  Skye: { accepted: ["Rapsons"], preferred: "Rapsons" },
   Caithness: { accepted: ["D&E", "Highland Council"], preferred: "D&E" },
   Ullapool: { accepted: ["Rapsons"], preferred: "Rapsons" },
 };

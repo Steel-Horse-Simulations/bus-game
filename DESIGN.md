@@ -2277,7 +2277,7 @@ rather than getting a new one. Don't assume one implies the other.
 | North Uist | Lifeline | North Uist Transport |
 | Islay | Lifeline | Islay Coaches |
 | Mull | Lifeline | None — the operator's normal livery |
-| Skye | Lifeline | **Rapsons** (preferred) — also accepts **D&E** and **Highland Council** (confirmed 2026-10-18) |
+| Skye | Lifeline | **Rapsons** only (narrowed 2026-11-05 — previously also accepted D&E and Highland Council) |
 | Fort William | Mixed commercial/subsidised | None |
 | Caithness | Mixed commercial/subsidised | **D&E** (preferred) — also accepts **Highland Council** (confirmed 2026-10-18, closing a gap this table left open since T64 first supplied the real-world detail: "Caithness vehicles should be D&E Livery or Highland Council Livery") |
 | Oban | Mostly commercial, partial subsidy | None |
@@ -2291,9 +2291,11 @@ lets the player pick from that area's own acceptable set when buying a
 vehicle there; every other livery is shown but greyed out, not hidden
 (so the restriction itself stays visible, not just mysteriously absent).
 Each restricted area currently has exactly one livery of its own, except
-Skye and Caithness, which were widened the same day to accept Highland
-Council too (Skye also accepts D&E). Where an area accepts more than one
-livery, it also has its own **preferred** livery (marked above) — picked
+Caithness, which accepts Highland Council alongside D&E (confirmed
+2026-10-18). Skye was briefly widened to accept D&E and Highland Council
+too, then narrowed back to Rapsons only (2026-11-05). Where an area
+accepts more than one livery, it also has its own **preferred** livery
+(marked above) — picked
 by default, and the selection snaps back to it automatically if the
 player changes the buy menu's depot to a restricted area where whatever
 was previously selected isn't on that area's own accepted list.
