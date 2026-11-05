@@ -1059,6 +1059,32 @@ export async function mountRouteDrawTool(
     updateStatus();
   });
 
+  // A different start point (DESIGN.md §6 "A different start", Q13,
+  // resolved 2026-11-05: Skye's real "some services start at the High
+  // School, not the Square" case) — the mirror image of "Diverge from
+  // here" above, but discarding the WHOLE cloned draft rather than just
+  // the tail, since there's no "last shared stop" to diverge from when
+  // the parent's own start point isn't shared at all. The player draws
+  // their own fresh lead-in from the map as normal, then uses "Rejoin
+  // at" (below) once it reaches the parent's own path — no new splice
+  // mechanism needed, Rejoin at already does exactly this.
+  const startFreshButton = document.createElement("button");
+  startFreshButton.className = "btn";
+  startFreshButton.textContent = "Start fresh (different start point)";
+  startFreshButton.title = "Clear the cloned draft entirely so you can draw your own lead-in from a different start stop, then Rejoin at below";
+  startFreshButton.addEventListener("click", () => {
+    draftPoints = [];
+    draftComposedFromRouteIds = [];
+    sectionInsertions = [];
+    terminusIndex = null;
+    startIndex = null;
+    insertAfterIndex = null;
+    rebuildRoute();
+    refresh();
+    renderStopList();
+    updateStatus();
+  });
+
   const rejoinHeading = document.createElement("div");
   rejoinHeading.className = "label-muted";
   rejoinHeading.textContent = "Rejoin the parent route at:";
@@ -1194,6 +1220,7 @@ export async function mountRouteDrawTool(
     }
 
     variationSection.appendChild(divergeButton);
+    variationSection.appendChild(startFreshButton);
     variationSection.appendChild(rejoinHeading);
     rejoinList.innerHTML = "";
     const parentStops = variationParentRoute.points
