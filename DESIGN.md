@@ -107,12 +107,13 @@ across a ferry leg the bus itself never touches:
   (real OSM ferry-route data, rendered as a dotted line, which also gives
   the real distance for timing and ticket mileage — **built**, see the
   ferry pipeline work, `rust/pipeline/src/ferry_routes.rs`).
-- **Not yet designed, a genuine open question**: this is the first
-  variation that must always be run by a **completely separate vehicle**
-  from its parent's own fleet, since the two sides of the crossing can
-  never physically reach each other — how that property is represented
-  on a variation, and how duty/vehicle auto-complete is told to respect
-  it and never try to chain the two, isn't designed yet.
+- **Resolved 2026-11-05**: this is the first variation that must always
+  be run by a **completely separate vehicle** from its parent's own
+  fleet, since the two sides of the crossing can never physically reach
+  each other. No new mechanism needed — the far-side variation simply
+  belongs to a **different depot group** from its parent (see §6), the
+  genuinely correct description of it, and duty/vehicle chaining already
+  never crosses that boundary.
 - The whole Glasgow→Belfast journey sells as **one through-fare** on the
   existing long-distance formula (§9: base + per-mile) — not T107's
   island per-mile ferry-ticket mechanism, a deliberately separate case.
@@ -666,17 +667,23 @@ route's vehicle type and livery requirements. A different type can be set,
 but only via manual override, and it **reverts to matching the parent**
 unless explicitly overridden.
 
-**A genuinely new kind of variation, not yet designed (T108, flagged
-2026-10-31):** every variation above assumes the same vehicle/duty could
-run it interchangeably with its parent or any other variation of that
-route. The far side of a ferry-linked long-distance route's crossing
-(§1 "Islands and ferries", §9) is the first variation that **must always
-be run by a completely separate vehicle**, physically based beyond the
-crossing — duty/vehicle auto-complete must never try to chain its duty
-with the parent route's own vehicles, since they can never physically
-reach each other. Exactly how this property is represented on a
-variation, and how auto-complete is told to respect it, is an open
-question — not guessed at here.
+**Resolved 2026-11-05 (T108's own open variation question):** every
+variation above assumes the same vehicle/duty could run it
+interchangeably with its parent or any other variation of that route.
+The far side of a ferry-linked long-distance route's crossing (§1
+"Islands and ferries", §9) is the first variation that **must always be
+run by a completely separate vehicle**, physically based beyond the
+crossing, where duty/vehicle auto-complete must never try to chain its
+duty with the parent route's own vehicles. Confirmed directly: this
+needs no new flag or mechanism at all — **the far-side variation simply
+belongs to a different depot group from its parent**, the genuinely
+correct description of it (a different country, a different real
+operator's buses and crew), and duty/vehicle chaining already never
+crosses a depot group boundary. A route row's `depot_group_id` is
+already independent of its `parent_route_id` in the schema (nothing
+asserts a variation shares its parent's depot group), so this is a
+reclassification of what the far-side leg already is, not new work —
+confirmed before writing it in, not guessed at.
 
 **Timing points.** Identical to the parent before the split, since it's
 physically the same operation. After the split, the first timing point can be
