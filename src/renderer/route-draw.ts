@@ -292,6 +292,14 @@ export async function mountRouteDrawTool(
   // editingRouteId: a variation always creates a new route on save, even
   // though its starting draft is a copy of the parent's own points.
   let variationParentRoute: Route | null = null;
+  // Minor variation (DESIGN.md §6, confirmed 2026-11-01 — the real Skye
+  // 56 example, skipping Bernisdale on certain school runs): shares the
+  // parent's exact number with no letter at all, and is always
+  // live-linked to the parent's current path (route-combine-
+  // variations.mts's own resolveRoutePoints already handles this once
+  // the flag is set). Set by the "Minor variation" checkbox below, only
+  // meaningful alongside variationParentRoute.
+  let draftIsMinorVariation = false;
   // This parent's OTHER existing variations (DESIGN.md §6 "Combining
   // variations") — loaded alongside variationParentRoute by startVariation,
   // used only to offer "Build from existing variations" below. Never
@@ -506,6 +514,10 @@ export async function mountRouteDrawTool(
     editingRouteId = null;
     variationParentRoute = null;
     parentSiblingRoutes = [];
+    draftIsMinorVariation = false;
+    minorVariationCheckbox.checked = false;
+    numberInput.disabled = false;
+    variationLetterInput.disabled = false;
     numberInput.value = "";
     nameInput.value = "";
     colourInput.value = DEFAULT_ROUTE_COLOUR;
@@ -797,7 +809,11 @@ export async function mountRouteDrawTool(
     // its first save — the variation relationship shouldn't disappear just
     // because editingRouteId got set after the first save.
     const parentRouteId = variationParentRoute?.id ?? null;
-    const variationLetter = variationParentRoute ? variationLetterInput.value.trim() || null : null;
+    const isMinorVariation = variationParentRoute !== null && draftIsMinorVariation;
+    // Mutually exclusive with variation_letter (db.mts's own CHECK) — a
+    // minor variation never has a letter, forced here too rather than
+    // just trusting the UI to have kept the field empty/disabled.
+    const variationLetter = variationParentRoute && !isMinorVariation ? variationLetterInput.value.trim() || null : null;
     const directionNote = usedFallbackSettlement
       ? ` — no bus station set, direction used the nearest settlement instead (${usedFallbackSettlement.name ?? "unnamed"})`
       : "";
@@ -823,6 +839,7 @@ export async function mountRouteDrawTool(
         hailRideSections,
         savedSegments,
         draftRouteType,
+        isMinorVariation,
       );
       savedRouteId = editingRouteId;
       saveStatusEl.style.color = "var(--text-secondary)";
@@ -843,6 +860,7 @@ export async function mountRouteDrawTool(
         hailRideSections,
         savedSegments,
         draftRouteType,
+        isMinorVariation,
       );
       savedRouteId = created.id;
       // A second Save click without leaving drawing mode now updates this
@@ -1009,6 +1027,35 @@ export async function mountRouteDrawTool(
   variationLetterInput.maxLength = 2;
   variationLetterRow.appendChild(variationLetterLabel);
   variationLetterRow.appendChild(variationLetterInput);
+
+  // "Minor variation" (DESIGN.md §6, confirmed 2026-11-01) — mutually
+  // exclusive with the lettered major variation above (db.mts's own
+  // CHECK enforces this too): checking it forces the number back to
+  // exactly the parent's own (no letter) and locks both fields, since a
+  // minor variation's whole point is "the same service, always matching
+  // the parent, no number of its own."
+  const minorVariationRow = document.createElement("label");
+  minorVariationRow.style.display = "flex";
+  minorVariationRow.style.alignItems = "center";
+  minorVariationRow.style.gap = "6px";
+  minorVariationRow.style.cursor = "pointer";
+  const minorVariationCheckbox = document.createElement("input");
+  minorVariationCheckbox.type = "checkbox";
+  const minorVariationLabel = document.createElement("span");
+  minorVariationLabel.className = "label-muted";
+  minorVariationLabel.textContent = "Minor variation (shares the parent's exact number, always matches its current path)";
+  minorVariationRow.appendChild(minorVariationCheckbox);
+  minorVariationRow.appendChild(minorVariationLabel);
+  minorVariationCheckbox.addEventListener("change", () => {
+    draftIsMinorVariation = minorVariationCheckbox.checked;
+    if (!variationParentRoute) return;
+    if (draftIsMinorVariation) {
+      numberInput.value = draftRouteType === "night" ? `N${variationParentRoute.number}` : variationParentRoute.number;
+      variationLetterInput.value = "";
+    }
+    numberInput.disabled = draftIsMinorVariation;
+    variationLetterInput.disabled = draftIsMinorVariation;
+  });
 
   // Varying an Ordinary route can also make a Night-service variation
   // (2026-11-01, user request) — every other parent type still just
@@ -1190,6 +1237,7 @@ export async function mountRouteDrawTool(
     variationSection.style.display = "flex";
     variationSection.innerHTML = "";
     variationSection.appendChild(variationLetterRow);
+    variationSection.appendChild(minorVariationRow);
 
     if (variationParentRoute.routeType === "ordinary") {
       variationTypeDropdown.value = "Ordinary";
@@ -1715,6 +1763,10 @@ export async function mountRouteDrawTool(
       // either the number field or the letter field, independently.
       numberInput.value = parent.number;
       variationLetterInput.value = "";
+      variationLetterInput.disabled = false;
+      numberInput.disabled = false;
+      draftIsMinorVariation = false;
+      minorVariationCheckbox.checked = false;
       void (async () => {
         const siblings = await window.routes.list();
         const existingVariations = siblings.filter((r) => r.parentRouteId === parent.id && r.variationLetter);

@@ -155,6 +155,13 @@ export function buildMergedGridTable(
       headerCell.style.boxSizing = "border-box";
       headerCell.style.borderBottom = "1px solid var(--border)";
       headerCell.textContent = column.routeNumber;
+      // Minor variation marker (DESIGN.md §6, confirmed 2026-11-01) — a
+      // subtle tint, the agreed "try this first" option, rather than a
+      // border or glyph; a dashed bottom edge reads clearly against any
+      // route colour, unlike a semi-transparent overlay which would wash
+      // out against a light route colour and barely show against a dark
+      // one.
+      if (column.isMinorVariation) headerCell.style.borderBottom = "2px dashed var(--text-accent)";
       timesGrid.appendChild(headerCell);
     }
   }
@@ -194,6 +201,12 @@ export function buildMergedGridTable(
       timeCell.style.boxSizing = "border-box";
       timeCell.style.whiteSpace = "nowrap";
       timeCell.style.scrollSnapAlign = "start";
+      // Minor variation marker (DESIGN.md §6) — a translucent inset tint
+      // layered on top of whatever the row's own alternating background
+      // already is (inset box-shadow, not backgroundColor, since that
+      // would need blending two colours by hand to stay visible against
+      // both alternating row shades).
+      if (column.isMinorVariation) timeCell.style.boxShadow = "inset 0 0 0 9999px rgba(167, 139, 250, 0.12)";
       // A "show excluded services" toggle (route-timetable-panel.ts /
       // stops-layer.ts) can ask for excluded journeys as real columns
       // instead of dropping them — struck-through and dimmed here so

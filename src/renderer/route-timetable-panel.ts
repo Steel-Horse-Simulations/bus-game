@@ -757,7 +757,7 @@ export function createRouteTimetableEditor(
           if (!timetable) continue;
           const fullGrid = buildRouteTimetableGrid(member, timetable, { includeExcluded: showExcludedServices });
           const slicedGrid = sliceGridToPointRange(fullGrid, seg.fromPointIndex, seg.toPointIndex);
-          members.push({ routeId: member.id, routeNumber: member.number, routeColour: member.colour, grid: slicedGrid });
+          members.push({ routeId: member.id, routeNumber: member.number, routeColour: member.colour, grid: slicedGrid, isMinorVariation: member.isMinorVariation });
         }
       }
       return members;

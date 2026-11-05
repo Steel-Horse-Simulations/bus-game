@@ -974,6 +974,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
                 routeNumber: memberRoute.number,
                 routeColour: memberRoute.colour,
                 grid: slicedGrid,
+                isMinorVariation: memberRoute.isMinorVariation,
               });
             }
             if (members.length === 0) continue;

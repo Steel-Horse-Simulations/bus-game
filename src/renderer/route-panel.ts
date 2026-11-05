@@ -411,6 +411,12 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     row.style.alignItems = "center";
     row.style.gap = "8px";
     row.style.padding = "6px 12px";
+    // Minor variations (DESIGN.md §6) are shown as an indented sub-row
+    // under their parent — they already sort immediately next to it in
+    // the list above, since a minor variation shares its parent's exact
+    // "number" and the list is ordered by number. No separate
+    // parent/child tree structure needed, just a visual nudge.
+    if (route.isMinorVariation) row.style.paddingLeft = "28px";
 
     // Colour swatch: the route's own player-set colour (DESIGN.md §11),
     // ahead of the full livery system (OPERATIONS.md §4/§5, Phase 3+).
@@ -432,7 +438,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     title.style.overflow = "hidden";
     title.style.textOverflow = "ellipsis";
     title.style.whiteSpace = "nowrap";
-    title.textContent = destination ? `${route.number} — ${destination}` : route.number;
+    const minorPrefix = route.isMinorVariation ? "└ " : "";
+    title.textContent = minorPrefix + (destination ? `${route.number} — ${destination}` : route.number);
     title.title = title.textContent;
     // Activation state (normal/countdown/deactivated) and a problem
     // indicator both need systems that don't exist yet (an activation
@@ -445,7 +452,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
     // what type of route a route is?" — it didn't) — "Ordinary" included
     // too, not just the special types, so every row reads consistently
     // rather than special-casing the common case into silence.
-    sub.textContent = `${route.orientation}, ${stopCount} stop${stopCount === 1 ? "" : "s"}, ${ROUTE_TYPE_LABELS[route.routeType]}`;
+    sub.textContent = `${route.orientation}, ${stopCount} stop${stopCount === 1 ? "" : "s"}, ${ROUTE_TYPE_LABELS[route.routeType]}${route.isMinorVariation ? ", minor variation" : ""}`;
     info.appendChild(title);
     info.appendChild(sub);
     row.appendChild(info);

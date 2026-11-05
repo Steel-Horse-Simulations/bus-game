@@ -328,12 +328,20 @@ export interface MergedGridMember {
   // Already restricted to this member's own matching direction segment
   // (routeDirectionRanges/sliceGridToPointRange) and this day type.
   grid: RouteTimetableGrid;
+  // DESIGN.md §6, confirmed 2026-11-01: a minor variation's own column
+  // in the merged grid gets a visual marker (background tint, the
+  // agreed "try this first" option) — optional so an existing caller
+  // constructing a member literal without it still compiles; undefined
+  // behaves as false, same convention as ComposableRoute's own
+  // isMinorVariation.
+  isMinorVariation?: boolean;
 }
 
 export interface MergedGridColumn {
   routeId: number;
   routeNumber: string;
   routeColour: string;
+  isMinorVariation: boolean;
   // One entry per row of the merged grid, in that same order — null where
   // this member's own journey doesn't call at that stop (either it
   // genuinely skips it, DESIGN.md §6, or the stop simply isn't on this
@@ -390,6 +398,7 @@ export function buildMergedFamilyGrid(members: readonly MergedGridMember[]): Mer
         routeId: member.routeId,
         routeNumber: member.routeNumber,
         routeColour: member.routeColour,
+        isMinorVariation: member.isMinorVariation ?? false,
         times,
         excluded: member.grid.excluded[journeyIndex] ?? false,
         departureMinute: member.grid.departureMinutes[journeyIndex],
