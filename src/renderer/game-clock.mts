@@ -17,7 +17,7 @@ export type SpeedMultiplier = (typeof SPEED_MULTIPLIERS)[number];
 
 const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
-const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
+export const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 const DAYS_PER_WEEK = 7;
 
 // "The calendar uses 28-day months of exactly four weeks... A year is

@@ -13,6 +13,15 @@
 // panel's existing per-shop row rather than a map popup, matching this
 // panel's own established UI language (no map-popup precedent existed
 // here before).
+//
+// Booking a vehicle in (2026-11-05) — capacity/scheduling only, the
+// user's own explicit scope call when asked ("there is no money/finance
+// system and no driver-transit system yet, how much should I build?").
+// See repaint-booking.mts's own header comment for the full reasoning.
+// One simplification worth flagging here too: this form books exactly
+// one vehicle at a time, so the real "2% discount per additional vehicle
+// in an order" never applies (an order of 1 is always 0% off) — a real
+// multi-vehicle order UI is a bigger piece, deferred.
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
 import type { Router } from "./wasm/game_wasm.js";
@@ -23,6 +32,30 @@ import { placeDepotState } from "./depot-placement";
 import { placeDealerState } from "./dealer-placement";
 import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
 import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+import { gameClockState } from "./game-clock-engine";
+import { gameDateTimeFromSeconds, formatGameDate, SECONDS_PER_DAY } from "./game-clock.mts";
+import { findVehicleModel } from "./vehicle-catalogue.mts";
+import {
+  scheduleRepaintBooking,
+  fullRepaintBasePriceGBP,
+  simpleRepaintBasePriceGBP,
+  SIMPLE_REPAINT_TURNAROUND_DAYS,
+  repaintBulkDiscountPercent,
+  applyDiscount,
+  type BookingWindow,
+} from "./repaint-booking.mts";
+
+function todayDayIndex(): number {
+  return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
+}
+
+function formatDay(dayIndex: number): string {
+  return formatGameDate(gameDateTimeFromSeconds(dayIndex * SECONDS_PER_DAY));
+}
+
+function vehicleLabel(v: Vehicle): string {
+  return `${v.fleetNumber} — ${findVehicleModel(v.modelId)?.name ?? v.modelId}`;
+}
 
 const SOURCE_ID = "repaint-shops";
 const LAYER_ID = "repaint-shops-circles";
@@ -150,6 +183,14 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
   // placement.ts's own addEntranceForDealer exactly.
   let addEntranceForShop: RepaintShop | null = null;
 
+  // Booking a vehicle in — see the file header comment for scope.
+  let vehicles: Vehicle[] = [];
+  let bookings: RepaintBooking[] = [];
+  let bookingVehicleId: number | null = null;
+  let bookingType: RepaintType = "full";
+  let bookingShopId: number | null = null;
+  let bookingError = "";
+
   async function reload(): Promise<void> {
     shops = await window.repaintShops.list();
     (map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(toGeojson(shops));
@@ -161,6 +202,10 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
       entrancesByShop.set(e.repaintShopId, list);
     }
     refreshEntrancesLayer();
+    vehicles = await window.vehicles.listAll();
+    bookings = await window.repaintBookings.listAll();
+    if (bookingVehicleId === null && vehicles.length > 0) bookingVehicleId = vehicles[0].id;
+    if (bookingShopId === null && shops.length > 0) bookingShopId = shops[0].id;
   }
 
   function refreshEntrancesLayer(): void {
@@ -175,8 +220,201 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     errorMessage = err instanceof Error ? err.message : String(err);
   }
 
+  // Pure preview of what booking the current selection would produce —
+  // used both to show a live price/date estimate before submitting and
+  // to compute the real values the booking is actually created with, so
+  // the two can never drift apart.
+  function previewBooking(vehicle: Vehicle, type: RepaintType, shopId: number | null): { basePriceGBP: number; discountPercent: number; finalPriceGBP: number; window: BookingWindow } | null {
+    const discountPercent = repaintBulkDiscountPercent(1);
+    const today = todayDayIndex();
+    if (type === "simple") {
+      const basePriceGBP = simpleRepaintBasePriceGBP(vehicle.modelId);
+      const bookingWindow = scheduleRepaintBooking(today, SIMPLE_REPAINT_TURNAROUND_DAYS, [], Infinity, [], Infinity);
+      return { basePriceGBP, discountPercent, finalPriceGBP: applyDiscount(basePriceGBP, discountPercent), window: bookingWindow };
+    }
+    const shop = shopId === null ? undefined : shops.find((s) => s.id === shopId);
+    if (!shop) return null;
+    const basePriceGBP = fullRepaintBasePriceGBP(vehicle.modelId);
+    const shopBookings: BookingWindow[] = bookings.filter((b) => b.repaintShopId === shop.id).map((b) => ({ startDay: b.startGameDay, completionDay: b.completionGameDay }));
+    const vehicleDepotGroupId = new Map(vehicles.map((v) => [v.id, v.depotGroupId]));
+    const groupCapBookings: BookingWindow[] = bookings
+      .filter((b) => b.repaintType === "full" && vehicleDepotGroupId.get(b.vehicleId) === vehicle.depotGroupId)
+      .map((b) => ({ startDay: b.startGameDay, completionDay: b.completionGameDay }));
+    const bookingWindow = scheduleRepaintBooking(today, shop.turnaroundDays, shopBookings, shop.concurrentCapacity, groupCapBookings, 2);
+    return { basePriceGBP, discountPercent, finalPriceGBP: applyDiscount(basePriceGBP, discountPercent), window: bookingWindow };
+  }
+
+  function renderBookingSection(): HTMLElement {
+    const section = document.createElement("div");
+    section.style.borderBottom = "1px solid var(--border)";
+    section.style.paddingBottom = "8px";
+    section.style.marginBottom = "8px";
+
+    const heading = document.createElement("div");
+    heading.style.fontWeight = "600";
+    heading.style.marginBottom = "4px";
+    heading.textContent = "Book a repaint";
+    section.appendChild(heading);
+
+    if (vehicles.length === 0) {
+      const none = document.createElement("div");
+      none.style.color = "var(--text-muted)";
+      none.textContent = "No vehicles owned yet.";
+      section.appendChild(none);
+      return section;
+    }
+
+    const vehicle = vehicles.find((v) => v.id === bookingVehicleId) ?? vehicles[0];
+
+    const vehicleDropdown = createDropdown(vehicles.map(vehicleLabel), vehicleLabel(vehicle), (chosenLabel) => {
+      const chosen = vehicles.find((v) => vehicleLabel(v) === chosenLabel);
+      if (chosen) bookingVehicleId = chosen.id;
+      bookingError = "";
+      render();
+    });
+    vehicleDropdown.el.style.marginBottom = "4px";
+    section.appendChild(vehicleDropdown.el);
+
+    const typeLabels = { full: "Full repaint (at a shop)", simple: "Simple repaint (at the home depot)" };
+    const typeDropdown = createDropdown(Object.values(typeLabels), typeLabels[bookingType], (chosenLabel) => {
+      bookingType = (Object.entries(typeLabels).find(([, l]) => l === chosenLabel)?.[0] ?? "full") as RepaintType;
+      bookingError = "";
+      render();
+    });
+    typeDropdown.el.style.marginBottom = "4px";
+    section.appendChild(typeDropdown.el);
+
+    if (bookingType === "full") {
+      if (shops.length === 0) {
+        const none = document.createElement("div");
+        none.style.color = "var(--text-muted)";
+        none.textContent = "No repaint shops placed yet — place one above first.";
+        section.appendChild(none);
+        return section;
+      }
+      const shop = shops.find((s) => s.id === bookingShopId) ?? shops[0];
+      const shopDropdown = createDropdown(shops.map((s) => s.name), shop.name, (chosenLabel) => {
+        const chosen = shops.find((s) => s.name === chosenLabel);
+        if (chosen) bookingShopId = chosen.id;
+        bookingError = "";
+        render();
+      });
+      shopDropdown.el.style.marginBottom = "4px";
+      section.appendChild(shopDropdown.el);
+    }
+
+    const preview = previewBooking(vehicle, bookingType, bookingType === "full" ? bookingShopId : null);
+    const previewLine = document.createElement("div");
+    previewLine.style.color = "var(--text-muted)";
+    previewLine.style.marginBottom = "4px";
+    previewLine.textContent = preview
+      ? `£${preview.finalPriceGBP} — away from ${formatDay(preview.window.startDay)} to ${formatDay(preview.window.completionDay)}`
+      : "Pick a shop to see the price and dates.";
+    section.appendChild(previewLine);
+
+    const bookButton = document.createElement("button");
+    bookButton.className = "btn";
+    bookButton.textContent = "Book it";
+    bookButton.disabled = preview === null;
+    bookButton.addEventListener("click", async () => {
+      const latest = previewBooking(vehicle, bookingType, bookingType === "full" ? bookingShopId : null);
+      if (!latest) return;
+      try {
+        await window.repaintBookings.create(
+          vehicle.id,
+          bookingType === "full" ? bookingShopId : null,
+          bookingType,
+          latest.basePriceGBP,
+          latest.discountPercent,
+          latest.finalPriceGBP,
+          todayDayIndex(),
+          latest.window.startDay,
+          latest.window.completionDay,
+        );
+        bookingError = "";
+        await reload();
+      } catch (err) {
+        bookingError = err instanceof Error ? err.message : String(err);
+      }
+      render();
+    });
+    section.appendChild(bookButton);
+
+    if (bookingError) {
+      const error = document.createElement("div");
+      error.style.color = "#f87171";
+      error.style.marginTop = "4px";
+      error.textContent = bookingError;
+      section.appendChild(error);
+    }
+
+    return section;
+  }
+
+  function renderBookingsList(): HTMLElement {
+    const section = document.createElement("div");
+    section.style.borderBottom = "1px solid var(--border)";
+    section.style.paddingBottom = "8px";
+    section.style.marginBottom = "8px";
+
+    const heading = document.createElement("div");
+    heading.style.fontWeight = "600";
+    heading.style.marginBottom = "4px";
+    heading.textContent = "Booked in";
+    section.appendChild(heading);
+
+    if (bookings.length === 0) {
+      const none = document.createElement("div");
+      none.style.color = "var(--text-muted)";
+      none.textContent = "Nothing booked in.";
+      section.appendChild(none);
+      return section;
+    }
+
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+    const shopById = new Map(shops.map((s) => [s.id, s]));
+    const today = todayDayIndex();
+
+    for (const booking of bookings) {
+      const row = document.createElement("div");
+      row.style.borderTop = "1px solid var(--border)";
+      row.style.paddingTop = "4px";
+      row.style.marginTop = "4px";
+
+      const vehicle = vehicleById.get(booking.vehicleId);
+      const where = booking.repaintType === "simple" ? "at the home depot" : (shopById.get(booking.repaintShopId ?? -1)?.name ?? "an unknown shop");
+      const status = today < booking.startGameDay ? "Booked" : today > booking.completionGameDay ? "Done" : "In progress";
+
+      const summary = document.createElement("div");
+      summary.textContent = `${vehicle ? vehicleLabel(vehicle) : `Vehicle #${booking.vehicleId}`} — ${booking.repaintType === "full" ? "Full" : "Simple"} repaint ${where}`;
+      row.appendChild(summary);
+
+      const detail = document.createElement("div");
+      detail.style.color = "var(--text-muted)";
+      detail.textContent = `${status} — ${formatDay(booking.startGameDay)} to ${formatDay(booking.completionGameDay)} — £${booking.finalPriceGBP}${booking.discountPercent > 0 ? ` (${booking.discountPercent}% off)` : ""}`;
+      row.appendChild(detail);
+
+      const deleteButton = document.createElement("button");
+      deleteButton.className = "btn btn-icon";
+      deleteButton.style.marginTop = "2px";
+      deleteButton.textContent = "Cancel";
+      deleteButton.addEventListener("click", async () => {
+        await window.repaintBookings.delete(booking.id);
+        await reload();
+        render();
+      });
+      row.appendChild(deleteButton);
+
+      section.appendChild(row);
+    }
+
+    return section;
+  }
+
   function render(): void {
     body.replaceChildren();
+    body.appendChild(renderBookingSection());
+    body.appendChild(renderBookingsList());
 
     if (shops.length === 0) {
       const empty = document.createElement("div");

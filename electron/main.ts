@@ -83,6 +83,10 @@ import {
   addRepaintShopEntrance,
   setRepaintShopEntranceMode,
   deleteRepaintShopEntrance,
+  listAllRepaintBookings,
+  createRepaintBooking,
+  deleteRepaintBooking,
+  type RepaintType,
   createDuty,
   deleteDuty,
   setDutyLocked,
@@ -91,6 +95,7 @@ import {
   removeDutyPiece,
   listDutiesForDepotGroup,
   listVehiclesForDepotGroup,
+  listAllVehicles,
   deleteVehicle,
   transferVehicle,
   addBasketItem,
@@ -494,6 +499,7 @@ function registerDutyHandlers(): void {
 
 function registerVehicleHandlers(): void {
   ipcMain.handle("vehicles:listForDepotGroup", (_e, depotGroupId: number) => listVehiclesForDepotGroup(save, depotGroupId));
+  ipcMain.handle("vehicles:listAll", () => listAllVehicles(save));
   ipcMain.handle("vehicles:delete", (_e, vehicleId: number) => deleteVehicle(save, vehicleId));
   ipcMain.handle("vehicles:transfer", (_e, vehicleId: number, newDepotId: number) => transferVehicle(save, vehicleId, newDepotId));
 }
@@ -563,6 +569,25 @@ function registerRepaintShopHandlers(): void {
   );
   ipcMain.handle("repaintShops:setEntranceMode", (_e, id: number, mode: DealerEntranceMode) => setRepaintShopEntranceMode(save, id, mode));
   ipcMain.handle("repaintShops:deleteEntrance", (_e, id: number) => deleteRepaintShopEntrance(save, id));
+
+  ipcMain.handle("repaintBookings:listAll", () => listAllRepaintBookings(save));
+  ipcMain.handle(
+    "repaintBookings:create",
+    (
+      _e,
+      vehicleId: number,
+      repaintShopId: number | null,
+      repaintType: RepaintType,
+      basePriceGBP: number,
+      discountPercent: number,
+      finalPriceGBP: number,
+      bookedGameDay: number,
+      startGameDay: number,
+      completionGameDay: number,
+    ) =>
+      createRepaintBooking(save, vehicleId, repaintShopId, repaintType, basePriceGBP, discountPercent, finalPriceGBP, bookedGameDay, startGameDay, completionGameDay),
+  );
+  ipcMain.handle("repaintBookings:delete", (_e, id: number) => deleteRepaintBooking(save, id));
 }
 
 function registerLiveryHandlers(): void {

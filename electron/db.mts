@@ -8,7 +8,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS depot_groups (
@@ -390,6 +390,36 @@ CREATE TABLE IF NOT EXISTS repaint_shop_entrances (
   lon REAL NOT NULL,
   lat REAL NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('entry', 'exit', 'both'))
+);
+
+-- A vehicle booked in for a repaint (OPERATIONS.md §5 "Repainting"),
+-- capacity/scheduling only (2026-11-05, user's own explicit scope call —
+-- there is no money/finance system anywhere in this game yet, and
+-- transferVehicle's own comment already notes there's no driver/duty
+-- system to hang a simulated trip there-and-back on either). So this
+-- tracks WHEN a vehicle is busy/away and WHAT it would cost, for display
+-- only — nothing here deducts real money, and no travel time is
+-- simulated; the vehicle is treated as departing immediately, same
+-- "immediate, not simulated in transit" simplification transferVehicle
+-- already makes. repaint_shop_id is NULL for a 'simple' repaint (done at
+-- the vehicle's own home depot, never leaves). *_game_day are whole-day
+-- indices from the game clock's own epoch (see game-clock.mts's own
+-- gameDateTimeFromSeconds) — day granularity is all the real spec needs
+-- ("5 days, Monday to Friday only" / "1-2 days"). base/discount/final
+-- price are a snapshot at booking time, not recomputed later, so a later
+-- catalogue price change can't retroactively change what a vehicle
+-- already booked in is shown to cost.
+CREATE TABLE IF NOT EXISTS repaint_bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  repaint_shop_id INTEGER REFERENCES repaint_shops(id),
+  repaint_type TEXT NOT NULL CHECK (repaint_type IN ('full', 'simple')),
+  base_price_gbp INTEGER NOT NULL,
+  discount_percent INTEGER NOT NULL,
+  final_price_gbp INTEGER NOT NULL,
+  booked_game_day INTEGER NOT NULL,
+  start_game_day INTEGER NOT NULL,
+  completion_game_day INTEGER NOT NULL
 );
 
 -- A dead mileage route between a dealer and a depot (DESIGN.md "Dead mileage
@@ -1201,6 +1231,11 @@ export function openSave(path: string): SaveDb {
       SELECT id, name, lon, lat, weekly_capacity, 5 FROM repaint_shops_v45
     `);
     db.exec("DROP TABLE repaint_shops_v45");
+    db.exec("PRAGMA user_version = 46");
+  } else if (currentVersion === 46) {
+    // v46 -> v47: the repaint_bookings table — brand new, created by the
+    // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
+    // the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -2340,6 +2375,105 @@ export function deleteRepaintShopEntrance(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM repaint_shop_entrances WHERE id = ?").run(id);
 }
 
+// --- Repaint bookings (repaint_bookings' own CREATE TABLE comment above
+// explains the capacity/scheduling-only scope) ---
+
+export type RepaintType = "full" | "simple";
+
+export interface RepaintBooking {
+  id: number;
+  vehicleId: number;
+  repaintShopId: number | null;
+  repaintType: RepaintType;
+  basePriceGBP: number;
+  discountPercent: number;
+  finalPriceGBP: number;
+  bookedGameDay: number;
+  startGameDay: number;
+  completionGameDay: number;
+}
+
+interface RepaintBookingRow {
+  id: number;
+  vehicle_id: number;
+  repaint_shop_id: number | null;
+  repaint_type: RepaintType;
+  base_price_gbp: number;
+  discount_percent: number;
+  final_price_gbp: number;
+  booked_game_day: number;
+  start_game_day: number;
+  completion_game_day: number;
+}
+
+function repaintBookingFromRow(row: RepaintBookingRow): RepaintBooking {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    repaintShopId: row.repaint_shop_id,
+    repaintType: row.repaint_type,
+    basePriceGBP: row.base_price_gbp,
+    discountPercent: row.discount_percent,
+    finalPriceGBP: row.final_price_gbp,
+    bookedGameDay: row.booked_game_day,
+    startGameDay: row.start_game_day,
+    completionGameDay: row.completion_game_day,
+  };
+}
+
+// Scheduling (which start/completion day, whether a shop/depot-group cap
+// is free) and pricing (base price, discount) are both computed by the
+// caller (repaint-booking.mts, pure renderer logic) — this just stores
+// the result. Keeps db.mts a plain storage layer, same split already
+// used for fare pricing (fare-pricing.mts) and vehicle bulk discounts
+// (vehicle-buy-pricing.mts).
+export function createRepaintBooking(
+  db: SaveDb,
+  vehicleId: number,
+  repaintShopId: number | null,
+  repaintType: RepaintType,
+  basePriceGBP: number,
+  discountPercent: number,
+  finalPriceGBP: number,
+  bookedGameDay: number,
+  startGameDay: number,
+  completionGameDay: number,
+): RepaintBooking {
+  const result = db
+    .prepare(
+      `INSERT INTO repaint_bookings
+        (vehicle_id, repaint_shop_id, repaint_type, base_price_gbp, discount_percent, final_price_gbp, booked_game_day, start_game_day, completion_game_day)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(vehicleId, repaintShopId, repaintType, basePriceGBP, discountPercent, finalPriceGBP, bookedGameDay, startGameDay, completionGameDay);
+  return {
+    id: Number(result.lastInsertRowid),
+    vehicleId,
+    repaintShopId,
+    repaintType,
+    basePriceGBP,
+    discountPercent,
+    finalPriceGBP,
+    bookedGameDay,
+    startGameDay,
+    completionGameDay,
+  };
+}
+
+export function listAllRepaintBookings(db: SaveDb): RepaintBooking[] {
+  const rows = db
+    .prepare(
+      `SELECT id, vehicle_id, repaint_shop_id, repaint_type, base_price_gbp, discount_percent, final_price_gbp, booked_game_day, start_game_day, completion_game_day
+       FROM repaint_bookings ORDER BY start_game_day`,
+    )
+    .all() as unknown as RepaintBookingRow[];
+  return rows.map(repaintBookingFromRow);
+}
+
+export function deleteRepaintBooking(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM repaint_bookings WHERE id = ?").run(id);
+}
+
 export interface DeadMileageWaypoint {
   lon: number;
   lat: number;
@@ -2686,6 +2820,47 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
        FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
     )
     .all(depotGroupId) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    model_id: string;
+    length_m: number;
+    variant_label: string | null;
+    power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+    fleet_number: string;
+    plate: string;
+    condition: number;
+    purchase_price_gbp: number;
+    bought_at: string;
+    livery_id: number | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    depotGroupId: r.depot_group_id,
+    depotId: r.depot_id,
+    modelId: r.model_id,
+    lengthM: r.length_m,
+    variantLabel: r.variant_label,
+    powerType: r.power_type,
+    fleetNumber: r.fleet_number,
+    plate: r.plate,
+    condition: r.condition,
+    purchasePriceGBP: r.purchase_price_gbp,
+    boughtAt: r.bought_at,
+    liveryId: r.livery_id,
+  }));
+}
+
+// Every vehicle in the save, across every depot group — for pickers that
+// aren't scoped to one depot group, like the repaint booking form
+// (repaint-shop-panel.ts), unlike listVehiclesForDepotGroup above.
+export function listAllVehicles(db: SaveDb): Vehicle[] {
+  const rows = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
+       FROM vehicles ORDER BY fleet_number`,
+    )
+    .all() as {
     id: number;
     depot_group_id: number;
     depot_id: number;

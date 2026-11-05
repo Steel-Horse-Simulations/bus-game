@@ -27,6 +27,8 @@ import type {
   IconColour,
   RepaintShop,
   RepaintShopEntrance,
+  RepaintBooking,
+  RepaintType,
   DeadMileageRoute,
   DeadMileageDirection,
   DeadMileageBranch,
@@ -288,6 +290,37 @@ contextBridge.exposeInMainWorld("repaintShops", {
   deleteEntrance: (id: number) => ipcRenderer.invoke("repaintShops:deleteEntrance", id) as Promise<void>,
 });
 
+// Repaint bookings (OPERATIONS.md §5, capacity/scheduling only — see
+// repaint_bookings' own CREATE TABLE comment in db.mts for why there's no
+// real cost deduction or travel simulation yet).
+contextBridge.exposeInMainWorld("repaintBookings", {
+  listAll: () => ipcRenderer.invoke("repaintBookings:listAll") as Promise<RepaintBooking[]>,
+  create: (
+    vehicleId: number,
+    repaintShopId: number | null,
+    repaintType: RepaintType,
+    basePriceGBP: number,
+    discountPercent: number,
+    finalPriceGBP: number,
+    bookedGameDay: number,
+    startGameDay: number,
+    completionGameDay: number,
+  ) =>
+    ipcRenderer.invoke(
+      "repaintBookings:create",
+      vehicleId,
+      repaintShopId,
+      repaintType,
+      basePriceGBP,
+      discountPercent,
+      finalPriceGBP,
+      bookedGameDay,
+      startGameDay,
+      completionGameDay,
+    ) as Promise<RepaintBooking>,
+  delete: (id: number) => ipcRenderer.invoke("repaintBookings:delete", id) as Promise<void>,
+});
+
 // Dead mileage routes (DESIGN.md "Dead mileage routes") — saved per depot entrance pair, with waypoints the player added.
 contextBridge.exposeInMainWorld("deadMileage", {
   listForDepot: (depotId: number) => ipcRenderer.invoke("deadMileage:listForDepot", depotId) as Promise<DeadMileageRoute[]>,
@@ -324,6 +357,7 @@ contextBridge.exposeInMainWorld("duties", {
 // screen no longer buys a vehicle outright in one step.
 contextBridge.exposeInMainWorld("vehicles", {
   listForDepotGroup: (depotGroupId: number) => ipcRenderer.invoke("vehicles:listForDepotGroup", depotGroupId) as Promise<Vehicle[]>,
+  listAll: () => ipcRenderer.invoke("vehicles:listAll") as Promise<Vehicle[]>,
   delete: (vehicleId: number) => ipcRenderer.invoke("vehicles:delete", vehicleId) as Promise<void>,
   transfer: (vehicleId: number, newDepotId: number) => ipcRenderer.invoke("vehicles:transfer", vehicleId, newDepotId) as Promise<Vehicle>,
 });

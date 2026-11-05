@@ -300,6 +300,37 @@ interface RepaintShopsApi {
   deleteEntrance(id: number): Promise<void>;
 }
 
+type RepaintType = "full" | "simple";
+
+interface RepaintBooking {
+  id: number;
+  vehicleId: number;
+  repaintShopId: number | null;
+  repaintType: RepaintType;
+  basePriceGBP: number;
+  discountPercent: number;
+  finalPriceGBP: number;
+  bookedGameDay: number;
+  startGameDay: number;
+  completionGameDay: number;
+}
+
+interface RepaintBookingsApi {
+  listAll(): Promise<RepaintBooking[]>;
+  create(
+    vehicleId: number,
+    repaintShopId: number | null,
+    repaintType: RepaintType,
+    basePriceGBP: number,
+    discountPercent: number,
+    finalPriceGBP: number,
+    bookedGameDay: number,
+    startGameDay: number,
+    completionGameDay: number,
+  ): Promise<RepaintBooking>;
+  delete(id: number): Promise<void>;
+}
+
 interface DeadMileageBranch {
   id: number;
   routeId: number;
@@ -378,6 +409,7 @@ interface Vehicle {
 
 interface VehiclesApi {
   listForDepotGroup(depotGroupId: number): Promise<Vehicle[]>;
+  listAll(): Promise<Vehicle[]>;
   delete(vehicleId: number): Promise<void>;
   transfer(vehicleId: number, newDepotId: number): Promise<Vehicle>;
 }
@@ -540,6 +572,7 @@ interface Window {
   orders: OrdersApi;
   fareZones: FareZonesApi;
   repaintShops: RepaintShopsApi;
+  repaintBookings: RepaintBookingsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   longDistanceSections: LongDistanceSectionsApi;
