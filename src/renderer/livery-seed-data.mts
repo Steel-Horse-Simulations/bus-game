@@ -64,6 +64,13 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // no image for this name yet, so the buy menu falls back to the colour
   // swatch it already shows for any livery lacking a badge file.
   "Highland Council": { primary: "#4b5563", secondary: "#e5e7eb" },
+
+  // Added 2026-11-05 (user request) — no real badge photo supplied yet
+  // either, same treatment as Highland Council above: a plain neutral
+  // placeholder pair, not a guess at the real Oxford Tube livery, so
+  // nothing here implies a colour that hasn't actually been confirmed.
+  // Replace with real sampled colours once a reference photo is supplied.
+  "Oxford Tube": { primary: "#4b5563", secondary: "#e5e7eb" },
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
