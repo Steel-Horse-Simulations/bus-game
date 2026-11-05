@@ -13,6 +13,9 @@ decided — move it to Settled with a one-line answer, don't just delete it.**
 | # | Question | Blocks | Notes |
 |---|---|---|---|
 
+None open as of 2026-11-05 — the last three (Q12/Q13/Q14) were resolved
+this session; see T133/T134/T135 below for how each was answered.
+
 ## Outstanding tasks
 
 | # | Task | Owner | Status |
