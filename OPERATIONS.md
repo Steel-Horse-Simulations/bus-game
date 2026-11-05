@@ -542,15 +542,29 @@ badge markers, and each livery is supplied as a small badge image.
   one image per livery per route number.
 - **No direction arrow.** The game draws it so it can point the right way as the
   bus turns.
-- Leave the **middle third clear** for the route number to sit in.
+- Leave a clear band for the route number to sit in (see the fixed
+  placement rule below, which replaces "middle third").
 
-### The three images per livery — the number box is being dropped
-**Open item (2026-10-18): the user wants the number box (item 3 below)
-replaced with a different approach, not yet designed — "we can talk
-about that when we get to that bit." Don't build against the number-box
-mechanism described below; it's being superseded, kept here only as the
-last-agreed fallback until the replacement is decided.** The badge and
-mask (items 1-2) stand as specified — real badge images are already in
+### The two images per livery — number box resolved
+**Resolved 2026-11-05** (open since 2026-10-18, "we can talk about that
+when we get to that bit" — asked again directly, the user confirmed now
+was the right time): the third per-livery image (the magenta number
+box) is dropped entirely, **with no replacement per-livery asset or
+settings field** — proposed and confirmed as a single **universal fixed
+placement**, since every badge already has to keep its number area clear
+regardless. The exact ratio comes from a real reference the user
+supplied (a live bus-tracker map badge: route number centred in a white
+band roughly in the middle of the marker, with margin above for a small
+livery accent and margin below for the direction-pointer tip) — **the
+route number is drawn centred in a band spanning the middle 40% of the
+badge's height and up to 85% of its width**, both centred, on every
+livery with zero per-image authoring needed. This is a close reading of
+that reference rather than an exact pixel measurement from it (a casual
+photo of another site's own marker, not source data this game can
+measure directly) — refine the exact fractions once real badge art is
+tested on screen, the same tolerance already given to other
+visually-judged figures in this document. The badge and mask (items 1-2
+below) are unaffected — real badge images are already in
 `assets/liveries/`, named by livery name (not id — see that folder's own
 note elsewhere in this file).
 
@@ -560,18 +574,8 @@ Each livery is supplied as images at the same size and alignment:
 2. **A branding mask** — black where the livery is unchanged, **white** for the
    primary branding region and **mid grey** for the secondary. The renderer tints
    only those pixels, so one asset serves every branding colour.
-3. ~~**A number box** — a plain **magenta `#FF00FF`** rectangle, hard-edged, on a
-   transparent background, showing where the route number sits. Magenta never
-   occurs in a real livery, so it is detectable with a wide tolerance and cannot
-   be confused with the mask.~~ Superseded — see the open item above.
 
-~~The number box is an authoring convenience. What the game needs is four numbers,
-so the pipeline reads the box's bounding rectangle once on import and stores it as
-fractions of the image. After that the number can be nudged in a settings field
-without regenerating artwork.~~
-
-Keep the **centre third of the badge a single flat colour**, so the route number
-does not land half on one colour and half on another.
+That's the whole set now — no third per-livery image.
 
 ### Accompanying data
 Each livery also stores two hex values — a **primary** and **secondary** colour
@@ -591,15 +595,15 @@ Reference values for the two liveries drawn so far:
 Badges are produced from photographs of real buses. Store them in
 `assets/liveries/`, flat (no subfolders, matching `assets/icons/`'s own
 convention) — `<name>.png` for the badge, `<name>-mask.png` for the
-branding mask (the number-box file is on hold, see the open item above).
+branding mask (no number-box file any more — the route number is a
+fixed placement the renderer applies to every badge, see above).
 **Named by the livery's own name, not its numeric id** (corrected
 2026-10-18) — a livery's id is only ever assigned once it's actually
 created in a given save, so it isn't a stable, predictable key for a
 shipped asset the way the name is; the renderer matches on name instead.
 37 real badges are already in place as of 2026-10-18 (Lothian, SPT,
 Stagecoach's own variants, Citylink, Airlink 100, the training and
-island/remote liveries, and more) — masks and the number-box replacement
-are still outstanding.
+island/remote liveries, and more) — masks still outstanding.
 
 ## 5. Liveries
 
