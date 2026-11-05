@@ -1109,7 +1109,12 @@ Rules that follow:
 
 ## 8. Passengers
 
-**Types:** adult, child, and concession/older person.
+**Types:** adult, child, concession/older person, and **student** (added
+2026-11-05, alongside the Ridacard discussion in §9 — a genuine new
+passenger type, not just a discounted ticket, with its own real place in
+the demand simulation like the other three; exactly how student demand is
+generated — tied to university/college land use is the obvious real-world
+candidate — isn't designed yet, flagged rather than guessed at).
 
 **Access and egress.** People walk up to **400m (about 5 minutes) to reach a
 stop, or to change stops**, in urban areas — **600m in rural areas**, where
@@ -1125,7 +1130,15 @@ of the adult fare**, as under the real Scottish scheme. Route choice therefore
 has a second economic dimension: a route full of concessionary passengers earns
 differently from the same route full of adults.
 
-Season ticket purchase is decided per passenger, based on how often they travel.
+Season ticket purchase is decided per passenger, based on how often they
+travel. **Confirmed 2026-11-05: this is Ridacard** (§9's own "Season
+tickets" subsection) — the real product this line was always describing,
+just never priced or named until the Ridacard discussion. Since this
+drives both the individual AND the statistical passenger tier, the two
+need to agree on season-ticket revenue the same way they already must for
+capping (CLAUDE.md's own "Capping across two tiers" hard part) — not yet
+designed in any further detail than that, flagged as the same class of
+problem rather than solved here.
 
 Passenger satisfaction is driven by punctuality, vehicle capacity, comfort and
 accessibility, cleanliness, stop and station quality, and three staff figures —
@@ -1325,6 +1338,22 @@ fares don't follow that ratio either: £6.00 Single/£8.50 Return is 1.4167x).
 Night fares are also fixed in code now, alongside Ordinary and Airport
 Express (see the section intro above).
 
+**Child fare — confirmed 2026-11-05, applies to every ticket family in
+this game, not just Ridacard**: exactly **50% of the Adult price, rounded
+up to the nearest 5p**. Confirmed directly from the real data already
+gathered — every single real Lothian/Airlink Child figure seen so far
+(City Single £2.40→£1.20, City DAY £6.00→£3.00, Country DAY £6.30→£3.15,
+Combined DAY £9.60→£4.80, NETWORK £14.00→£7.00, Airport Single £6.00→£3.00,
+Airport Return £8.50→£4.25) is **exactly** 50% of its own Adult price,
+every time — not an approximation, a genuinely consistent real-world rule.
+For the base-fee-plus-per-mile Country/Island Single, Child is 50% of the
+**final computed Adult price** (after its own 5p round-up), not 50% of the
+base fee and per-mile rate separately — consistent with how every other
+Child figure above is read off a finished retail price, not a formula
+component. (Family tickets are a different, separate real product — still
+not adopted into this game's own fare model, per the earlier note under
+"Ordinary, Night and Airport Express fares.")
+
 **Lothian's real Single reference data** (screenshots supplied directly,
 2026-11-01 — these are Lothian's own real **zone-banded** fares, the model
 this game is deliberately moving away from for Country/Island; recorded
@@ -1461,22 +1490,42 @@ Not yet wired into any actual purchase flow, since the mobile app itself
 isn't built yet (TICKETING.md) — recorded as the confirmed target for
 when it is.
 
-### Season tickets (flagged idea, not yet confirmed scope)
-Spotted on Lothian's own website, 2026-11-01: a **Ridacard** — a proper
-season ticket (1 Week / 4 Week / Annual Direct Debit / Annual Advance
-Purchase tiers, plus Student and Child discount rates, plus a Student-only
-9-month September/October purchase window), covering Lothian Buses, East
-Coast Buses, Lothian Country, Airlink 100, Trams and NightBus all in one.
-Real figures: Adult 1 Week £26.50 (the same figure as the existing City
-WEEK cap — Ridacard's own weekly tier is priced identically, just covering
-more services), 4 Week £80.00, Annual Direct Debit £74.00/month (+£25
-one-off admin fee), Annual Advance £760.00. Flagged by the user as
-genuinely interesting, **not yet confirmed as something this game actually
-adopts** — a real season-ticket/passenger-discount-class system (Student,
-Child) is a substantially bigger addition than anything else in this
-section, with no existing concept to hang it on (this game has no
-passenger-type discounting at all yet). Recorded here so the real data
-isn't lost, not designed any further than that.
+### Season tickets — Ridacard
+**Adopted 2026-11-05** (first spotted 2026-11-01, flagged, then confirmed
+as real scope) — the concrete answer to §8's own pre-existing "season
+ticket purchase is decided per passenger" line, not a bolt-on addition.
+Modelled on Lothian's own real **Ridacard**: unlimited travel on Lothian
+Buses, East Coast Buses and Lothian Country (zones A/B only, not the wider
+B–H country network), Airlink 100 and NightBus, all in one product, bought
+in advance for a fixed term. Needs the same cross-tier revenue
+reconciliation as capping (see §8) — not yet designed further than that.
+
+**Three tiers**: Weekly, **4-Week** (reintroduced specifically for
+Ridacard, after being dropped twice as a general "28-day ticket" concept
+earlier this session — the two aren't the same decision: this is a
+season-ticket duration, not a bolt-on to the ordinary Day/Weekly family),
+and **Annual**. Real Lothian figures, confirmed exact:
+
+| Tier | Adult | Child (exactly 50% — confirms the universal rule above) | Student (real figure, not a clean ratio — see below) |
+|---|---|---|---|
+| 1 Week | £26.50 | £13.25 | £23.00 |
+| 4 Week | £80.00 | £40.00 | £68.00 |
+| Annual (Direct Debit, paid monthly) | £74.00/month + £25 one-off admin fee | £37.00/month | £58.00/month |
+| Annual (paid up front) | £760.00 | £380.00 | £660.00 |
+
+Student's own real discount **isn't a clean universal ratio** the way
+Child's is — it ranges 78–87% of the Adult price across the four tiers, so
+these are recorded as their own real, fixed figures rather than derived
+from a formula. Lothian also sells an **exclusive Student 9-month advance
+purchase** (available September/October only) at **£570.00** — a genuine
+fifth tier, term-limited to the start of the academic year; recorded as
+real reference data, not yet decided whether this game adopts that
+specific product or just the four core tiers above.
+
+Not yet wired into any actual purchase flow or passenger simulation — the
+Student passenger type itself (§8) isn't designed beyond being confirmed
+to exist yet either, so this is deliberately recorded as real target data
+for when both are built, not a half-built mechanic.
 
 ### Route types and fares
 Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
