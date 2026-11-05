@@ -1335,7 +1335,15 @@ Airport Express, which has its own fixed return fare instead (its real
 fares don't follow that ratio either: £6.00 Single/£8.50 Return is 1.4167x).
 
 Night fares are also fixed in code now, alongside Ordinary and Airport
-Express (see the section intro above).
+Express (see the section intro above). **City's own Night extra is
+confirmed**: real City Night Single (£3.50) against real City Day Single
+(£2.40) is a flat **+£1.10** — clean, since City has no per-mile component
+at all to complicate it. **Country/Island's own Night extra is still
+open**: Lothian's real Night Single is zone-banded (£3.50 / £5.50 / £8.50
+for 1 / 2–3 / 4–6 zones), which doesn't convert cleanly into a per-mile
+surcharge without another real distance check, the same situation the
+base Single rate was in before the Portree–Armadale measurement resolved
+it.
 
 **Child fare — confirmed 2026-11-05, applies to every ticket family in
 this game, not just Ridacard**: exactly **50% of the Adult price, rounded
