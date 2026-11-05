@@ -1112,9 +1112,13 @@ Rules that follow:
 **Types:** adult, child, concession/older person, and **student** (added
 2026-11-05, alongside the Ridacard discussion in §9 — a genuine new
 passenger type, not just a discounted ticket, with its own real place in
-the demand simulation like the other three; exactly how student demand is
-generated — tied to university/college land use is the obvious real-world
-candidate — isn't designed yet, flagged rather than guessed at).
+the demand simulation like the other three). **Confirmed 2026-11-05:
+student demand is generated from university/college land use**, the same
+way every other demand source already works (§2's own "Demand"
+subsection) — a real education site on the map generates real student
+demand, rather than students being some fixed percentage of general
+demand. Not yet wired into the demand model itself (Phase 4), but
+confirmed as the mechanism for when it is.
 
 **Access and egress.** People walk up to **400m (about 5 minutes) to reach a
 stop, or to change stops**, in urban areas — **600m in rural areas**, where
@@ -1338,12 +1342,24 @@ Night fares are also fixed in code now, alongside Ordinary and Airport
 Express (see the section intro above). **City's own Night extra is
 confirmed**: real City Night Single (£3.50) against real City Day Single
 (£2.40) is a flat **+£1.10** — clean, since City has no per-mile component
-at all to complicate it. **Country/Island's own Night extra is still
-open**: Lothian's real Night Single is zone-banded (£3.50 / £5.50 / £8.50
-for 1 / 2–3 / 4–6 zones), which doesn't convert cleanly into a per-mile
-surcharge without another real distance check, the same situation the
-base Single rate was in before the Portree–Armadale measurement resolved
-it.
+at all to complicate it.
+
+**Country/Island's own Night extra — proposed 2026-11-05, approximation
+not a direct measurement**: Lothian's real Night Single is zone-banded
+(£3.50 / £5.50 / £8.50 for 1 / 2–3 / 4–6 zones), which doesn't convert
+cleanly into a per-mile surcharge on its own. But the real data shows the
+Night *extra* over Day growing by roughly £1.00 per zone step (zone 1:
++£1.10; zone "2–3": +£2.10) — about the same order of magnitude as Day's
+own confirmed 20p/mile growth. Rather than invent an unrelated number,
+**Night Country/Island = Day Single + £1.10 + 20p/mile** — reusing the
+same already-confirmed per-mile rate for the extra, just with its own
+£1.10 base matching City's own real flat extra exactly. Checked against
+the real zone "2–3" figure (£5.50): assuming that band sits around 7
+miles out, this formula gives £5.90 — about 7% over, a reasonable fit for
+an approximation rather than an exact match (the same standard the main
+per-mile rate itself was held to, "within 2%," doesn't apply as tightly
+here since this is explicitly built from an approximation, not a direct
+measurement).
 
 **Child fare — confirmed 2026-11-05, applies to every ticket family in
 this game, not just Ridacard**: exactly **50% of the Adult price, rounded
@@ -1511,8 +1527,29 @@ ticket purchase is decided per passenger" line, not a bolt-on addition.
 Modelled on Lothian's own real **Ridacard**: unlimited travel on Lothian
 Buses, East Coast Buses and Lothian Country (zones A/B only, not the wider
 B–H country network), Airlink 100 and NightBus, all in one product, bought
-in advance for a fixed term. Needs the same cross-tier revenue
-reconciliation as capping (see §8) — not yet designed further than that.
+in advance for a fixed term.
+
+**Cross-tier revenue reconciliation — worked through 2026-11-05**:
+Ridacard doesn't need its own separate solution to this — it's the same
+underlying mechanism as capping, not a new one. For an **individual**
+passenger, a Ridacard purchase is revenue recognised **once, at purchase**
+(§8's own "decided per passenger, based on how often they travel"), after
+which that passenger rides free for the term — still counted for loading/
+ridership/satisfaction purposes, just contributing no further per-trip
+revenue. For the **statistical** tier, there's no individual purchase
+decision to track, so it needs the exact equivalent capping already needs:
+not per-passenger simulation, but a modelled **proportion** of statistical
+demand assumed to hold a season ticket, with revenue recognised as a
+periodic lump sum (scaled to that proportion) rather than per trip. The
+two tiers are really solving one problem, not two — "a portion of demand
+pays up front or accumulates to a threshold, then rides free for a
+period" — Ridacard is just a **longer, fixed-term** version of exactly
+what capping already needs (a week/4-week/year purchase decision instead
+of a rolling day/week spend threshold). Still not built (Phase 4's
+passenger simulation doesn't exist yet), but this means **capping's own
+eventual mechanism should be designed to cover both from the start**,
+rather than building two separate systems that would need reconciling
+with each other later.
 
 **Three tiers**: Weekly, **4-Week** (reintroduced specifically for
 Ridacard, after being dropped twice as a general "28-day ticket" concept
