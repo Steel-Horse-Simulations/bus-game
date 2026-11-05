@@ -24,3 +24,10 @@ export function liveryBadgeUrl(liveryName: string): string | null {
 export function hasLiveryBadge(liveryName: string): boolean {
   return liveryName in BADGE_URLS_BY_NAME;
 }
+
+// Every livery name with real badge art, for anything that needs to
+// register every badge up front (e.g. livery-map-badges.ts) rather than
+// look one up by name.
+export function liveryBadgeNames(): string[] {
+  return Object.keys(BADGE_URLS_BY_NAME);
+}

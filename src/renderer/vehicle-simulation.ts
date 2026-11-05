@@ -14,12 +14,16 @@
 //    derive "today is a Tuesday" from game time. A manual Mon-Fri/Sat/Sun
 //    selector stands in for it — also more useful for testing, since it
 //    lets a Saturday timetable be previewed without waiting for one.
-//  - Rendered as a plain coloured circle + route number + a rotated arrow
-//    (reusing the existing "oneway-arrow" icon), not DESIGN.md §11's own
-//    "small angled rectangle in a simplified livery" badge — that badge is
-//    explicitly defined in terms of a livery's primary/secondary colours,
-//    which don't exist yet (OPERATIONS.md §4/§5, Phase 3 later item). This
-//    is a placeholder visual, not the final one.
+//  - Rendered as DESIGN.md §11's own "small angled rectangle in a
+//    simplified livery" badge (livery-map-badges.ts), carrying the route
+//    number per the real placement ratio (OPERATIONS.md §4), plus a
+//    rotated arrow (the existing "oneway-arrow" icon). The livery itself
+//    is a random, stable-per-journey placeholder pick (2026-11-05, user
+//    request) — there's no real owned-vehicle-to-journey assignment yet,
+//    so it can't be the genuinely correct livery for whichever real bus
+//    is running. A journey with no eligible livery (rare — only when a
+//    save somehow has none seeded) falls back to a plain route-coloured
+//    circle instead.
 //  - Runs on the main thread via `setInterval`, not the Web Worker
 //    CLAUDE.md's Stack table names for "Simulation" — the position maths
 //    for a realistic number of routes at this stage is cheap; move it to a
@@ -33,6 +37,7 @@ import type { Router } from "./wasm/game_wasm.js";
 import { generateDepartureMinutesForBands } from "./route-timetable.mts";
 import { computeVehiclePosition, type RouteLeg, type JourneyPointTiming } from "./vehicle-position.mts";
 import { gameClockState } from "./game-clock-engine";
+import { registerLiveryBadgeIcons, pickLiveryForJourney, liveryBadgeImageId } from "./livery-map-badges";
 
 const DAY_TYPES: DayType[] = ["monday_friday", "saturday", "sunday"];
 const DAY_TYPE_LABELS: Record<DayType, string> = { monday_friday: "Mon-Fri", saturday: "Sat", sunday: "Sun" };
@@ -48,9 +53,13 @@ interface CachedRoute {
 }
 
 export async function mountVehicleSimulation(map: maplibregl.Map, router: Router): Promise<void> {
+  await registerLiveryBadgeIcons(map);
+
   let dayType: DayType = "monday_friday";
   let routeCache = new Map<number, CachedRoute>();
   let timetablesByRoute = new Map<number, RouteTimetable[]>();
+  let liveries: Livery[] = [];
+  let depotGroupsById = new Map<number, DepotGroup>();
 
   // NOTE (2026-10-11): briefly migrated to `find_route_through` for the
   // whole route in one call (same fix shape as route-draw.ts's own
@@ -91,7 +100,14 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   // the only thing that can change its legs, so a cheap string-equality
   // check on them is enough to skip re-routing anything untouched.
   const refresh = async (): Promise<void> => {
-    const [routes, timetables] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
+    const [routes, timetables, liveriesList, depotGroups] = await Promise.all([
+      window.routes.list(),
+      window.routeTimetables.listAll(),
+      window.liveries.list(),
+      window.depotGroups.list(),
+    ]);
+    liveries = liveriesList;
+    depotGroupsById = new Map(depotGroups.map((g) => [g.id, g]));
     const next = new Map<number, CachedRoute>();
     for (const route of routes) {
       if (route.points.length < 2) continue;
@@ -115,15 +131,85 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
 
   map.addSource("vehicles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+
+  // A journey with no eligible livery (badgeImage === "", rare — see
+  // livery-map-badges.ts) falls back to the original plain circle, same
+  // as every vehicle showed before liveries were wired in.
+  const noBadgeFilter: maplibregl.FilterSpecification = ["==", ["get", "badgeImage"], ""];
+  const hasBadgeFilter: maplibregl.FilterSpecification = ["!=", ["get", "badgeImage"], ""];
+
   map.addLayer({
     id: "vehicles-circle",
     type: "circle",
     source: "vehicles",
+    filter: noBadgeFilter,
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 5, 17, 10],
       "circle-color": ["get", "colour"],
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 1.5,
+    },
+  });
+  map.addLayer({
+    id: "vehicles-circle-number",
+    type: "symbol",
+    source: "vehicles",
+    filter: noBadgeFilter,
+    layout: {
+      "text-field": ["get", "number"],
+      "text-size": 10,
+      "text-offset": [0, 1.1],
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: {
+      "text-color": "#ffffff",
+      "text-halo-color": "#000000",
+      "text-halo-width": 1,
+    },
+  });
+
+  // DESIGN.md §11 "Buses": "a small angled rectangle in a simplified...
+  // livery" — the real badge PNG (256x112, livery-map-badges.ts),
+  // rotated to the bus's own heading. icon-size is tuned by eye for a
+  // 256x112 source image (unlike the 16x16 oneway-arrow below, which
+  // needs its own much larger multiplier) — a cosmetic value to refine
+  // once seen live, not a measured one.
+  map.addLayer({
+    id: "vehicles-badge",
+    type: "symbol",
+    source: "vehicles",
+    filter: hasBadgeFilter,
+    layout: {
+      "icon-image": ["get", "badgeImage"],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.09, 17, 0.22],
+      "icon-rotate": ["get", "bearing"],
+      "icon-rotation-alignment": "map",
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+    },
+  });
+  // The route number, drawn on the badge itself per the real placement
+  // ratio resolved from a live reference (OPERATIONS.md §4, Q14,
+  // 2026-11-05): centred in the badge's own clear middle band, rotating
+  // with it rather than staying map-upright.
+  map.addLayer({
+    id: "vehicles-badge-number",
+    type: "symbol",
+    source: "vehicles",
+    filter: hasBadgeFilter,
+    layout: {
+      "text-field": ["get", "number"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 10, 6, 17, 14],
+      "text-rotate": ["get", "bearing"],
+      "text-rotation-alignment": "map",
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: {
+      "text-color": "#ffffff",
+      "text-halo-color": "#000000",
+      "text-halo-width": 1,
     },
   });
   map.addLayer({
@@ -137,23 +223,6 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
       "icon-rotation-alignment": "map",
       "icon-allow-overlap": true,
       "icon-ignore-placement": true,
-    },
-  });
-  map.addLayer({
-    id: "vehicles-number",
-    type: "symbol",
-    source: "vehicles",
-    layout: {
-      "text-field": ["get", "number"],
-      "text-size": 10,
-      "text-offset": [0, 1.1],
-      "text-allow-overlap": true,
-      "text-ignore-placement": true,
-    },
-    paint: {
-      "text-color": "#ffffff",
-      "text-halo-color": "#000000",
-      "text-halo-width": 1,
     },
   });
 
@@ -208,13 +277,15 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
       // midnight into "today" (a near-24/7 service) — checked alongside a
       // same-day departure, not instead of it.
       for (const departureMinutes of departures) {
+        const livery = pickLiveryForJourney(route, departureMinutes, liveries, depotGroupsById.get(route.depotGroupId));
+        const badgeImage = livery ? liveryBadgeImageId(livery.name) : "";
         for (const dayOffsetSeconds of [0, -SECONDS_PER_DAY]) {
           const elapsed = gameSecondsOfDay - departureMinutes * 60 - dayOffsetSeconds;
           const result = computeVehiclePosition(legs, points, elapsed);
           if (!result) continue;
           features.push({
             type: "Feature",
-            properties: { colour: route.colour, number: route.number, bearing: result.bearingDegrees },
+            properties: { colour: route.colour, number: route.number, bearing: result.bearingDegrees, badgeImage },
             geometry: { type: "Point", coordinates: [result.position[0], result.position[1]] },
           });
         }
