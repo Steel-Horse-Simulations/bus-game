@@ -654,6 +654,15 @@ divergent section with the normal route-building tool, then chooses the
 **first shared stop** where it rejoins — if it rejoins at all; some variations
 just end differently.
 
+**A different start, resolved 2026-11-05** (Skye's own real case: some
+services start at the High School, not the Square) — the mirror image of
+"some variations just end differently" above, now possible on the start
+end too. The player begins the variation from a **blank draft rather than
+a clone of the parent**, draws their own lead-in from the new start stop,
+then uses the existing **Rejoin at** tool to splice onto the parent's own
+path once it reaches the shared route — no new mechanism, Rejoin at
+already does exactly this for the end of a draft.
+
 **Extending rather than diverging.** Where a variation only **extends** a
 route further, rather than diverging onto a different path, it keeps the
 **same route number** — no new letter. The destination display changes along
