@@ -32,7 +32,7 @@ import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type CoastlineSnap } from "./coastline-clip.mts";
-import { unionBuildingFootprints, nearestPointOnBuildingBoundary, buildingClusterFollowBetween } from "./building-cluster.mts";
+import { unionBuildingFootprints, nearestPointOnBuildingBoundary, buildingClusterFollowBetween, nearestVertexOfRing } from "./building-cluster.mts";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
@@ -1074,10 +1074,20 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         if (follow) {
           draftPoints.push(...follow.slice(1));
           draftClickPointCounts.push(follow.length - 1);
+        } else if (previousPoint && !lastPointWasBuildingSnapped) {
+          // T118's confirmed point (5): "on a road, press Ctrl, click
+          // near a cluster — connects from the road point to the
+          // nearest corner of that cluster," the mirror of point (4)
+          // above. Only when the previous point genuinely wasn't a
+          // building snap at all — two building-snapped points on
+          // different, unconnected clusters are a real "big gap" (3),
+          // not this case, so they fall through to the plain snap point
+          // in the branch below instead.
+          draftPoints.push(nearestVertexOfRing(boundaries[clusterSnap.boundaryIndex], previousPoint));
+          draftClickPointCounts.push(1);
         } else {
-          // Either no previous point, the previous point wasn't itself
-          // building-snapped, or the two landed on different/unconnected
-          // boundaries — a genuine "big gap," just the new point on its
+          // No previous point at all, or a genuine gap between two
+          // unconnected building boundaries — just the new point on its
           // own (3), matching the confirmed spec's own straight-line
           // fallback.
           draftPoints.push(clusterSnap.point);
@@ -1175,8 +1185,24 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       draftClickPointCounts.push(coastlineFollow.length - 1);
     } else {
       const point = coastlineSnap?.point ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
-      draftPoints.push(point);
-      draftClickPointCounts.push(1);
+      // T118's confirmed point (4): "transitioning off a building-trace
+      // onto a plain road click connects from whichever corner of the
+      // just-traced cluster is nearest to the new road point, not
+      // necessarily the trace's own last plotted point" — inserts that
+      // corner as an extra bridging point (the trace's own last point
+      // stays exactly where it was placed) rather than replacing
+      // anything already traced.
+      if (lastPointWasBuildingSnapped && previousPoint) {
+        const boundaries = unionBuildingFootprints(queryNearbyBuildingFootprints(map, [previousPoint]));
+        const previousSnap = nearestPointOnBuildingBoundary(previousPoint, boundaries, BUILDING_SNAP_DISTANCE_M);
+        const corner = previousSnap ? nearestVertexOfRing(boundaries[previousSnap.boundaryIndex], point) : null;
+        const newPoints = corner ? [corner, point] : [point];
+        draftPoints.push(...newPoints);
+        draftClickPointCounts.push(newPoints.length);
+      } else {
+        draftPoints.push(point);
+        draftClickPointCounts.push(1);
+      }
     }
     lastPointWasRoadSnapped = roadSnap !== null;
     lastCoastlineSnap = coastlineSnap;

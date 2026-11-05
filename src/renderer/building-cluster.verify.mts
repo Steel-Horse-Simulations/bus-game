@@ -1,6 +1,6 @@
 // Manual verification for building-cluster.mts (T118), run directly with
 // `node --experimental-strip-types src/renderer/building-cluster.verify.mts`.
-import { unionBuildingFootprints, nearestPointOnBuildingBoundary, ringWalkShorterArc, buildingClusterFollowBetween } from "./building-cluster.mts";
+import { unionBuildingFootprints, nearestPointOnBuildingBoundary, ringWalkShorterArc, buildingClusterFollowBetween, nearestVertexOfRing } from "./building-cluster.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -96,6 +96,25 @@ assert(unionBuildingFootprints([]).length === 0, "unioning nothing returns no bo
   const snapOnC = nearestPointOnBuildingBoundary({ lon: 10, lat: 0.5 }, merged, 1_000_000)!;
   const gapFollow = buildingClusterFollowBetween(snapOnA, snapOnC, merged);
   assert(gapFollow === null, "A and C are on different, unconnected boundaries — a genuine gap, not traced");
+}
+
+// --- nearestVertexOfRing (DESIGN.md's confirmed points 4/5) ---
+
+{
+  const square = [{ lon: 0, lat: 0 }, { lon: 4, lat: 0 }, { lon: 4, lat: 4 }, { lon: 0, lat: 4 }, { lon: 0, lat: 0 }];
+  const nearTopRight = nearestVertexOfRing(square, { lon: 3.9, lat: 3.9 });
+  assert(nearTopRight.lon === 4 && nearTopRight.lat === 4, `a point just inside the top-right corner should pick that corner, got (${nearTopRight.lon}, ${nearTopRight.lat})`);
+
+  const nearBottomLeft = nearestVertexOfRing(square, { lon: 0.1, lat: -0.1 });
+  assert(nearBottomLeft.lon === 0 && nearBottomLeft.lat === 0, `a point just outside the bottom-left corner should still pick that corner, got (${nearBottomLeft.lon}, ${nearBottomLeft.lat})`);
+
+  // A point on an EDGE's own midpoint, nearest to neither endpoint by
+  // more than the other — nearestPointOnBuildingBoundary would land
+  // exactly here (mid-edge); nearestVertexOfRing must still pick an
+  // actual corner, never a mid-edge point.
+  const onEdgeMidpoint = nearestVertexOfRing(square, { lon: 2, lat: 0 });
+  const isARealCorner = square.slice(0, -1).some((v) => v.lon === onEdgeMidpoint.lon && v.lat === onEdgeMidpoint.lat);
+  assert(isARealCorner, `even equidistant from two corners, the result must be one of the ring's real vertices, got (${onEdgeMidpoint.lon}, ${onEdgeMidpoint.lat})`);
 }
 
 console.log("\nAll building-cluster checks passed.");

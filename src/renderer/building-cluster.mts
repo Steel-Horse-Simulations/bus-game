@@ -103,16 +103,44 @@ export function nearestPointOnBuildingBoundary(point: FareZonePoint, boundaries:
 const DEG_TO_RAD = Math.PI / 180;
 const EARTH_RADIUS_M = 6_371_000;
 
+// Flat equirectangular distance, centred on the midpoint of the two
+// points — the same approximation used throughout this project
+// (polyline-geometry.mts, point_to_segment_closest in
+// rust/game-wasm/src/lib.rs); fine at the scale a single building or
+// cluster spans.
+function distanceM(a: GeoPoint, b: GeoPoint): number {
+  const cosLat = Math.cos(((a.lat + b.lat) / 2) * DEG_TO_RAD);
+  const dLon = (b.lon - a.lon) * DEG_TO_RAD * cosLat * EARTH_RADIUS_M;
+  const dLat = (b.lat - a.lat) * DEG_TO_RAD * EARTH_RADIUS_M;
+  return Math.hypot(dLon, dLat);
+}
+
 function pathLengthM(points: readonly FareZonePoint[]): number {
-  const cosLat = Math.cos(points[0].lat * DEG_TO_RAD);
-  const toXY = (p: GeoPoint): [number, number] => [p.lon * DEG_TO_RAD * cosLat * EARTH_RADIUS_M, p.lat * DEG_TO_RAD * EARTH_RADIUS_M];
   let total = 0;
-  for (let i = 0; i + 1 < points.length; i++) {
-    const [ax, ay] = toXY(points[i]);
-    const [bx, by] = toXY(points[i + 1]);
-    total += Math.hypot(bx - ax, by - ay);
-  }
+  for (let i = 0; i + 1 < points.length; i++) total += distanceM(points[i], points[i + 1]);
   return total;
+}
+
+// Whichever real VERTEX of a closed boundary ring is nearest a given
+// reference point — distinct from nearestPointOnBuildingBoundary above,
+// which can land anywhere along an edge, not necessarily at a corner.
+// DESIGN.md's own confirmed points (4)/(5): transitioning between a
+// building trace and a road/raw point connects via whichever corner of
+// the cluster is nearest the OTHER side's point, not an arbitrary
+// edge-interpolated spot.
+export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoint: FareZonePoint): FareZonePoint {
+  let best = ring[0];
+  let bestDist = Infinity;
+  // ring[length-1] repeats ring[0] (closed) — stop one short so the
+  // closing point isn't considered twice.
+  for (let i = 0; i < ring.length - 1; i++) {
+    const d = distanceM(ring[i], referencePoint);
+    if (d < bestDist) {
+      bestDist = d;
+      best = ring[i];
+    }
+  }
+  return best;
 }
 
 // Walks a CLOSED ring (ring[0] === ring[ring.length-1]) from one edge to
