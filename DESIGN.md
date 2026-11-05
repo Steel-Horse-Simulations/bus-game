@@ -1310,8 +1310,8 @@ areas. The 7.5% only applies to commercial mainland-hub routes
 | Case | Pricing |
 |---|---|
 | Within a city (zone A, zone B, or crossing between them) | Flat **£2.40**, fixed in code |
-| On a bus that leaves the city zones at all ("Country" — see "City-only vs Country buses" below) | Base fee + price per mile, fixed in code — **real reference data now in hand (below), the actual base fee/per-mile conversion is still open** |
-| Within an island zone | Base fee **£2.40** + price per mile, fixed in code — **per-mile rate pending**, same open conversion question |
+| On a bus that leaves the city zones at all ("Country" — see "City-only vs Country buses" below) | **£2.00 base + 20p/mile**, fixed in code (confirmed 2026-11-01) |
+| Within an island zone | **£2.00 base + 20p/mile**, same as Country (confirmed 2026-11-01 — base lowered from an earlier-proposed £2.40 to £2.00 specifically "to match better with towns") |
 | Within a town zone | Flat **£2**, fixed in code (no longer a percentage of the parent — see "Zone types" above) |
 | Long-distance routes | No zones — base fare plus price per mile, player-set (unchanged) |
 | Airport Express routes | Flat Single **£6.00** and flat Return **£8.50**, fixed in code (real Lothian Airlink figures) — not the standard 1.6x return multiplier below |
@@ -1339,10 +1339,19 @@ per-mile equivalent, not as a zone-banded model to actually build):
 | 5 | £5.40 | " |
 | 6 | £6.40 | " |
 
-**Still genuinely open, not guessed at**: converting this real zone-banded
-data into a base-fee-plus-per-mile formula needs either a real sense of how
-many miles each of Lothian's own zone steps actually covers, or an agreed
-method for approximating it — flagged for the user rather than invented.
+**Resolved 2026-11-01, measured rather than guessed**: converting this real
+zone-banded data into a base-fee-plus-per-mile formula needed a real sense
+of distance, which the user supplied as a concrete real-world check rather
+than an abstract one — "a ticket from Portree to Armadale on the Isle of
+Skye is about £10.50." Rather than estimate that distance from memory, it
+was measured directly against this project's own real road graph and stop
+data: Armadale Pier (a real stop in `stops.bin`, not to be confused with
+two other places named Armadale elsewhere in Scotland that the same lookup
+turned up first) is a real **41.70-mile** route from Portree via the
+project's own router. With the user's own **£2.00 base** (chosen to match
+Town's own fixed fare) and that real distance: (£10.50 − £2.00) ÷ 41.70 ≈
+**20p/mile** — a clean round number landing within 2% of the real fare
+(£2.00 + 41.70 × 20p = £10.34), confirmed as the real figure to use.
 
 ### Sightseeing tickets
 A separate ticket type from the ordinary families, sold in two forms at
@@ -1451,6 +1460,23 @@ bundle is offered in reality**, only Country and City&Country/Combined):
 Not yet wired into any actual purchase flow, since the mobile app itself
 isn't built yet (TICKETING.md) — recorded as the confirmed target for
 when it is.
+
+### Season tickets (flagged idea, not yet confirmed scope)
+Spotted on Lothian's own website, 2026-11-01: a **Ridacard** — a proper
+season ticket (1 Week / 4 Week / Annual Direct Debit / Annual Advance
+Purchase tiers, plus Student and Child discount rates, plus a Student-only
+9-month September/October purchase window), covering Lothian Buses, East
+Coast Buses, Lothian Country, Airlink 100, Trams and NightBus all in one.
+Real figures: Adult 1 Week £26.50 (the same figure as the existing City
+WEEK cap — Ridacard's own weekly tier is priced identically, just covering
+more services), 4 Week £80.00, Annual Direct Debit £74.00/month (+£25
+one-off admin fee), Annual Advance £760.00. Flagged by the user as
+genuinely interesting, **not yet confirmed as something this game actually
+adopts** — a real season-ticket/passenger-discount-class system (Student,
+Child) is a substantially bigger addition than anything else in this
+section, with no existing concept to hang it on (this game has no
+passenger-type discounting at all yet). Recorded here so the real data
+isn't lost, not designed any further than that.
 
 ### Route types and fares
 Every route has exactly one **route type** — Ordinary, Night, Sightseeing,
