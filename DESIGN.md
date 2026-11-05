@@ -2410,6 +2410,12 @@ that teach why maintenance matters, and no staffing system to fight on day one.
 The player starts with **money only** beyond that opening gift — every depot, vehicle and member of staff
 is bought.
 
+**Starting balance, confirmed 2026-11-05: £100,000** — a round figure
+with enough headroom to buy a depot (discounted 20% per this section's
+own "Economy targets," below) or a few extra vehicles beyond the free
+starting fleet, without making the opening contracts irrelevant. Granted
+exactly once, when a new company is created.
+
 There are **no cash loans**; leasing is the only credit. Running out of money
 does not end the game — the player simply cannot buy anything until income
 recovers.

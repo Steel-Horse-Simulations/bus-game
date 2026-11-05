@@ -65,6 +65,9 @@ import {
   collectOrder,
   getGameClock,
   setGameClock,
+  getCompanyBalanceGBPPence,
+  recordFinanceTransaction,
+  listFinanceTransactions,
   SCHEMA_VERSION,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
@@ -968,6 +971,20 @@ db.close();
   setGameClock(db, { accumulatedGameSeconds: 999, speedMultiplier: 1, isPaused: false });
   const afterSecondSet = getGameClock(db);
   assert(afterSecondSet.accumulatedGameSeconds === 999 && afterSecondSet.isPaused === false, "a second setGameClock updates in place, not a second row");
+
+  // --- Finance ledger (DESIGN.md §10) ---
+  assert(getCompanyBalanceGBPPence(db) === 10_000_000, "a brand new save is seeded with exactly the real £100,000 opening balance");
+  const openingTxns = listFinanceTransactions(db);
+  assert(openingTxns.length === 1 && openingTxns[0].category === "opening_balance", "the opening balance is itself a real transaction row, not a special-cased constant");
+
+  recordFinanceTransaction(db, -500_00, "ticket_machine", g1.id, "Test spend", 5);
+  assert(getCompanyBalanceGBPPence(db) === 10_000_000 - 50_000, "a recorded expense reduces the derived balance by exactly its own amount");
+  recordFinanceTransaction(db, 200_00, "test_income", null, "Test income", 6);
+  assert(getCompanyBalanceGBPPence(db) === 10_000_000 - 50_000 + 20_000, "income and expense transactions both net into the same derived balance");
+
+  const g1Txns = listFinanceTransactions(db, g1.id);
+  assert(g1Txns.length === 1 && g1Txns[0].description === "Test spend", "filtering by depot group returns only that group's own attributed transactions");
+  assert(listFinanceTransactions(db).length === 3, "the whole-company view (no depot group filter) sees every transaction");
 
   db.close();
 }

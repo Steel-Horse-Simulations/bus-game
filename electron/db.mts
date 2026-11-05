@@ -10,7 +10,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 52;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -761,6 +761,72 @@ CREATE TABLE IF NOT EXISTS game_clock (
   speed_multiplier INTEGER NOT NULL DEFAULT 1 CHECK (speed_multiplier IN (1, 4, 10, 20, 60)),
   is_paused INTEGER NOT NULL DEFAULT 0
 );
+
+-- Company-wide one-off upgrades (TICKETING.md §4, second increment of
+-- T66 — see company-upgrades.mts's own header comment for the real
+-- scope). Not per depot group, unlike ticket_machine_tier above —
+-- TICKETING.md's own wording ("Company-wide one-off upgrades (not per
+-- vehicle)") makes these flat, save-wide purchases, so a single row (id
+-- always 1, same CHECK-enforced-singleton pattern as game_clock) is the
+-- real model. Each flag's own real price is now actually deducted via
+-- finance_transactions below (2026-11-05) when bought through the
+-- renderer's own UI — db.mts's own setters just store the flag, same
+-- "pure logic in the renderer, dumb storage here" split as the pricing
+-- functions.
+CREATE TABLE IF NOT EXISTS company_upgrades (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  has_upgradable_ticket_app INTEGER NOT NULL DEFAULT 0,
+  has_mobile_app_live_data INTEGER NOT NULL DEFAULT 0,
+  has_upgraded_avl_data INTEGER NOT NULL DEFAULT 0
+);
+
+-- The finance ledger (DESIGN.md §10 "Money"/"Finance screen") — first
+-- increment, 2026-11-05, prompted directly by the user ("a lot is now
+-- starting to be waiting for that to be added" — repaint_bookings,
+-- ticket_machine_tier and company_upgrades had all been built with real
+-- prices shown but nothing deducted, for exactly this reason). "Company
+-- cash is a single pot" (DESIGN.md's own wording) — one company-wide
+-- balance, never per depot group, even though each transaction still
+-- records WHICH depot group an asset was bought for ("that spend is
+-- recorded against the group receiving the asset, so it is possible to
+-- see whether one group is subsidising another") via depot_group_id,
+-- nullable for a genuinely company-wide cost (the company_upgrades
+-- above, which have no single owning depot group at all).
+--
+-- The running balance is deliberately NOT a stored/cached column
+-- anywhere — it's always derived as the sum of every transaction ever
+-- recorded (getCompanyBalanceGBPPence below), the same "merge is a
+-- projection, not a copy" principle CLAUDE.md already establishes for
+-- timetables: a stored balance could drift from its own transaction
+-- log, a derived one never can. amount_gbp_pence is signed (positive =
+-- income, negative = a cost) so a plain SUM is the whole calculation.
+-- The real £100,000 starting balance (DESIGN.md §10, confirmed
+-- 2026-11-05) is itself just the FIRST transaction ever recorded
+-- (category 'opening_balance'), seeded once below in openSave the first
+-- time a save's own finance_transactions table is found completely
+-- empty — not a special-cased starting value anywhere else.
+--
+-- category is a free-text label, not yet a fixed enum — DESIGN.md §10's
+-- own Finance screen groups spend into named categories (Fares,
+-- Contracts, Staff, Vehicles, Property, Marketing, Penalties and fines)
+-- but that whole screen needs systems (fares, contracts, staff, wages)
+-- that don't exist yet; the categories actually in use today
+-- (opening_balance, ticket_machine, company_upgrade) don't map cleanly
+-- onto that table and aren't meant to pre-empt it — a real category
+-- taxonomy is deferred to whenever the Finance screen itself is built.
+-- game_day is the same whole-day-index convention repaint_bookings
+-- already uses (from the game clock's own epoch) — day granularity is
+-- all a ledger needs, matching every other game-clock-scheduled feature
+-- so far.
+CREATE TABLE IF NOT EXISTS finance_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  amount_gbp_pence INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  depot_group_id INTEGER REFERENCES depot_groups(id),
+  description TEXT NOT NULL,
+  game_day INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -1337,6 +1403,22 @@ export function openSave(path: string): SaveDb {
     // defaults to the real starting point, Basic with no tap-on tap-off.
     db.exec("ALTER TABLE depot_groups ADD COLUMN ticket_machine_tier TEXT NOT NULL DEFAULT 'basic' CHECK (ticket_machine_tier IN ('basic', 'mid', 'advanced'))");
     db.exec("ALTER TABLE depot_groups ADD COLUMN has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0");
+    db.exec("PRAGMA user_version = 50");
+  } else if (currentVersion === 50) {
+    // v50 -> v51: the company_upgrades table (TICKETING.md §4) — brand
+    // new, CREATE TABLE IF NOT EXISTS in SCHEMA above creates it, so
+    // this only advances the version number (same as game_clock's own
+    // row, it's created lazily by getCompanyUpgrades/the setters below,
+    // not seeded here).
+    db.exec("PRAGMA user_version = 51");
+  } else if (currentVersion === 51) {
+    // v51 -> v52: the finance_transactions table (DESIGN.md §10) —
+    // brand new, CREATE TABLE IF NOT EXISTS in SCHEMA above creates it.
+    // The real £100,000 opening balance is seeded just below in
+    // openSave, not here — same reasoning as the opening dealer/livery
+    // seed functions needing the renderer's own boot sequence for real
+    // reference data, except this one real figure is simple enough to
+    // seed directly here rather than round-trip through the renderer.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1344,6 +1426,23 @@ export function openSave(path: string): SaveDb {
       );
     }
     currentVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  }
+
+  // Opening balance (DESIGN.md §10, confirmed 2026-11-05: "£100,000...
+  // granted exactly once, when a new company is created") — seeded the
+  // first time this save's own finance_transactions table is found
+  // completely empty, on EVERY openSave call (idempotent, same pattern
+  // as seedRealDealers/seedRealLiveries elsewhere, just run from here
+  // instead of the renderer's boot sequence since there's no real-world
+  // reference data to look up). Never re-grants it on a save that
+  // already has any transaction at all, including one for £0 or a
+  // negative figure — only a genuinely brand new save ever has zero
+  // rows here.
+  const transactionCount = (db.prepare("SELECT COUNT(*) AS c FROM finance_transactions").get() as { c: number }).c;
+  if (transactionCount === 0) {
+    db.prepare(
+      "INSERT INTO finance_transactions (amount_gbp_pence, category, depot_group_id, description, game_day, created_at) VALUES (?, 'opening_balance', NULL, 'Opening balance', 0, ?)",
+    ).run(10_000_000, new Date().toISOString());
   }
 
   return db;
@@ -3792,4 +3891,124 @@ export function setGameClock(db: SaveDb, clock: GameClock): void {
     `INSERT INTO game_clock (id, accumulated_game_seconds, speed_multiplier, is_paused) VALUES (1, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET accumulated_game_seconds = excluded.accumulated_game_seconds, speed_multiplier = excluded.speed_multiplier, is_paused = excluded.is_paused`,
   ).run(clock.accumulatedGameSeconds, clock.speedMultiplier, clock.isPaused ? 1 : 0);
+}
+
+// --- Company-wide one-off upgrades (company_upgrades' own SCHEMA
+// comment above; TICKETING.md §4) — same singleton-row pattern as
+// game_clock just above, each flag set independently rather than as
+// one full-row replace, since these are three unrelated one-off
+// purchases the player makes separately, not one atomic update. ---
+export interface CompanyUpgrades {
+  hasUpgradableTicketApp: boolean;
+  hasMobileAppLiveData: boolean;
+  hasUpgradedAvlData: boolean;
+}
+
+const DEFAULT_COMPANY_UPGRADES: CompanyUpgrades = { hasUpgradableTicketApp: false, hasMobileAppLiveData: false, hasUpgradedAvlData: false };
+
+export function getCompanyUpgrades(db: SaveDb): CompanyUpgrades {
+  const row = db
+    .prepare("SELECT has_upgradable_ticket_app, has_mobile_app_live_data, has_upgraded_avl_data FROM company_upgrades WHERE id = 1")
+    .get() as { has_upgradable_ticket_app: number; has_mobile_app_live_data: number; has_upgraded_avl_data: number } | undefined;
+  if (!row) return DEFAULT_COMPANY_UPGRADES;
+  return {
+    hasUpgradableTicketApp: row.has_upgradable_ticket_app !== 0,
+    hasMobileAppLiveData: row.has_mobile_app_live_data !== 0,
+    hasUpgradedAvlData: row.has_upgraded_avl_data !== 0,
+  };
+}
+
+function setCompanyUpgradeFlag(db: SaveDb, column: "has_upgradable_ticket_app" | "has_mobile_app_live_data" | "has_upgraded_avl_data", value: boolean): void {
+  db.prepare(
+    `INSERT INTO company_upgrades (id, ${column}) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET ${column} = excluded.${column}`,
+  ).run(value ? 1 : 0);
+}
+
+export function setHasUpgradableTicketApp(db: SaveDb, value: boolean): void {
+  setCompanyUpgradeFlag(db, "has_upgradable_ticket_app", value);
+}
+
+export function setHasMobileAppLiveData(db: SaveDb, value: boolean): void {
+  setCompanyUpgradeFlag(db, "has_mobile_app_live_data", value);
+}
+
+export function setHasUpgradedAvlData(db: SaveDb, value: boolean): void {
+  setCompanyUpgradeFlag(db, "has_upgraded_avl_data", value);
+}
+
+// --- Finance ledger (finance_transactions' own SCHEMA comment above;
+// DESIGN.md §10 "Money"/"Finance screen") ---
+export interface FinanceTransaction {
+  id: number;
+  amountGBPPence: number;
+  category: string;
+  depotGroupId: number | null;
+  description: string;
+  gameDay: number;
+}
+
+interface FinanceTransactionRow {
+  id: number;
+  amount_gbp_pence: number;
+  category: string;
+  depot_group_id: number | null;
+  description: string;
+  game_day: number;
+}
+
+function financeTransactionFromRow(row: FinanceTransactionRow): FinanceTransaction {
+  return {
+    id: row.id,
+    amountGBPPence: row.amount_gbp_pence,
+    category: row.category,
+    depotGroupId: row.depot_group_id === null ? null : Number(row.depot_group_id),
+    description: row.description,
+    gameDay: row.game_day,
+  };
+}
+
+// The running balance is always derived from the full transaction log
+// (see finance_transactions' own SCHEMA comment above for why) — never
+// a stored/cached figure.
+export function getCompanyBalanceGBPPence(db: SaveDb): number {
+  const row = db.prepare("SELECT COALESCE(SUM(amount_gbp_pence), 0) AS balance FROM finance_transactions").get() as { balance: number };
+  return row.balance;
+}
+
+// Plain storage only — no affordability check here. The caller (the
+// renderer, which already has the real-time balance from a recent
+// listFinanceTransactions/getCompanyBalanceGBPPence read) decides
+// whether a discretionary purchase is affordable BEFORE calling this;
+// this never rejects a transaction that would take the balance
+// negative, since mandatory future costs (wages, leases) will
+// eventually need to post here regardless of balance — "running out of
+// money does not end the game," DESIGN.md's own wording, so this layer
+// can't be the one place that enforces solvency.
+export function recordFinanceTransaction(
+  db: SaveDb,
+  amountGBPPence: number,
+  category: string,
+  depotGroupId: number | null,
+  description: string,
+  gameDay: number,
+): FinanceTransaction {
+  const result = db
+    .prepare("INSERT INTO finance_transactions (amount_gbp_pence, category, depot_group_id, description, game_day, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(amountGBPPence, category, depotGroupId, description, gameDay, new Date().toISOString());
+  return { id: Number(result.lastInsertRowid), amountGBPPence, category, depotGroupId, description, gameDay };
+}
+
+// Most recent first — a plain ledger view, not yet grouped into
+// DESIGN.md §10's own Finance screen categories (deferred, see
+// finance_transactions' own SCHEMA comment above). `depotGroupId` narrows
+// to one group's own attributed spend; omitted for the whole-company view.
+export function listFinanceTransactions(db: SaveDb, depotGroupId?: number): FinanceTransaction[] {
+  const rows =
+    depotGroupId === undefined
+      ? (db.prepare("SELECT id, amount_gbp_pence, category, depot_group_id, description, game_day FROM finance_transactions ORDER BY id DESC").all() as unknown as FinanceTransactionRow[])
+      : (db
+          .prepare("SELECT id, amount_gbp_pence, category, depot_group_id, description, game_day FROM finance_transactions WHERE depot_group_id = ? ORDER BY id DESC")
+          .all(depotGroupId) as unknown as FinanceTransactionRow[]);
+  return rows.map(financeTransactionFromRow);
 }
