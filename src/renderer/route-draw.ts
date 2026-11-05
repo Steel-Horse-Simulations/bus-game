@@ -1240,8 +1240,21 @@ export async function mountRouteDrawTool(
     variationSection.appendChild(minorVariationRow);
 
     if (variationParentRoute.routeType === "ordinary") {
-      variationTypeDropdown.value = "Ordinary";
-      draftRouteType = "ordinary";
+      // A fresh variation (startVariation, editingRouteId still null)
+      // always starts as Ordinary, reset here same as before. Editing
+      // an EXISTING variation (editingRouteId already set) must NOT
+      // force this — a real bug this would otherwise cause now that
+      // startEditing can re-enter variation mode (2026-11-05): this
+      // function re-runs on every render, so forcing "ordinary" here
+      // unconditionally would silently flip an existing NIGHT variation
+      // back to Ordinary the moment its edit session opened, or even
+      // mid-edit on the next re-render.
+      if (editingRouteId === null) {
+        variationTypeDropdown.value = "Ordinary";
+        draftRouteType = "ordinary";
+      } else {
+        variationTypeDropdown.value = draftRouteType === "night" ? "Night service" : "Ordinary";
+      }
       variationSection.appendChild(variationTypeRow);
     }
 
@@ -1722,8 +1735,26 @@ export async function mountRouteDrawTool(
       editingRouteId = route.id;
       draftRouteType = route.routeType;
       updateSectionInsertVisibility();
-      variationParentRoute = null;
-      parentSiblingRoutes = [];
+      // Re-enter variation mode on an EXISTING variation (major or
+      // minor) rather than unconditionally dropping it — a real bug,
+      // found and fixed 2026-11-05: Edit always set variationParentRoute
+      // to null, so the save flow below (which only ever reads this
+      // in-session variable, never the route's own already-stored
+      // parent_route_id/variation_letter) silently turned any edited
+      // variation into a disconnected plain route the moment it was
+      // saved. A parent that's genuinely been deleted since falls back
+      // to the old behaviour (plain route from here on) — there's
+      // nothing live to re-link to in that case, same as a minor
+      // variation's own resolveRoutePoints already falling back to its
+      // stored points when its parent is missing.
+      const parent = route.parentRouteId === null ? undefined : allRoutes.find((r) => r.id === route.parentRouteId);
+      variationParentRoute = parent ?? null;
+      draftIsMinorVariation = parent !== undefined && route.isMinorVariation;
+      minorVariationCheckbox.checked = draftIsMinorVariation;
+      variationLetterInput.value = parent ? route.variationLetter ?? "" : "";
+      numberInput.disabled = draftIsMinorVariation;
+      variationLetterInput.disabled = draftIsMinorVariation;
+      parentSiblingRoutes = parent ? allRoutes.filter((r) => r.parentRouteId === parent.id && r.id !== route.id && r.variationLetter) : [];
       insertAfterIndex = null;
       warning = null;
       numberInput.value = route.number;
