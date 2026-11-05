@@ -1200,12 +1200,10 @@ capping.
   Long-distance routes already do: a **base fee plus a price per mile**,
   real distance once the journey planner exists (Phase 4, RAPTOR — not
   built yet, so this is the confirmed target, not yet wired to anything).
-  Island's own base fee is confirmed at **£2.40** (the same figure as the
-  City flat fare, not a coincidence — both anchor to Lothian's own real
-  Single price); Island's per-mile rate, and Country's own base fee and
-  per-mile rate, are **still pending** — the user is supplying Lothian's
-  real Country fares next specifically to ground these numbers, rather
-  than guessing at them. Geometrically, Island stays exclusive with
+  **Confirmed 2026-11-01, measured not guessed: £2.00 base + 20p/mile**,
+  the same figures for both Country and Island (see "Single fares" below
+  for the real Portree–Armadale distance check this was grounded against).
+  Geometrically, Island stays exclusive with
   City/Country (an Island zone can never share land with a City or
   Country zone) — a depot group can still have an Island zone alongside
   City/Country zones elsewhere on its map; the exclusion is purely
