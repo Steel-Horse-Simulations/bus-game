@@ -1692,6 +1692,18 @@ and covers every kind of depot capital infrastructure, not just energy.
   and anything can be **sold back at 50% of its price**. A **rented** depot
   **loses everything installed** on leaving — matches the existing rented-
   depot rule for other installations (§2 "Getting a depot", the 15% rule).
+- **Financing (resolved 2026-11-05, Q12)**: any item in the price table
+  below can also be bought **lease to own**, reusing vehicle finance's own
+  rate exactly (§3 "Buying") rather than a separate figure — **60 months
+  at 1.83%/month, 110% of price total, then owned** — no deposit. Only
+  two ways to pay here, **buy outright or lease to own** — no plain
+  return-at-the-end lease option, unlike vehicle finance's own three-way
+  choice (confirmed directly: infrastructure is fixed in place, not
+  something a depot hands back and swaps out the way a leased bus is
+  returned to the dealer). A lease-to-own item **still counts for the
+  tier caps above**, and the 50% sell-back above only applies once it's
+  actually owned outright (bought outright, or the lease-to-own term
+  completed) — mid-term, it isn't the player's own to sell back.
 - **Build times**: pumps, bays and wash bays **2 weeks**; chargers and solar
   **4 weeks**; grid connections and batteries **8 weeks**; hydrogen (pump and
   tank) **12 weeks**. The depot **keeps running** throughout — only the
