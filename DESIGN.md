@@ -1191,10 +1191,11 @@ capping.
   is out of scope for this rule and will be handled separately when
   reached.** A and B share one flat single fare between them (**£2.40**,
   the real Lothian figure) — there is no "combined A+B" fare and no
-  per-mile pricing within the city at all; the A/B split only starts to
-  matter once a journey leaves the city (exact mechanism still pending —
-  the user is supplying Lothian's own Country fares next before this is
-  finalised).
+  per-mile pricing within the city at all. **Resolved 2026-11-05**: what
+  happens once a journey leaves the city is fully covered by the existing
+  "City-only vs Country buses" rule below (a route counts as Country the
+  moment it leaves A/B at all) — confirmed directly, no separate mechanism
+  needed.
 - **Country** (i.e. anywhere beyond the city) and **Island** — **no
   longer banded by zone count.** Both now price Singles the same way
   Long-distance routes already do: a **base fee plus a price per mile**,
@@ -1348,9 +1349,16 @@ For the base-fee-plus-per-mile Country/Island Single, Child is 50% of the
 **final computed Adult price** (after its own 5p round-up), not 50% of the
 base fee and per-mile rate separately — consistent with how every other
 Child figure above is read off a finished retail price, not a formula
-component. (Family tickets are a different, separate real product — still
-not adopted into this game's own fare model, per the earlier note under
-"Ordinary, Night and Airport Express fares.")
+component.
+
+**Family tickets — adopted 2026-11-05, Airport Express only**: real
+Lothian/Airlink data exists for City/Country/Combined Day tickets too, but
+the user confirmed this game only adopts it for **Airport Express**. Real
+figure: Airport Open **Return**, up to 2 adults and 3 children, **£22.00**
+— the only real Family figure Airlink actually publishes (there's no
+separate real Family Single); treated as Airport Express Return-only
+unless/until a real Single figure turns up. Not available for City,
+Country, Combined or any other ticket family.
 
 **Lothian's real Single reference data** (screenshots supplied directly,
 2026-11-01 — these are Lothian's own real **zone-banded** fares, the model
@@ -1514,11 +1522,13 @@ and **Annual**. Real Lothian figures, confirmed exact:
 Student's own real discount **isn't a clean universal ratio** the way
 Child's is — it ranges 78–87% of the Adult price across the four tiers, so
 these are recorded as their own real, fixed figures rather than derived
-from a formula. Lothian also sells an **exclusive Student 9-month advance
-purchase** (available September/October only) at **£570.00** — a genuine
-fifth tier, term-limited to the start of the academic year; recorded as
-real reference data, not yet decided whether this game adopts that
-specific product or just the four core tiers above.
+from a formula.
+
+**Adopted 2026-11-05: a genuine fifth tier, Student-only** — Lothian's own
+**exclusive Student 9-month advance purchase** (available September/
+October only, £570.00), confirmed because it fits the real academic year
+("like Lothian does"). Not available to Adult or Child Ridacard — a
+Student-specific product only, matching the real one exactly.
 
 Not yet wired into any actual purchase flow or passenger simulation — the
 Student passenger type itself (§8) isn't designed beyond being confirmed
