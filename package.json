@@ -75,6 +75,7 @@
   "dependencies": {
     "electron-updater": "^6.8.9",
     "maplibre-gl": "^6.7.0",
-    "pmtiles": "^4.5.0"
+    "pmtiles": "^4.5.0",
+    "polygon-clipping": "^0.15.7"
   }
 }

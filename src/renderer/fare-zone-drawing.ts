@@ -32,6 +32,7 @@ import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type CoastlineSnap } from "./coastline-clip.mts";
+import { unionBuildingFootprints, nearestPointOnBuildingBoundary, buildingClusterFollowBetween } from "./building-cluster.mts";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
@@ -80,6 +81,59 @@ const SNAP_RADIUS_PX = 14;
 // clicked slightly off the shoreline," not reach across a strait to an
 // unrelated stretch of coast.
 const COASTLINE_SNAP_DISTANCE_M = 200;
+
+// Building-cluster boundary snap (T118, OPEN-ITEMS.md, DESIGN.md's own
+// "holding Ctrl replaces road-snapping entirely while held") — same
+// order of magnitude as COASTLINE_SNAP_DISTANCE_M above: wide enough to
+// catch "I clicked slightly off the building's own edge," not so wide it
+// reaches a genuinely separate, unrelated building. BUILDING_QUERY_RADIUS_M
+// is deliberately wider than the snap distance itself — it decides which
+// loaded building features are even considered before unioning, so it
+// needs enough margin to pull in the REST of a cluster the click landed
+// on the edge of, not just the one building nearest the pointer.
+const BUILDING_SNAP_DISTANCE_M = 60;
+const BUILDING_QUERY_RADIUS_M = 150;
+
+// Flat equirectangular distance, consistent with the same approximation
+// polyline-geometry.mts/coastline-clip.mts already use — this one stays
+// local (glue code only, not pure logic worth unit-testing on its own)
+// since it's only ever used as a cheap "is this building even worth
+// including in the union" prefilter, not the actual snap-distance maths.
+function roughDistanceM(a: FareZonePoint, b: FareZonePoint): number {
+  const cosLat = Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
+  const dLon = (b.lon - a.lon) * (Math.PI / 180) * cosLat * 6_371_000;
+  const dLat = (b.lat - a.lat) * (Math.PI / 180) * 6_371_000;
+  return Math.hypot(dLon, dLat);
+}
+
+// Pulls every real building footprint out of the basemap's own already-
+// loaded vector tiles (OPEN-ITEMS.md T118's corrected entry — the
+// `building` source-layer, minzoom 13/maxzoom 16, needs no pipeline work
+// at all) that's within BUILDING_QUERY_RADIUS_M of any of the given
+// reference points (the click itself, plus the previous draft point
+// when there is one, so a union spanning both is possible). Returns
+// plain outer rings — holes and any MultiPolygon part beyond the first
+// are dropped, per building-cluster.mts's own documented scope.
+// `querySourceFeatures` only sees tiles already loaded for the current
+// view, so this silently finds nothing if the player is zoomed out below
+// the building layer's own minzoom 13, or panned somewhere not yet
+// fetched — same honest "falls back to the raw click" behaviour as every
+// other snap in this file when nothing is close enough, not a crash.
+function queryNearbyBuildingFootprints(map: maplibregl.Map, referencePoints: readonly FareZonePoint[]): FareZonePoint[][] {
+  const features = map.querySourceFeatures("openmaptiles", { sourceLayer: "building" });
+  const footprints: FareZonePoint[][] = [];
+  for (const feature of features) {
+    const geometry = feature.geometry;
+    const outerRings: [number, number][][] =
+      geometry.type === "Polygon" ? [geometry.coordinates[0] as [number, number][]] : geometry.type === "MultiPolygon" ? geometry.coordinates.map((part) => part[0] as [number, number][]) : [];
+    for (const ring of outerRings) {
+      const points = ring.map(([lon, lat]) => ({ lon, lat }));
+      const isNear = points.some((p) => referencePoints.some((ref) => roughDistanceM(p, ref) <= BUILDING_QUERY_RADIUS_M));
+      if (isNear) footprints.push(points);
+    }
+  }
+  return footprints;
+}
 
 // How close (screen pixels, same convention as SNAP_RADIUS_PX) the eraser
 // brush reaches from the cursor — wider than the snap radius since this
@@ -442,6 +496,13 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // the previous point's own chain/edge location, not just whether it was
   // a coastline point at all.
   let lastCoastlineSnap: CoastlineSnap | null = null;
+  // Same idea again, for building-cluster snapping (T118) — just a
+  // boolean, not a stored ClusterSnap, since (unlike road/coastline) a
+  // building boundary's own snap is always recomputed fresh against
+  // whatever fresh union the NEXT click's own query produces (see the
+  // click handler below) rather than reused from an old union call's own
+  // now-meaningless boundaryIndex.
+  let lastPointWasBuildingSnapped = false;
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
 
@@ -462,10 +523,14 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     if (!last) {
       lastPointWasRoadSnapped = false;
       lastCoastlineSnap = null;
+      lastPointWasBuildingSnapped = false;
       return;
     }
     lastCoastlineSnap = nearestPointOnCoastline(last, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
     lastPointWasRoadSnapped = lastCoastlineSnap === null && snapToRoad(router, { lng: last.lon, lat: last.lat }) !== null;
+    const nearbyFootprints = queryNearbyBuildingFootprints(map, [last]);
+    const boundaries = unionBuildingFootprints(nearbyFootprints);
+    lastPointWasBuildingSnapped = nearestPointOnBuildingBoundary(last, boundaries, BUILDING_SNAP_DISTANCE_M) !== null;
   }
 
   function currentDepotGroup(): DepotGroup | undefined {
@@ -837,7 +902,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       hint.style.marginBottom = "4px";
       hint.textContent = isErasing
         ? "Erasing — click or drag over points to remove them. Click \"Erasing — click to stop\" when done."
-        : `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Shift to place the point exactly where clicked, ignoring roads and the coastline — useful for a deliberate straight line out over open water. Use "Erase points" to remove points with a brush instead of one at a time.`;
+        : `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Ctrl to snap to a building's own outer edge instead of a road — click a first and last point near it to trace the boundary between them. Hold Shift to place the point exactly where clicked, ignoring roads, the coastline and buildings — useful for a deliberate straight line out over open water. Use "Erase points" to remove points with a brush instead of one at a time.`;
       drawSection.appendChild(hint);
 
       const controls = document.createElement("div");
@@ -898,6 +963,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
         lastCoastlineSnap = null;
+        lastPointWasBuildingSnapped = false;
         stopErasing();
         toggle.classList.remove("is-active");
         updateDraftLayers();
@@ -917,6 +983,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
         lastCoastlineSnap = null;
+        lastPointWasBuildingSnapped = false;
         errorMessage = "";
         toggle.classList.add("is-active");
         updateDraftLayers();
@@ -974,6 +1041,57 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     if (zoneSnap) {
       draftPoints.push(zoneSnap);
       draftClickPointCounts.push(1);
+      lastPointWasRoadSnapped = false;
+      lastCoastlineSnap = null;
+      lastPointWasBuildingSnapped = false;
+      updateDraftLayers();
+      render();
+      return;
+    }
+
+    // Building-cluster boundary snap (T118): holding Ctrl replaces
+    // road-snapping (and coastline-snapping) entirely while held, per
+    // the confirmed spec — its own branch, checked before the shift/
+    // coastline/road chain below rather than folded into it, since
+    // "replaces... entirely" means Ctrl is its own mode, not just
+    // another candidate alongside the others. Queries buildings near
+    // BOTH the previous draft point and this click (when there is a
+    // previous point) so a union spanning both is possible, then checks
+    // whether the two land on the SAME merged boundary — re-done fresh
+    // on every click rather than reusing a stored boundary index from an
+    // earlier, smaller union call, which would no longer mean anything
+    // against a differently-scoped candidate set.
+    const ctrlHeld = (e.originalEvent as MouseEvent).ctrlKey;
+    if (ctrlHeld) {
+      const clickPoint: FareZonePoint = { lon: e.lngLat.lng, lat: e.lngLat.lat };
+      const previousPoint = draftPoints[draftPoints.length - 1];
+      const queryPoints = previousPoint ? [previousPoint, clickPoint] : [clickPoint];
+      const boundaries = unionBuildingFootprints(queryNearbyBuildingFootprints(map, queryPoints));
+      const clusterSnap = nearestPointOnBuildingBoundary(clickPoint, boundaries, BUILDING_SNAP_DISTANCE_M);
+      if (clusterSnap) {
+        const previousSnap = previousPoint && lastPointWasBuildingSnapped ? nearestPointOnBuildingBoundary(previousPoint, boundaries, BUILDING_SNAP_DISTANCE_M) : null;
+        const follow = previousSnap ? buildingClusterFollowBetween(previousSnap, clusterSnap, boundaries) : null;
+        if (follow) {
+          draftPoints.push(...follow.slice(1));
+          draftClickPointCounts.push(follow.length - 1);
+        } else {
+          // Either no previous point, the previous point wasn't itself
+          // building-snapped, or the two landed on different/unconnected
+          // boundaries — a genuine "big gap," just the new point on its
+          // own (3), matching the confirmed spec's own straight-line
+          // fallback.
+          draftPoints.push(clusterSnap.point);
+          draftClickPointCounts.push(1);
+        }
+      } else {
+        // Ctrl held but nothing building-like close enough (no building
+        // tiles loaded here, or genuinely no building nearby) — falls
+        // back to the raw click rather than silently doing nothing, the
+        // same honesty every other snap in this file already has.
+        draftPoints.push(clickPoint);
+        draftClickPointCounts.push(1);
+      }
+      lastPointWasBuildingSnapped = clusterSnap !== null;
       lastPointWasRoadSnapped = false;
       lastCoastlineSnap = null;
       updateDraftLayers();
@@ -1062,6 +1180,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     }
     lastPointWasRoadSnapped = roadSnap !== null;
     lastCoastlineSnap = coastlineSnap;
+    lastPointWasBuildingSnapped = false;
     updateDraftLayers();
     render();
   });

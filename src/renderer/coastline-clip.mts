@@ -12,6 +12,8 @@
 // ways, not closed rings; see that file's own doc comment for the real
 // limits of the chain assembly itself.
 
+import { nearestPointOnPolylines } from "./polyline-geometry.mts";
+
 export interface FareZonePoint {
   lon: number;
   lat: number;
@@ -86,12 +88,6 @@ export function coastlineWalkBetween(
   return walked;
 }
 
-// Equirectangular projection centred on a given latitude, consistent with
-// `point_to_segment_closest` in `rust/game-wasm/src/lib.rs` — close enough
-// at this scale that the two don't need to match bit-for-bit.
-const DEG_TO_RAD = Math.PI / 180;
-const EARTH_RADIUS_M = 6_371_000;
-
 export interface CoastlineSnap {
   point: FareZonePoint;
   chainIndex: number;
@@ -111,33 +107,14 @@ export interface CoastlineSnap {
 // never applies to a genuine open-water crossing to a separate landmass
 // (Skye's own case: its coastline is its own chain, unconnected to the
 // mainland's), so a zone boundary meant to hug an island's own coast had
-// nothing pulling it onto the shoreline at all.
+// nothing pulling it onto the shoreline at all. The actual nearest-point
+// maths now lives in polyline-geometry.mts (factored out 2026-11-05, so
+// building-cluster.mts's own boundary snap could reuse it) — this just
+// adapts that shared result's field names to this module's own
+// established vocabulary (chainIndex, not polylineIndex).
 export function nearestPointOnCoastline(point: FareZonePoint, coastlineChains: FareZonePoint[][], maxDistanceM: number): CoastlineSnap | null {
-  const cosLat = Math.cos(point.lat * DEG_TO_RAD);
-  const toXY = (p: FareZonePoint): [number, number] => [p.lon * DEG_TO_RAD * cosLat * EARTH_RADIUS_M, p.lat * DEG_TO_RAD * EARTH_RADIUS_M];
-  const [px, py] = toXY(point);
-
-  let bestDist = Infinity;
-  let best: CoastlineSnap | null = null;
-  for (let c = 0; c < coastlineChains.length; c++) {
-    const chain = coastlineChains[c];
-    for (let i = 0; i < chain.length - 1; i++) {
-      const [ax, ay] = toXY(chain[i]);
-      const [bx, by] = toXY(chain[i + 1]);
-      const dx = bx - ax;
-      const dy = by - ay;
-      const lenSq = dx * dx + dy * dy;
-      const t = lenSq > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq)) : 0;
-      const cx = ax + t * dx;
-      const cy = ay + t * dy;
-      const dist = Math.hypot(px - cx, py - cy);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = { point: { lon: (cx / (cosLat * EARTH_RADIUS_M)) / DEG_TO_RAD, lat: (cy / EARTH_RADIUS_M) / DEG_TO_RAD }, chainIndex: c, edgeIndex: i };
-      }
-    }
-  }
-  return bestDist <= maxDistanceM ? best : null;
+  const hit = nearestPointOnPolylines(point, coastlineChains, maxDistanceM);
+  return hit && { point: hit.point, chainIndex: hit.polylineIndex, edgeIndex: hit.edgeIndex };
 }
 
 // Walks the real coastline between two consecutive snapped clicks, or
