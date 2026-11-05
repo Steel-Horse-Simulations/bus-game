@@ -7,6 +7,8 @@ import {
   createDepotGroup,
   listDepotGroups,
   renameDepotGroup,
+  setDepotGroupTicketMachineTier,
+  setDepotGroupTapOnTapOff,
   setOverride,
   getOverride,
   hasOverride,
@@ -98,6 +100,32 @@ try {
   threw = true;
 }
 assert(threw, "duplicate depot group name rejected (UNIQUE constraint)");
+
+// --- ticket machine tiers (TICKETING.md §1/§2) ---
+assert(g1.ticketMachineTier === "basic" && !g1.hasTapOnTapOff, "a new depot group starts at Basic with no tap-on tap-off");
+
+setDepotGroupTicketMachineTier(db, g1.id, "mid");
+groups = listDepotGroups(db);
+assert(groups.find((g) => g.id === g1.id)?.ticketMachineTier === "mid", "ticket machine tier change round-trips");
+
+setDepotGroupTapOnTapOff(db, g1.id, true);
+groups = listDepotGroups(db);
+assert(groups.find((g) => g.id === g1.id)?.hasTapOnTapOff === true, "tap-on tap-off round-trips");
+
+let threwOnBogusTier = false;
+try {
+  setDepotGroupTicketMachineTier(db, g1.id, "bogus" as "basic");
+} catch {
+  threwOnBogusTier = true;
+}
+assert(threwOnBogusTier, "an invalid ticket machine tier is rejected rather than silently stored");
+
+// Setting g1 to Mid (above) should NOT trigger the Advanced ratchet —
+// only Advanced itself does. Set g2 to Advanced, then confirm a THIRD
+// new group is forced to start there too.
+setDepotGroupTicketMachineTier(db, g2.id, "advanced");
+const g3 = createDepotGroup(db, "Aberdeen", "East Scotland");
+assert(g3.ticketMachineTier === "advanced", "once any group has Advanced, a brand new group must start there too (the ratchet)");
 
 // --- override layer ---
 assert(!hasOverride(db, "stop", 12345, "position"), "no override initially");
@@ -500,7 +528,7 @@ db.close();
 // --- reopen: confirm real persistence, not just in-memory ---
 db = openSave(path);
 groups = listDepotGroups(db);
-assert(groups.length === 2, "depot groups survive close+reopen");
+assert(groups.length === 3, "depot groups survive close+reopen");
 assert(getOverride(db, "stop", 12345, "name") === "Renamed Stop", "override survives close+reopen");
 assert(!hasOverride(db, "stop", 12345, "position"), "reset override stays reset after reopen");
 

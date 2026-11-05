@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate } from "../src/renderer/fleet-numbering.mts";
+import { minimumStartingTier, TICKET_MACHINE_PRICE_GBP, type TicketMachineTier } from "../src/renderer/ticket-machine.mts";
+export type { TicketMachineTier } from "../src/renderer/ticket-machine.mts";
 
 export type SaveDb = DatabaseSync;
 
@@ -8,14 +10,35 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 const SCHEMA = `
+-- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
+-- first increment, 2026-11-05): a depot group's ticket machines are
+-- always the SAME tier across the whole group ("Upgrades are a bulk
+-- action for the whole group" — TICKETING.md's own wording, so one
+-- field per group is the real model, not a simplification). The
+-- "Advanced ratchet" rule (once any group has Advanced, every NEW group
+-- must start there) is enforced in createDepotGroup below, not here —
+-- it only constrains a group's STARTING tier, never a later change to
+-- an existing one. Both deliberately track only the real-world state
+-- and its informational price (ticket-machine.mts) — no money is
+-- actually deducted (no finance system exists yet, Phase 5) and no
+-- install-time/engineer-vs-supplier scheduling exists yet either
+-- (TICKETING.md §3, Phase 7) — same "capacity/scheduling only, be
+-- honest about what's not simulated" scope call as repaint_bookings'
+-- own CREATE TABLE comment. has_tap_on_tap_off is a plain boolean, not
+-- a per-vehicle fitting/activation-threshold model (TICKETING.md: "only
+-- becomes active once every bus in the depot group has it") — that
+-- per-vehicle nuance is deferred to the same future install-scheduling
+-- increment as the tier upgrades' own engineer/supplier timing.
 CREATE TABLE IF NOT EXISTS depot_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   region TEXT NOT NULL,
-  main_bus_station_osm_id INTEGER
+  main_bus_station_osm_id INTEGER,
+  ticket_machine_tier TEXT NOT NULL DEFAULT 'basic' CHECK (ticket_machine_tier IN ('basic', 'mid', 'advanced')),
+  has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS osm_overrides (
@@ -1303,6 +1326,17 @@ export function openSave(path: string): SaveDb {
       SELECT id, repaint_shop_id, lon, lat, mode FROM repaint_shop_entrances_v48
     `);
     db.exec("DROP TABLE repaint_shop_entrances_v48");
+    db.exec("PRAGMA user_version = 49");
+  } else if (currentVersion === 49) {
+    // v49 -> v50: depot_groups gains ticket_machine_tier and
+    // has_tap_on_tap_off (TICKETING.md §1/§2 — see depot_groups' own
+    // CREATE TABLE comment above for scope). Plain ADD COLUMN, each with
+    // only a single-column CHECK (verified directly this is allowed
+    // without a rebuild, unlike the cross-column CHECK the routes
+    // migration above had to avoid) — every existing depot group
+    // defaults to the real starting point, Basic with no tap-on tap-off.
+    db.exec("ALTER TABLE depot_groups ADD COLUMN ticket_machine_tier TEXT NOT NULL DEFAULT 'basic' CHECK (ticket_machine_tier IN ('basic', 'mid', 'advanced'))");
+    db.exec("ALTER TABLE depot_groups ADD COLUMN has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1334,6 +1368,8 @@ export interface DepotGroup {
   name: string;
   region: string;
   mainBusStationOsmId: number | null;
+  ticketMachineTier: TicketMachineTier;
+  hasTapOnTapOff: boolean;
 }
 
 interface DepotGroupRow {
@@ -1341,6 +1377,8 @@ interface DepotGroupRow {
   name: string;
   region: string;
   main_bus_station_osm_id: number | null;
+  ticket_machine_tier: TicketMachineTier;
+  has_tap_on_tap_off: number;
 }
 
 function fromRow(row: DepotGroupRow): DepotGroup {
@@ -1349,19 +1387,46 @@ function fromRow(row: DepotGroupRow): DepotGroup {
     name: row.name,
     region: row.region,
     mainBusStationOsmId: row.main_bus_station_osm_id === null ? null : Number(row.main_bus_station_osm_id),
+    ticketMachineTier: row.ticket_machine_tier,
+    hasTapOnTapOff: row.has_tap_on_tap_off !== 0,
   };
 }
 
+// The Advanced ratchet (TICKETING.md §1, ticket-machine.mts's own
+// minimumStartingTier) only ever constrains a BRAND NEW group's own
+// starting tier — never checked again once a group exists, so an
+// existing group's own later tier change (setDepotGroupTicketMachineTier
+// below) is free to move in either direction with no ratchet check.
 export function createDepotGroup(db: SaveDb, name: string, region: string): DepotGroup {
-  const result = db.prepare("INSERT INTO depot_groups (name, region) VALUES (?, ?)").run(name, region);
-  return { id: Number(result.lastInsertRowid), name, region, mainBusStationOsmId: null };
+  const existingTiers = (db.prepare("SELECT ticket_machine_tier FROM depot_groups").all() as { ticket_machine_tier: TicketMachineTier }[]).map(
+    (r) => r.ticket_machine_tier,
+  );
+  const startingTier = minimumStartingTier(existingTiers);
+  const result = db.prepare("INSERT INTO depot_groups (name, region, ticket_machine_tier) VALUES (?, ?, ?)").run(name, region, startingTier);
+  return { id: Number(result.lastInsertRowid), name, region, mainBusStationOsmId: null, ticketMachineTier: startingTier, hasTapOnTapOff: false };
 }
 
 export function listDepotGroups(db: SaveDb): DepotGroup[] {
   const rows = db
-    .prepare("SELECT id, name, region, main_bus_station_osm_id FROM depot_groups ORDER BY name")
+    .prepare("SELECT id, name, region, main_bus_station_osm_id, ticket_machine_tier, has_tap_on_tap_off FROM depot_groups ORDER BY name")
     .all() as unknown as DepotGroupRow[];
   return rows.map(fromRow);
+}
+
+// A direct tier change on an EXISTING group — never ratchet-checked
+// (see createDepotGroup's own comment above for why), so a group can
+// freely move between any two tiers. Throws rather than silently
+// clamping an invalid string, same defensiveness as createRoute/
+// updateRoute's own isMinorVariation guard.
+export function setDepotGroupTicketMachineTier(db: SaveDb, id: number, tier: TicketMachineTier): void {
+  if (!(tier in TICKET_MACHINE_PRICE_GBP)) {
+    throw new Error(`setDepotGroupTicketMachineTier: "${tier}" is not a real ticket machine tier`);
+  }
+  db.prepare("UPDATE depot_groups SET ticket_machine_tier = ? WHERE id = ?").run(tier, id);
+}
+
+export function setDepotGroupTapOnTapOff(db: SaveDb, id: number, hasTapOnTapOff: boolean): void {
+  db.prepare("UPDATE depot_groups SET has_tap_on_tap_off = ? WHERE id = ?").run(hasTapOnTapOff ? 1 : 0, id);
 }
 
 export function renameDepotGroup(db: SaveDb, id: number, name: string): void {

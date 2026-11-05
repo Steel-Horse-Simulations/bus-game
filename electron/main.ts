@@ -19,6 +19,8 @@ import {
   renameDepotGroup,
   setDepotGroupRegion,
   setDepotGroupMainBusStation,
+  setDepotGroupTicketMachineTier,
+  setDepotGroupTapOnTapOff,
   deleteDepotGroup,
   createRoute,
   listRoutes,
@@ -124,6 +126,7 @@ import {
   deleteLongDistanceSection,
   type RouteSegment,
   type RouteType,
+  type TicketMachineTier,
   depotGroupHasRouteType,
   getFareConfig,
   setFareConfigFields,
@@ -260,6 +263,12 @@ function registerDepotGroupHandlers(): void {
   );
   ipcMain.handle("depotGroups:setMainBusStation", (_e, id: number, osmId: number | null) =>
     setDepotGroupMainBusStation(save, id, osmId),
+  );
+  ipcMain.handle("depotGroups:setTicketMachineTier", (_e, id: number, tier: TicketMachineTier) =>
+    setDepotGroupTicketMachineTier(save, id, tier),
+  );
+  ipcMain.handle("depotGroups:setTapOnTapOff", (_e, id: number, hasTapOnTapOff: boolean) =>
+    setDepotGroupTapOnTapOff(save, id, hasTapOnTapOff),
   );
   ipcMain.handle("depotGroups:delete", (_e, id: number) => deleteDepotGroup(save, id));
 }

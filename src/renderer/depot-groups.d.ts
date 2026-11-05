@@ -1,9 +1,13 @@
 // Matches the API electron/preload.ts exposes via contextBridge.
+type TicketMachineTier = "basic" | "mid" | "advanced";
+
 interface DepotGroup {
   id: number;
   name: string;
   region: string;
   mainBusStationOsmId: number | null;
+  ticketMachineTier: TicketMachineTier;
+  hasTapOnTapOff: boolean;
 }
 
 interface DepotGroupsApi {
@@ -12,6 +16,8 @@ interface DepotGroupsApi {
   rename(id: number, name: string): Promise<void>;
   setRegion(id: number, region: string): Promise<void>;
   setMainBusStation(id: number, osmId: number | null): Promise<void>;
+  setTicketMachineTier(id: number, tier: TicketMachineTier): Promise<void>;
+  setTapOnTapOff(id: number, hasTapOnTapOff: boolean): Promise<void>;
   delete(id: number): Promise<void>;
 }
 

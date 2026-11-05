@@ -1,6 +1,18 @@
 import { createDropdown, type Dropdown } from "./dropdown";
 import { busStationsState } from "./stops-layer";
 import { dutyPanelState } from "./duty-panel";
+import { TICKET_MACHINE_PRICE_GBP, TAP_ON_TAP_OFF_PRICE_GBP_PER_VEHICLE, type TicketMachineTier } from "./ticket-machine.mts";
+
+const TICKET_MACHINE_TIER_LABELS: Record<TicketMachineTier, string> = {
+  basic: "Basic",
+  mid: "Mid",
+  advanced: "Advanced",
+};
+const TICKET_MACHINE_TIER_BY_LABEL: Record<string, TicketMachineTier> = {
+  Basic: "basic",
+  Mid: "mid",
+  Advanced: "advanced",
+};
 
 const NO_STATION_LABEL = "(none)";
 
@@ -206,8 +218,57 @@ export function mountDepotGroupsPanel(): void {
       stationRow.appendChild(stationLabelEl);
       stationRow.appendChild(station.el);
 
+      // Ticket machine tier + tap-on tap-off (TICKETING.md §1/§2, first
+      // increment, 2026-11-05) — one tier per depot group (a bulk
+      // setting, not per vehicle), with its real £/vehicle price shown
+      // for information only. Nothing is actually deducted (no finance
+      // system exists yet) and no install-time scheduling exists either
+      // — both deliberately deferred, see depot_groups' own CREATE
+      // TABLE comment in db.mts.
+      const ticketRow = document.createElement("div");
+      ticketRow.style.display = "flex";
+      ticketRow.style.gap = "6px";
+      ticketRow.style.alignItems = "center";
+      const ticketLabelEl = document.createElement("span");
+      ticketLabelEl.className = "label-muted";
+      ticketLabelEl.textContent = "Ticket machines";
+      ticketLabelEl.style.flexShrink = "0";
+      const tierDropdown = createDropdown(Object.values(TICKET_MACHINE_TIER_LABELS), TICKET_MACHINE_TIER_LABELS[group.ticketMachineTier], (label) => {
+        const tier = TICKET_MACHINE_TIER_BY_LABEL[label] ?? "basic";
+        void window.depotGroups.setTicketMachineTier(group.id, tier).then(refresh);
+      });
+      tierDropdown.el.style.flex = "1";
+      tierDropdown.el.style.minWidth = "0";
+      const tierPrice = document.createElement("span");
+      tierPrice.className = "label-muted";
+      tierPrice.style.flexShrink = "0";
+      tierPrice.style.fontSize = "0.85em";
+      tierPrice.textContent = `£${TICKET_MACHINE_PRICE_GBP[group.ticketMachineTier]}/vehicle`;
+      ticketRow.appendChild(ticketLabelEl);
+      ticketRow.appendChild(tierDropdown.el);
+      ticketRow.appendChild(tierPrice);
+
+      const tapOnTapOffRow = document.createElement("label");
+      tapOnTapOffRow.style.display = "flex";
+      tapOnTapOffRow.style.gap = "6px";
+      tapOnTapOffRow.style.alignItems = "center";
+      tapOnTapOffRow.style.cursor = "pointer";
+      const tapOnTapOffCheckbox = document.createElement("input");
+      tapOnTapOffCheckbox.type = "checkbox";
+      tapOnTapOffCheckbox.checked = group.hasTapOnTapOff;
+      tapOnTapOffCheckbox.addEventListener("change", () => {
+        void window.depotGroups.setTapOnTapOff(group.id, tapOnTapOffCheckbox.checked).then(refresh);
+      });
+      const tapOnTapOffLabelEl = document.createElement("span");
+      tapOnTapOffLabelEl.className = "label-muted";
+      tapOnTapOffLabelEl.textContent = `Tap-on tap-off (£${TAP_ON_TAP_OFF_PRICE_GBP_PER_VEHICLE}/vehicle)`;
+      tapOnTapOffRow.appendChild(tapOnTapOffCheckbox);
+      tapOnTapOffRow.appendChild(tapOnTapOffLabelEl);
+
       wrapper.appendChild(row);
       wrapper.appendChild(stationRow);
+      wrapper.appendChild(ticketRow);
+      wrapper.appendChild(tapOnTapOffRow);
       list.appendChild(wrapper);
     }
     const rows = list.querySelectorAll<HTMLDivElement>(":scope > div");

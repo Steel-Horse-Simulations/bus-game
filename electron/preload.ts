@@ -7,6 +7,7 @@ import type {
   RouteHailAndRideSection,
   RouteSegment,
   RouteType,
+  TicketMachineTier,
   LongDistanceSection,
   DayType,
   TimingPoint,
@@ -73,6 +74,10 @@ contextBridge.exposeInMainWorld("depotGroups", {
     ipcRenderer.invoke("depotGroups:setRegion", id, region) as Promise<void>,
   setMainBusStation: (id: number, osmId: number | null) =>
     ipcRenderer.invoke("depotGroups:setMainBusStation", id, osmId) as Promise<void>,
+  setTicketMachineTier: (id: number, tier: TicketMachineTier) =>
+    ipcRenderer.invoke("depotGroups:setTicketMachineTier", id, tier) as Promise<void>,
+  setTapOnTapOff: (id: number, hasTapOnTapOff: boolean) =>
+    ipcRenderer.invoke("depotGroups:setTapOnTapOff", id, hasTapOnTapOff) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depotGroups:delete", id) as Promise<void>,
 });
 
