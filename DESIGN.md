@@ -79,17 +79,27 @@ Vehicles cross at a cost and take time, and ferries form part of **passenger
 journey planning**, so someone can travel Oban–Craignure–Tobermory as one journey
 with a sailing as the middle leg.
 
-**Buses do not use ferries on service or contract work** — only on private hire
-and tours. Island networks are therefore self-contained: a Mull depot runs Mull
-routes, and the ferry is where passengers arrive from rather than something the
-timetable depends on. Piers generate both local demand and ferry arrivals.
+**Buses do not use ferries on service or contract work** — only on private
+hire and tours, **with one confirmed exception: the Corran Ferry below**, a
+short local vehicle crossing buses genuinely drive onto. Island networks are
+otherwise self-contained: a Mull depot runs Mull routes, and the ferry is
+where passengers arrive from rather than something the timetable depends on.
+Piers generate both local demand and ferry arrivals.
 
-**⚠ See §9's own flagged note** — T108 (2026-10-31, confirmed via many
-rounds of design discussion, real reference: Scottish Citylink's 923
-Glasgow–Cairnryan–Belfast service via Stena Line) designed **ferry-linked
-long-distance routes**, which directly assume the opposite of the line
-above for that one route category. Recorded here rather than silently
-reconciled — ask before resolving which is current:
+**Resolved 2026-11-05** (previously flagged here and in §9 as an
+unreconciled inconsistency): neither of §9's ferry mechanisms actually
+contradicts the rule above. T108's Citylink 923 Glasgow–Cairnryan–Belfast
+case, confirmed directly by the user, is **not** a bus boarding a ferry —
+the Scotland-side coach terminates at Cairnryan, passengers cross the
+Stena Line sailing on foot, and a separate Northern-Ireland-side coach
+continues from the ferry terminal on the far side, under the same route
+number as a variation (§6). T107's island ferry tickets work the same
+way: a foot-passenger crossing sold alongside, or bundled into, an
+ordinary bus ticket — never a bus itself on a vessel. The Corran Ferry
+below is the **only** genuine vehicle crossing in the game (and any
+future short local crossing confirmed the same way would be the only
+other kind) — everything else in §9 is passenger-journey continuity
+across a ferry leg the bus itself never touches:
 - A **long-distance** route can call at a ferry terminal and continue on
   the far side as a **variation under the same route number** (923, not a
   new number) — the player draws and times both legs as perfectly
@@ -1242,18 +1252,16 @@ capping.
 
 ### Ferry and joint tickets (T107, confirmed 2026-10-31)
 
-**⚠ Flagged inconsistency, not yet resolved — needs the user's own
-call:** this subsection assumes ordinary scheduled bus services cross by
-ferry as part of a normal journey (a joint ticket spanning the crossing,
-a ferry ticket bundled into a dayrider). That directly conflicts with
-this document's own existing "Islands and ferries" text (§1): "**Buses
-do not use ferries on service or contract work — only on private hire
-and tours.**" T107/T108 (2026-10-31, many confirmed rounds of
-`AskUserQuestion`, including the real Citylink 923 Cairnryan–Belfast
-service as a worked example) clearly assume the opposite for island and
-long-distance ferry crossings specifically. Documented here as given,
-without silently editing §1's older rule — ask before resolving which
-one is current.
+**Resolved 2026-11-05** (previously flagged against §1's "buses do not
+use ferries on service or contract work" rule, which stands): nothing
+below ever needed a bus to board a ferry. A ferry ticket here is the
+**passenger's own** crossing, bought alongside or bundled into their bus
+ticket on either side, including the Citylink 923 Cairnryan–Belfast case
+— the Scotland-side coach terminates at the ferry terminal, the
+passenger crosses on foot, and a separate coach continues on the far
+side. §1's own Corran Ferry is the one real exception where a bus
+physically drives onto a vessel; see there for that mechanism, which is
+unrelated to the ticketing below.
 
 **Which mechanism applies is decided by whether the link is a ferry or a
 physical connection, not by the `depot_group_id` row**: two zones joined
