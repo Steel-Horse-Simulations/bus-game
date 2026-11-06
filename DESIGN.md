@@ -1090,17 +1090,26 @@ journey.
   model once the day-type UI itself is built (the underlying model above is
   weekday bitmask × term-time only; there's no calendar-date axis yet):
   - **Christmas Eve** and **New Year's Eve** default to that day's normal
-    timetable with an early finish to the evening service.
+    timetable with an early finish to the evening service — **last
+    departure 6:00pm, confirmed 2026-11-06**.
   - **Boxing Day**, **New Year's Day** and **2 January** default to a
-    Sunday-level timetable. **2 January is Scotland's own second New Year
+    Sunday-level timetable, **starting 9:00am, confirmed 2026-11-06**
+    (replacing Sunday's own normal start time on these three days only).
+    **2 January is Scotland's own second New Year
     bank holiday** — not observed in England, Wales or Northern Ireland —
-    so it's only relevant there.
+    so it only applies to **routes physically in Scotland, plus any
+    long-distance service based out of a Scottish depot group** (confirmed
+    2026-11-06 — a Scotland-based long-distance route observes it even on
+    legs that run into England, the same "based" logic already used
+    elsewhere for which depot group a long-distance route belongs to).
   - All five of the above are **optional for the player to build a
     dedicated festive timetable for** instead of the default — same
     "optional day type" pattern as the school holiday timetable (§9).
   - **Christmas Day itself runs no service at all anywhere in the UK**,
     with one exception: **Greater London and Greater Manchester run a
-    reduced Sunday-level service**, and only on routes where **at least
+    reduced Sunday-level service, starting 9:00am** (confirmed 2026-11-06,
+    same start time as Boxing Day/New Year's Day/2 January above), and
+    only on routes where **at least
     80% of the route's mileage falls inside the city** (London's own fare
     zones, §9; the Greater Manchester conurbation region,
     UK-EXPANSION.md §8a) — the same mileage-threshold mechanic already

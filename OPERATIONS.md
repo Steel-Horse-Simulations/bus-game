@@ -707,6 +707,11 @@ ratio of it. There is **no individual override** — the ratio is the only contr
 group**, so a wholesale rise or a struggling group's pay cut is one action rather
 than editing every line.
 
+**Base figure, confirmed 2026-11-06: £16.30/hour** — the real ONS ASHE 2025
+median for UK bus/coach drivers (≈£33,950/year at a 40-hour week), the same
+"use a real published figure, not a guess" approach already applied to the
+fare model (DESIGN.md §9). Every ratio in the table below multiplies this.
+
 | Role | Ratio |
 |---|---|
 | Cleaner | 0.65 |
