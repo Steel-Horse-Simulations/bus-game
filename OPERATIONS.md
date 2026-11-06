@@ -1025,6 +1025,26 @@ controller asks for **overtime**, and a better controller causes fewer delays.
 Sizing the spare pool is a real decision: too few and a bad week cancels journeys,
 too many and you are paying people to sit at the depot.
 
+### Festive pay
+Confirmed 2026-11-06, tied to the five festive day types (DESIGN.md §7
+"Structure"). Staff who actually work one of these days are paid an
+enhanced rate on top of normal pay:
+
+- **Christmas Eve: triple time (3x).**
+- **Christmas Day: triple time (3x)** — same rate as Christmas Eve. Only
+  pays out at all in Greater London and Greater Manchester, the only two
+  places that run any service that day; nowhere else needs staff on
+  Christmas Day since nothing runs.
+- **Boxing Day, New Year's Eve, New Year's Day and 2 January: double time
+  (2x)** — the same rate already used elsewhere for remote-depot engineer
+  away-work (§9a) and small-depot Saturday installs (TICKETING.md §3).
+- Applies to **any staff role actually rostered and working that day** —
+  drivers, engineers, controllers, cleaners and so on — not restricted to
+  drivers the way the 39-hour pay floor above is.
+- It's for **hours actually worked**, same principle as casual pay above —
+  being contracted to a rota that happens to include a festive day doesn't
+  by itself trigger it if the shift isn't worked.
+
 ### Duties
 Buses are assigned a **duty**. Each day a vehicle is chosen at random to work it,
 filtered by vehicle type — double deck, single deck, coach or minibus.

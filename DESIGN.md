@@ -1083,6 +1083,34 @@ journey.
 - **Event services** sit **on top of** the normal timetable rather than
   replacing it, so an event day runs the normal service plus the event workings.
   This means services need a calendar as well as day types.
+- **Festive day types, confirmed 2026-11-06** — five calendar-pinned points
+  over Christmas and New Year, genuinely distinct from the weekday/term-time
+  day type model above because each is pinned to a specific date every year
+  rather than a weekday pattern — needs its own facet in the day type data
+  model once the day-type UI itself is built (the underlying model above is
+  weekday bitmask × term-time only; there's no calendar-date axis yet):
+  - **Christmas Eve** and **New Year's Eve** default to that day's normal
+    timetable with an early finish to the evening service.
+  - **Boxing Day**, **New Year's Day** and **2 January** default to a
+    Sunday-level timetable. **2 January is Scotland's own second New Year
+    bank holiday** — not observed in England, Wales or Northern Ireland —
+    so it's only relevant there.
+  - All five of the above are **optional for the player to build a
+    dedicated festive timetable for** instead of the default — same
+    "optional day type" pattern as the school holiday timetable (§9).
+  - **Christmas Day itself runs no service at all anywhere in the UK**,
+    with one exception: **Greater London and Greater Manchester run a
+    reduced Sunday-level service**, and only on routes where **at least
+    80% of the route's mileage falls inside the city** (London's own fare
+    zones, §9; the Greater Manchester conurbation region,
+    UK-EXPANSION.md §8a) — the same mileage-threshold mechanic already
+    used for livery requirements (Liverpool's 40%, London Zone 6's 40%,
+    UK-EXPANSION.md §7/§8), just a much higher bar, and deciding whether a
+    route runs at all rather than which livery it needs. A route that
+    doesn't clear 80% doesn't run on Christmas Day even in those two
+    cities. Nowhere else needs a Christmas Day timetable at all, default or
+    otherwise.
+  - **Pay**: see OPERATIONS.md §7 "Festive pay."
 
 ### Timing points
 Buses run past ordinary stops but **wait at timing points when early**. Timetables
