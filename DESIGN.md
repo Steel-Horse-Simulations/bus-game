@@ -251,11 +251,32 @@ sensitivity, and to awareness (§10).
 
 Real time, with pause and speed controls.
 
-The calendar uses **28-day months of exactly four weeks**, so weekly rotas
-and weekly fare caps line up with it cleanly (28-day tickets themselves were
-dropped from the fare model, 2026-10-31 — this is purely the calendar's own
-unit, unrelated). A year is thirteen months. Anything annual — the MOT, the
-annual test — is defined as **364 days** rather than twelve months.
+**The game's own calendar is the normal, real one, confirmed 2026-11-06** —
+real months of their real varying lengths, real leap years, real dates, so
+Christmas Day is always 25 December and the festive day types above
+(§7 "Structure") land on the actual date every year without any special
+handling. This replaces an earlier 28-day-month/13-month calendar that had
+been built specifically to keep weekly rotas and weekly fare caps lining up
+with it cleanly — reversed because calendar-pinned dates (festive days,
+term dates, seasons) need to be real dates, and a well-run company tying
+its rotas to a different, shorter internal calendar instead (below) solves
+the original problem anyway, the same way real companies do it.
+
+**The company's own financial/operational calendar is separate: a 13-period,
+4-week-each cycle (364 days), confirmed 2026-11-06** — "this is what some
+real companies do," not just this game. Wages, maintenance, rent, contract
+reviews and the fortnightly operational-change cadence below all run on
+this period calendar, not the real one, so they keep lining up with weekly
+rotas and weekly fare caps exactly as intended. **It floats freely against
+the real calendar rather than realigning each year** — period 1 of a new
+company year starts the day after the previous period 13 ended, so it
+slowly drifts relative to the real calendar over time (364 vs 365/366 real
+days), rather than resetting to 1 January. Confirmed as the intended
+behaviour, not a bug to fix later.
+
+**Anything annual — the MOT, the annual test — is one real year (365 or
+366 days)**, following the real calendar now rather than the old fixed
+364-day figure.
 
 Game pace comes from the clock speed, not from shortening the calendar.
 
@@ -264,19 +285,19 @@ day takes about 2.4 real hours — slow enough to watch buses work a route, whic
 the point of simulating real roads.
 
 Speeds are **1x, 4x, 10x, 20x and 60x**. At 60x a day passes in about 2.4 real
-minutes and a 28-day month in roughly an hour, so the monthly cycle — wages, rent,
-contract reviews, the operations manager's and commercial team's changes — comes
-round several times in a session rather than once.
+minutes and a 28-day company period in roughly an hour, so the periodic cycle —
+wages, rent, contract reviews, the operations manager's and commercial team's
+changes — comes round several times in a session rather than once.
 
 Note the simulation must **step properly at 60x** rather than teleporting vehicles:
 ten game minutes pass per real second, and a naive update will skip buses past
 stops. It works at 1x and breaks quietly at speed.
 
 **The recurring cycle.** **Wages are paid every Thursday** (weekly). **Maintenance
-is paid monthly**, on the 28-day cycle. **Operational changes
+is paid every company period**, on its 28-day cycle. **Operational changes
 take effect on the Monday of every even-numbered week**, so the network settles
-fortnightly rather than shifting daily. Rent, contract reviews and other monthly
-items run on the 28-day month.
+fortnightly rather than shifting daily. Rent, contract reviews and other
+period-based items run on the same 28-day company period, not a calendar month.
 
 **Time pauses** automatically for anything needing a decision, and **menus pause the
 game** — building a rota or planning a cascade takes real minutes, and running late
@@ -1092,16 +1113,21 @@ journey.
   - **Christmas Eve** and **New Year's Eve** default to that day's normal
     timetable with an early finish to the evening service — **last
     departure 6:00pm, confirmed 2026-11-06**.
-  - **Boxing Day**, **New Year's Day** and **2 January** default to a
-    Sunday-level timetable, **starting 9:00am, confirmed 2026-11-06**
-    (replacing Sunday's own normal start time on these three days only).
-    **2 January is Scotland's own second New Year
-    bank holiday** — not observed in England, Wales or Northern Ireland —
-    so it only applies to **routes physically in Scotland, plus any
-    long-distance service based out of a Scottish depot group** (confirmed
-    2026-11-06 — a Scotland-based long-distance route observes it even on
-    legs that run into England, the same "based" logic already used
-    elsewhere for which depot group a long-distance route belongs to).
+  - **Boxing Day** and **New Year's Day** default to a Sunday-level
+    timetable everywhere in the UK, **starting 9:00am, confirmed
+    2026-11-06** (replacing Sunday's own normal start time on these two
+    days only).
+  - **2 January** is **Scotland's own second New Year bank holiday** —
+    not observed in England, Wales or Northern Ireland. It only affects
+    **services based out of a Scottish depot group** — ordinary local
+    routes and long-distance alike — which default to the same
+    Sunday-level, 9:00am-start timetable as Boxing Day/New Year's Day.
+    **An English-based service that crosses the border into Scotland
+    keeps running its completely normal timetable on 2 January**
+    (confirmed 2026-11-06, refining an earlier "routes physically in
+    Scotland" wording that would have wrongly caught a border-crossing
+    English route too — it's the service's own base that decides, not
+    which roads it happens to run on).
   - All five of the above are **optional for the player to build a
     dedicated festive timetable for** instead of the default — same
     "optional day type" pattern as the school holiday timetable (§9).
