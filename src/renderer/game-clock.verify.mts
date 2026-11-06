@@ -4,13 +4,17 @@ import {
   gameDateTimeFromSeconds,
   isWageDay,
   isOperationalChangeDay,
+  isLeapYear,
   formatGameDate,
   formatGameTime,
   gameSecondsForRealMs,
   GAME_SECONDS_PER_REAL_SECOND_AT_1X,
-  DAYS_PER_MONTH,
-  MONTHS_PER_YEAR,
-  DAYS_PER_YEAR,
+  companyPeriodFromDays,
+  companyPeriodFromSeconds,
+  formatCompanyPeriod,
+  DAYS_PER_PERIOD,
+  PERIODS_PER_COMPANY_YEAR,
+  DAYS_PER_COMPANY_YEAR,
 } from "./game-clock.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -18,12 +22,12 @@ function assert(cond: boolean, msg: string): void {
   console.log("ok:", msg);
 }
 
-assert(DAYS_PER_MONTH === 28 && MONTHS_PER_YEAR === 13 && DAYS_PER_YEAR === 364, "28-day months, 13-month years, 364-day years");
+assert(DAYS_PER_PERIOD === 28 && PERIODS_PER_COMPANY_YEAR === 13 && DAYS_PER_COMPANY_YEAR === 364, "company period calendar: 28-day periods, 13 per company year, 364-day company years");
 
-// --- epoch ---
+// --- the game's own calendar is now the real, normal one ---
 {
   const dt = gameDateTimeFromSeconds(0);
-  assert(dt.year === 1 && dt.month === 1 && dt.day === 1, "second 0 is year 1, month 1, day 1");
+  assert(dt.year === 1 && dt.month === 1 && dt.day === 1, "second 0 is year 1, 1 January");
   assert(dt.hour === 0 && dt.minute === 0 && dt.second === 0, "second 0 is midnight");
   assert(dt.weekday === 0, "the epoch day is a Monday (weekday 0)");
   assert(dt.weekNumber === 0, "the epoch day is in week 0 (even)");
@@ -34,44 +38,49 @@ assert(DAYS_PER_MONTH === 28 && MONTHS_PER_YEAR === 13 && DAYS_PER_YEAR === 364,
 {
   const dt = gameDateTimeFromSeconds(3661); // 1h 1m 1s
   assert(dt.hour === 1 && dt.minute === 1 && dt.second === 1, "3661 seconds is 01:01:01");
-  assert(dt.day === 1 && dt.month === 1, "still day 1 of month 1");
+  assert(dt.day === 1 && dt.month === 1, "still 1 January");
 }
 
 // --- crossing a day boundary ---
 {
   const dt = gameDateTimeFromSeconds(86400); // exactly 1 day
-  assert(dt.day === 2 && dt.month === 1, "86400 seconds is day 2 of month 1");
+  assert(dt.day === 2 && dt.month === 1, "86400 seconds is 2 January");
   assert(dt.weekday === 1, "day 2 is a Tuesday");
 }
 
-// --- crossing a month boundary (28 days in) ---
+// --- real month lengths, not a fixed 28 days: January has 31 days ---
 {
-  const dt = gameDateTimeFromSeconds(86400 * 28);
-  assert(dt.month === 2 && dt.day === 1, "day 29 overall is month 2, day 1");
+  const dt = gameDateTimeFromSeconds(86400 * 31); // 31 days after 1 Jan
+  assert(dt.month === 2 && dt.day === 1, "31 days after 1 January is 1 February (January has 31 days, not 28)");
 }
 
-// --- crossing a year boundary (364 days in) ---
+// --- leap years follow the real Gregorian rule, checked directly ---
 {
-  const dt = gameDateTimeFromSeconds(86400 * 364);
-  assert(dt.year === 2 && dt.month === 1 && dt.day === 1, "day 365 overall is year 2, month 1, day 1");
-  assert(dt.dayOfYear === 1, "back to day 1 of the new year");
+  assert(isLeapYear(1) === false, "year 1 is not a leap year");
+  assert(isLeapYear(4) === true, "year 4 is a leap year (divisible by 4)");
+  assert(isLeapYear(100) === false, "year 100 is NOT a leap year (divisible by 100, not 400)");
+  assert(isLeapYear(400) === true, "year 400 IS a leap year (divisible by 400)");
 }
 
-// --- the last day of a year ---
+// --- crossing a real (non-leap) year boundary: year 1 has 365 days ---
 {
-  const dt = gameDateTimeFromSeconds(86400 * 363);
-  assert(dt.year === 1 && dt.month === 13 && dt.day === 28, "day 364 overall is year 1, month 13 (last), day 28 (last)");
-  assert(dt.dayOfYear === 364, "day 364 of year 1 is the last day of the year");
+  const lastDayOfYear1 = gameDateTimeFromSeconds(86400 * 364);
+  assert(lastDayOfYear1.year === 1 && lastDayOfYear1.month === 12 && lastDayOfYear1.day === 31, "day 365 overall is 31 December, year 1 (year 1 is not a leap year)");
+  assert(lastDayOfYear1.dayOfYear === 365, "31 December is day 365 of a non-leap year");
+
+  const firstDayOfYear2 = gameDateTimeFromSeconds(86400 * 365);
+  assert(firstDayOfYear2.year === 2 && firstDayOfYear2.month === 1 && firstDayOfYear2.day === 1, "day 366 overall is 1 January, year 2");
+  assert(firstDayOfYear2.dayOfYear === 1, "back to day 1 of the new year");
 }
 
-// --- wage day (every Thursday) ---
+// --- wage day (every Thursday) — unaffected by the calendar switch, weekday math is independent of month/year length ---
 {
   assert(isWageDay(gameDateTimeFromSeconds(86400 * 3)) === true, "day 4 overall (weekday 3) is a Thursday, a wage day");
   assert(isWageDay(gameDateTimeFromSeconds(0)) === false, "day 1 (Monday) is not a wage day");
   assert(isWageDay(gameDateTimeFromSeconds(86400 * 10)) === true, "day 11 overall (weekday 3 again, next week) is also a Thursday");
 }
 
-// --- operational change day (Monday of every even week) ---
+// --- operational change day (Monday of every even week) — also unaffected ---
 {
   assert(isOperationalChangeDay(gameDateTimeFromSeconds(0)) === true, "week 0's Monday (day 1) is an operational-change day");
   assert(isOperationalChangeDay(gameDateTimeFromSeconds(86400 * 7)) === false, "week 1's Monday (day 8) is NOT — week 1 is odd");
@@ -79,11 +88,29 @@ assert(DAYS_PER_MONTH === 28 && MONTHS_PER_YEAR === 13 && DAYS_PER_YEAR === 364,
   assert(isOperationalChangeDay(gameDateTimeFromSeconds(86400 * 1)) === false, "day 2 (a Tuesday) is never an operational-change day regardless of week");
 }
 
-// --- formatting ---
+// --- formatting, with real month names now ---
 {
   const dt = gameDateTimeFromSeconds(86400 * 3 + 3600 * 14 + 60 * 5); // day 4, 14:05
-  assert(formatGameDate(dt) === "Thursday 4 Month 1, Year 1", `expected formatted date, got "${formatGameDate(dt)}"`);
+  assert(formatGameDate(dt) === "Thursday 4 January Year 1", `expected formatted date, got "${formatGameDate(dt)}"`);
   assert(formatGameTime(dt) === "14:05", `expected formatted time, got "${formatGameTime(dt)}"`);
+}
+
+// --- the company's own 28-day/13-period/364-day financial calendar,
+// kept exactly as the old game calendar used to work, just rescoped ---
+{
+  const p0 = companyPeriodFromSeconds(0);
+  assert(p0.companyYear === 1 && p0.period === 1 && p0.dayOfPeriod === 1, "second 0 is company year 1, period 1, day 1");
+
+  const pPeriodBoundary = companyPeriodFromDays(28); // crossing a 28-day period boundary
+  assert(pPeriodBoundary.period === 2 && pPeriodBoundary.dayOfPeriod === 1, "day 29 overall is period 2, day 1");
+
+  const pLastOfYear = companyPeriodFromDays(363); // the last day of a company year
+  assert(pLastOfYear.companyYear === 1 && pLastOfYear.period === 13 && pLastOfYear.dayOfPeriod === 28, "day 364 overall is company year 1, period 13 (last), day 28 (last)");
+
+  const pYearBoundary = companyPeriodFromDays(364); // crossing a company-year boundary (364 days, floats freely)
+  assert(pYearBoundary.companyYear === 2 && pYearBoundary.period === 1 && pYearBoundary.dayOfPeriod === 1, "day 365 overall is company year 2, period 1, day 1 — the company calendar's own year is 364 days, not the real 365/366");
+
+  assert(formatCompanyPeriod(p0) === "Period 1, Day 1, Company Year 1", `expected formatted company period, got "${formatCompanyPeriod(p0)}"`);
 }
 
 // --- speed/real-time conversion ---

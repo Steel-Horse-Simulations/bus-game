@@ -20,43 +20,92 @@ const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
 export const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 const DAYS_PER_WEEK = 7;
 
-// "The calendar uses 28-day months of exactly four weeks... A year is
-// thirteen months. Anything annual... is defined as 364 days rather than
-// twelve months" — 28*13 = 364 exactly, so DAYS_PER_YEAR falls out of the
-// other two rather than being its own independent figure.
-export const DAYS_PER_MONTH = 28;
-export const MONTHS_PER_YEAR = 13;
-export const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
-
 export const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
+export const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;
+
+// --- The game's own calendar: a normal, real one (DESIGN.md §3, confirmed
+// 2026-11-06) --------------------------------------------------------------
+//
+// Replaces an earlier 28-day-month/13-month/364-day calendar, which is NOT
+// gone — it's now the company's own separate financial/period calendar
+// below, since calendar-pinned real dates (festive days, term dates,
+// seasons) need the game's own date to actually be a real date (Christmas
+// Day = 25 December every year, not a made-up "month 13, day 7").
+//
+// Real month lengths and real leap years, computed with the standard
+// "days since epoch <-> civil calendar" conversion (Howard Hinnant's
+// public-domain algorithm, http://howardhinnant.github.io/date_algorithms.html)
+// rather than a hand-rolled loop — it's O(1), well-tested elsewhere, and
+// correct for leap years without special-casing them here.
+function floorDiv(a: number, b: number): number {
+  return Math.floor(a / b);
+}
+
+// Days since the REAL (proleptic Gregorian) epoch 0000-03-01, for an
+// arbitrary (possibly negative) year/month(1-12)/day.
+function daysFromCivil(y: number, m: number, d: number): number {
+  const yAdj = y - (m <= 2 ? 1 : 0);
+  const era = floorDiv(yAdj >= 0 ? yAdj : yAdj - 399, 400);
+  const yoe = yAdj - era * 400; // [0, 399]
+  const mp = m + (m > 2 ? -3 : 9); // [0, 11]
+  const doy = floorDiv(153 * mp + 2, 5) + d - 1; // [0, 365]
+  const doe = yoe * 365 + floorDiv(yoe, 4) - floorDiv(yoe, 100) + doy; // [0, 146096]
+  return era * 146097 + doe - 719468;
+}
+
+function civilFromDays(z: number): { y: number; m: number; d: number } {
+  const zShifted = z + 719468;
+  const era = floorDiv(zShifted >= 0 ? zShifted : zShifted - 146096, 146097);
+  const doe = zShifted - era * 146097; // [0, 146096]
+  const yoe = floorDiv(doe - floorDiv(doe, 1460) + floorDiv(doe, 36524) - floorDiv(doe, 146096), 365); // [0, 399]
+  const y = yoe + era * 400;
+  const doy = doe - (365 * yoe + floorDiv(yoe, 4) - floorDiv(yoe, 100)); // [0, 365]
+  const mp = floorDiv(5 * doy + 2, 153); // [0, 11]
+  const d = doy - floorDiv(153 * mp + 2, 5) + 1; // [1, 31]
+  const m = mp + (mp < 10 ? 3 : -9); // [1, 12]
+  return { y: y + (m <= 2 ? 1 : 0), m, d };
+}
+
+// Game day 0 (second 0) is Year 1, January 1st — the proleptic Gregorian
+// year 1, chosen as a clean, natural starting point (not tied to any real
+// historical year). A pleasant side effect, not relied on: 0001-01-01 in
+// this calendar is a Monday, which already matches the weekday epoch below.
+const GAME_EPOCH_DAYS_SINCE_1970 = daysFromCivil(1, 1, 1);
+
+export function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
 
 export interface GameDateTime {
-  year: number; // 1-based
-  month: number; // 1-13
-  day: number; // 1-28
+  year: number; // 1-based, real year number
+  month: number; // 1-12
+  day: number; // 1-31, real days-in-month
   hour: number; // 0-23
   minute: number; // 0-59
   second: number; // 0-59
   weekday: number; // 0 = Monday .. 6 = Sunday
   weekNumber: number; // 0-based count of weeks since the epoch
-  dayOfYear: number; // 1-364
+  dayOfYear: number; // 1-365 (366 in a leap year)
 }
 
 // Epoch: year 1, month 1, day 1, 00:00:00 is game-second 0 — defined as a
 // Monday in week 0 (even), so "every Thursday" (wages) and "the Monday of
 // every even-numbered week" (operational changes) both read directly off
-// weekday/weekNumber below with no separate anchor needed.
+// weekday/weekNumber below with no separate anchor needed. The weekday/week
+// cycle is a flat 7-day count from day 0 and is completely independent of
+// month/year length, so it's unaffected by the real-calendar switch above.
 export function gameDateTimeFromSeconds(totalGameSeconds: number): GameDateTime {
   const totalWholeSeconds = Math.floor(totalGameSeconds);
   const totalDays = Math.floor(totalWholeSeconds / SECONDS_PER_DAY);
   const secondsIntoDay = totalWholeSeconds - totalDays * SECONDS_PER_DAY;
 
-  const year = Math.floor(totalDays / DAYS_PER_YEAR) + 1;
-  const dayOfYear = (totalDays % DAYS_PER_YEAR) + 1;
-  const month = Math.floor((dayOfYear - 1) / DAYS_PER_MONTH) + 1;
-  const day = ((dayOfYear - 1) % DAYS_PER_MONTH) + 1;
+  const { y: year, m: month, d: day } = civilFromDays(totalDays + GAME_EPOCH_DAYS_SINCE_1970);
+  const dayOfYear = totalDays + GAME_EPOCH_DAYS_SINCE_1970 - daysFromCivil(year, 1, 1) + 1;
 
-  const weekday = totalDays % DAYS_PER_WEEK;
+  const weekday = ((totalDays % DAYS_PER_WEEK) + DAYS_PER_WEEK) % DAYS_PER_WEEK;
   const weekNumber = Math.floor(totalDays / DAYS_PER_WEEK);
 
   const hour = Math.floor(secondsIntoDay / SECONDS_PER_HOUR);
@@ -78,13 +127,53 @@ export function isOperationalChangeDay(dt: GameDateTime): boolean {
 }
 
 export function formatGameDate(dt: GameDateTime): string {
-  return `${WEEKDAY_NAMES[dt.weekday]} ${dt.day} Month ${dt.month}, Year ${dt.year}`;
+  return `${WEEKDAY_NAMES[dt.weekday]} ${dt.day} ${MONTH_NAMES[dt.month - 1]} Year ${dt.year}`;
 }
 
 export function formatGameTime(dt: GameDateTime): string {
   const hh = String(dt.hour).padStart(2, "0");
   const mm = String(dt.minute).padStart(2, "0");
   return `${hh}:${mm}`;
+}
+
+// --- The company's own financial/operational calendar (DESIGN.md §3,
+// confirmed 2026-11-06) -----------------------------------------------------
+//
+// This is the calendar the game used to use for EVERYTHING, kept exactly
+// as it was mathematically (28-day periods, 13 per company year, 364 days
+// a company year) but now explicitly scoped to the company's own
+// wages/maintenance/rent/contract-review timing only — real companies run
+// a calendar like this alongside, not instead of, the real one. It floats
+// freely against the real calendar rather than realigning each year
+// (confirmed, not a bug): company year 2's period 1 starts the day right
+// after company year 1's period 13 ends, so it slowly drifts relative to
+// the real 365/366-day year over time.
+export const DAYS_PER_PERIOD = 28;
+export const PERIODS_PER_COMPANY_YEAR = 13;
+export const DAYS_PER_COMPANY_YEAR = DAYS_PER_PERIOD * PERIODS_PER_COMPANY_YEAR; // 364
+
+export interface CompanyPeriodDate {
+  companyYear: number; // 1-based, floats freely against the real calendar
+  period: number; // 1-13
+  dayOfPeriod: number; // 1-28
+  dayOfCompanyYear: number; // 1-364
+}
+
+export function companyPeriodFromDays(totalDays: number): CompanyPeriodDate {
+  const companyYear = Math.floor(totalDays / DAYS_PER_COMPANY_YEAR) + 1;
+  const dayOfCompanyYear = (totalDays % DAYS_PER_COMPANY_YEAR) + 1; // 1-364
+  const period = Math.floor((dayOfCompanyYear - 1) / DAYS_PER_PERIOD) + 1;
+  const dayOfPeriod = ((dayOfCompanyYear - 1) % DAYS_PER_PERIOD) + 1;
+  return { companyYear, period, dayOfPeriod, dayOfCompanyYear };
+}
+
+export function companyPeriodFromSeconds(totalGameSeconds: number): CompanyPeriodDate {
+  const totalDays = Math.floor(Math.floor(totalGameSeconds) / SECONDS_PER_DAY);
+  return companyPeriodFromDays(totalDays);
+}
+
+export function formatCompanyPeriod(cp: CompanyPeriodDate): string {
+  return `Period ${cp.period}, Day ${cp.dayOfPeriod}, Company Year ${cp.companyYear}`;
 }
 
 // How much game time a real elapsed duration adds at a given speed —
