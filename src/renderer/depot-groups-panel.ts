@@ -2,6 +2,29 @@ import { createDropdown, type Dropdown } from "./dropdown";
 import { busStationsState } from "./stops-layer";
 import { dutyPanelState } from "./duty-panel";
 import { TICKET_MACHINE_PRICE_GBP, TAP_ON_TAP_OFF_PRICE_GBP_PER_VEHICLE, type TicketMachineTier } from "./ticket-machine.mts";
+import { UPGRADABLE_TICKET_APP_PRICE_GBP, MOBILE_APP_LIVE_DATA_PRICE_GBP, UPGRADED_AVL_DATA_PRICE_GBP } from "./company-upgrades.mts";
+import { gameClockState } from "./game-clock-engine";
+import { SECONDS_PER_DAY } from "./game-clock.mts";
+
+function todayDayIndex(): number {
+  return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
+}
+
+// Shared by every spend below (ticket machine tier, tap-on tap-off,
+// company upgrades) — checks the real current balance (DESIGN.md §10's
+// finance ledger) rather than trusting a stale figure, and records a
+// real transaction only if it's actually affordable. Returns whether it
+// went through, so the caller can revert its own UI control (checkbox/
+// dropdown) on a decline rather than show the game accepting a purchase
+// it couldn't pay for — "running out of money does not end the game,"
+// but it also shouldn't silently go negative on a discretionary spend
+// either.
+async function trySpend(amountGBPPence: number, category: string, depotGroupId: number | null, description: string): Promise<boolean> {
+  const balance = await window.finance.getBalance();
+  if (balance < amountGBPPence) return false;
+  await window.finance.record(-amountGBPPence, category, depotGroupId, description, todayDayIndex());
+  return true;
+}
 
 const TICKET_MACHINE_TIER_LABELS: Record<TicketMachineTier, string> = {
   basic: "Basic",
@@ -88,13 +111,143 @@ export function mountDepotGroupsPanel(): void {
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
     toggle.classList.toggle("is-active", !panel.hidden);
-    if (!panel.hidden) void refresh();
+    if (!panel.hidden) {
+      void refresh();
+      void refreshUpgradesSection();
+      void refreshBalanceSection();
+    }
   });
 
   const title = document.createElement("div");
   title.className = "panel-header";
   title.textContent = "Depot groups";
   panel.appendChild(title);
+
+  // Finance ledger balance (DESIGN.md §10, first increment) — same
+  // "piggyback on an existing panel rather than guess a new on-screen
+  // position" reasoning as the upgrades section just below. A real
+  // Finance screen (the full per-depot-group P&L DESIGN.md §10
+  // describes) needs fare/contract/staff systems that don't exist yet
+  // — this is just the one real number (the derived balance) and the
+  // most recent few transactions, enough to see today's upgrade/ticket
+  // machine spends actually take effect.
+  const balanceSection = document.createElement("div");
+  balanceSection.className = "panel-section";
+  balanceSection.style.display = "flex";
+  balanceSection.style.flexDirection = "column";
+  balanceSection.style.gap = "4px";
+  balanceSection.style.borderBottom = "1px solid var(--border)";
+  const balanceLine = document.createElement("div");
+  balanceLine.style.fontWeight = "600";
+  const recentTransactions = document.createElement("div");
+  recentTransactions.style.fontSize = "0.85em";
+  recentTransactions.style.color = "var(--text-muted)";
+  recentTransactions.style.display = "flex";
+  recentTransactions.style.flexDirection = "column";
+  recentTransactions.style.gap = "2px";
+  balanceSection.appendChild(balanceLine);
+  balanceSection.appendChild(recentTransactions);
+  panel.appendChild(balanceSection);
+
+  async function refreshBalanceSection(): Promise<void> {
+    const balancePence = await window.finance.getBalance();
+    balanceLine.textContent = `Balance: £${(balancePence / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const recent = (await window.finance.list()).slice(0, 5);
+    recentTransactions.innerHTML = "";
+    for (const t of recent) {
+      const line = document.createElement("div");
+      const amount = t.amountGBPPence / 100;
+      const sign = amount >= 0 ? "+" : "−";
+      line.textContent = `${sign}£${Math.abs(amount).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} — ${t.description}`;
+      recentTransactions.appendChild(line);
+    }
+  }
+
+  // Company-wide one-off upgrades (TICKETING.md §4, second increment of
+  // T66) — added here rather than its own new floating toggle button:
+  // this screen region already has several real, previously-reported
+  // button-overlap bugs from guessed pixel coordinates (fare-pricing-
+  // panel.ts/repaint-shop-panel.ts's own comments), and these upgrades
+  // are genuinely company-wide, not per depot group, so they don't fit
+  // the per-group list below either — a clearly-separated section at
+  // the top of this already-existing panel avoids guessing a new
+  // on-screen position entirely.
+  const upgradesSection = document.createElement("div");
+  upgradesSection.className = "panel-section";
+  upgradesSection.style.display = "flex";
+  upgradesSection.style.flexDirection = "column";
+  upgradesSection.style.gap = "4px";
+  upgradesSection.style.borderBottom = "1px solid var(--border)";
+  const upgradesHeading = document.createElement("div");
+  upgradesHeading.className = "label-muted";
+  upgradesHeading.style.fontWeight = "600";
+  upgradesHeading.textContent = "Company-wide upgrades";
+  upgradesSection.appendChild(upgradesHeading);
+
+  const upgradesError = document.createElement("div");
+  upgradesError.style.color = "var(--text-danger)";
+  upgradesError.style.fontSize = "0.85em";
+  upgradesError.style.display = "none";
+
+  // Each upgrade is a one-off, non-refundable spend — unchecking never
+  // costs or refunds anything (TICKETING.md §4 gives no un-buy
+  // mechanism), so only switching ON ever calls trySpend; a decline
+  // reverts the checkbox and leaves the stored flag untouched.
+  function upgradeCheckboxRow(labelText: string, priceGBP: number, initiallyChecked: boolean, category: string, onBuy: (checked: boolean) => Promise<void>): HTMLElement {
+    const row = document.createElement("label");
+    row.style.display = "flex";
+    row.style.gap = "6px";
+    row.style.alignItems = "center";
+    row.style.cursor = "pointer";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = initiallyChecked;
+    checkbox.addEventListener("change", () => {
+      void (async () => {
+        upgradesError.style.display = "none";
+        if (checkbox.checked) {
+          const ok = await trySpend(priceGBP * 100, category, null, labelText);
+          if (!ok) {
+            upgradesError.textContent = `Not enough money — ${labelText} costs £${priceGBP.toLocaleString("en-GB")}.`;
+            upgradesError.style.display = "block";
+            checkbox.checked = false;
+            return;
+          }
+        }
+        await onBuy(checkbox.checked);
+        if (checkbox.checked) await refreshBalanceSection();
+      })();
+    });
+    const labelEl = document.createElement("span");
+    labelEl.className = "label-muted";
+    labelEl.textContent = `${labelText} (£${priceGBP.toLocaleString("en-GB")})`;
+    row.appendChild(checkbox);
+    row.appendChild(labelEl);
+    return row;
+  }
+
+  async function refreshUpgradesSection(): Promise<void> {
+    const upgrades = await window.companyUpgrades.get();
+    upgradesSection.querySelectorAll("label").forEach((el) => el.remove());
+    upgradesError.style.display = "none";
+    upgradesSection.appendChild(
+      upgradeCheckboxRow("Upgradable ticket app", UPGRADABLE_TICKET_APP_PRICE_GBP, upgrades.hasUpgradableTicketApp, "company_upgrade", (checked) =>
+        window.companyUpgrades.setHasUpgradableTicketApp(checked),
+      ),
+    );
+    upgradesSection.appendChild(
+      upgradeCheckboxRow("Mobile app live bus data", MOBILE_APP_LIVE_DATA_PRICE_GBP, upgrades.hasMobileAppLiveData, "company_upgrade", (checked) =>
+        window.companyUpgrades.setHasMobileAppLiveData(checked),
+      ),
+    );
+    upgradesSection.appendChild(
+      upgradeCheckboxRow("Upgraded AVL data", UPGRADED_AVL_DATA_PRICE_GBP, upgrades.hasUpgradedAvlData, "company_upgrade", (checked) =>
+        window.companyUpgrades.setHasUpgradedAvlData(checked),
+      ),
+    );
+    upgradesSection.appendChild(upgradesError);
+  }
+  panel.appendChild(upgradesSection);
 
   const list = document.createElement("div");
   list.className = "panel-section";
@@ -233,9 +386,39 @@ export function mountDepotGroupsPanel(): void {
       ticketLabelEl.className = "label-muted";
       ticketLabelEl.textContent = "Ticket machines";
       ticketLabelEl.style.flexShrink = "0";
+      const groupError = document.createElement("div");
+      groupError.style.color = "var(--text-danger)";
+      groupError.style.fontSize = "0.85em";
+      groupError.style.display = "none";
+
       const tierDropdown = createDropdown(Object.values(TICKET_MACHINE_TIER_LABELS), TICKET_MACHINE_TIER_LABELS[group.ticketMachineTier], (label) => {
-        const tier = TICKET_MACHINE_TIER_BY_LABEL[label] ?? "basic";
-        void window.depotGroups.setTicketMachineTier(group.id, tier).then(refresh);
+        void (async () => {
+          const tier = TICKET_MACHINE_TIER_BY_LABEL[label] ?? "basic";
+          const oldPrice = TICKET_MACHINE_PRICE_GBP[group.ticketMachineTier];
+          const newPrice = TICKET_MACHINE_PRICE_GBP[tier];
+          groupError.style.display = "none";
+          // TICKETING.md §1: Advanced is "a completely new machine (full
+          // replacement, not an upgrade path)," so moving to a higher
+          // tier always charges that tier's own full per-vehicle price —
+          // never a discount for whatever tier it's replacing. Moving to
+          // a LOWER tier (a real but unusual choice — no refund exists
+          // in the real spec) costs nothing, same as re-selecting the
+          // current tier.
+          if (newPrice > oldPrice) {
+            const vehicleCount = (await window.vehicles.listForDepotGroup(group.id)).length;
+            const cost = newPrice * vehicleCount;
+            const ok = await trySpend(cost * 100, "ticket_machine", group.id, `${group.name}: upgrade to ${TICKET_MACHINE_TIER_LABELS[tier]} ticket machines (${vehicleCount} vehicle${vehicleCount === 1 ? "" : "s"})`);
+            if (!ok) {
+              groupError.textContent = `Not enough money — upgrading ${vehicleCount} vehicle${vehicleCount === 1 ? "" : "s"} to ${TICKET_MACHINE_TIER_LABELS[tier]} costs £${cost.toLocaleString("en-GB")}.`;
+              groupError.style.display = "block";
+              tierDropdown.value = TICKET_MACHINE_TIER_LABELS[group.ticketMachineTier];
+              return;
+            }
+          }
+          await window.depotGroups.setTicketMachineTier(group.id, tier);
+          await refresh();
+          await refreshBalanceSection();
+        })();
       });
       tierDropdown.el.style.flex = "1";
       tierDropdown.el.style.minWidth = "0";
@@ -257,7 +440,26 @@ export function mountDepotGroupsPanel(): void {
       tapOnTapOffCheckbox.type = "checkbox";
       tapOnTapOffCheckbox.checked = group.hasTapOnTapOff;
       tapOnTapOffCheckbox.addEventListener("change", () => {
-        void window.depotGroups.setTapOnTapOff(group.id, tapOnTapOffCheckbox.checked).then(refresh);
+        void (async () => {
+          groupError.style.display = "none";
+          const turningOn = tapOnTapOffCheckbox.checked;
+          // Switching off has no real cost (no refund exists in the real
+          // spec either) — only switching on actually spends anything.
+          if (turningOn) {
+            const vehicleCount = (await window.vehicles.listForDepotGroup(group.id)).length;
+            const cost = TAP_ON_TAP_OFF_PRICE_GBP_PER_VEHICLE * vehicleCount;
+            const ok = await trySpend(cost * 100, "tap_on_tap_off", group.id, `${group.name}: fit tap-on tap-off (${vehicleCount} vehicle${vehicleCount === 1 ? "" : "s"})`);
+            if (!ok) {
+              groupError.textContent = `Not enough money — fitting ${vehicleCount} vehicle${vehicleCount === 1 ? "" : "s"} costs £${cost.toLocaleString("en-GB")}.`;
+              groupError.style.display = "block";
+              tapOnTapOffCheckbox.checked = false;
+              return;
+            }
+          }
+          await window.depotGroups.setTapOnTapOff(group.id, turningOn);
+          await refresh();
+          await refreshBalanceSection();
+        })();
       });
       const tapOnTapOffLabelEl = document.createElement("span");
       tapOnTapOffLabelEl.className = "label-muted";
@@ -269,6 +471,7 @@ export function mountDepotGroupsPanel(): void {
       wrapper.appendChild(stationRow);
       wrapper.appendChild(ticketRow);
       wrapper.appendChild(tapOnTapOffRow);
+      wrapper.appendChild(groupError);
       list.appendChild(wrapper);
     }
     const rows = list.querySelectorAll<HTMLDivElement>(":scope > div");

@@ -572,6 +572,34 @@ interface GameClockApi {
   set(clock: GameClock): Promise<void>;
 }
 
+interface CompanyUpgrades {
+  hasUpgradableTicketApp: boolean;
+  hasMobileAppLiveData: boolean;
+  hasUpgradedAvlData: boolean;
+}
+
+interface CompanyUpgradesApi {
+  get(): Promise<CompanyUpgrades>;
+  setHasUpgradableTicketApp(value: boolean): Promise<void>;
+  setHasMobileAppLiveData(value: boolean): Promise<void>;
+  setHasUpgradedAvlData(value: boolean): Promise<void>;
+}
+
+interface FinanceTransaction {
+  id: number;
+  amountGBPPence: number;
+  category: string;
+  depotGroupId: number | null;
+  description: string;
+  gameDay: number;
+}
+
+interface FinanceApi {
+  getBalance(): Promise<number>;
+  record(amountGBPPence: number, category: string, depotGroupId: number | null, description: string, gameDay: number): Promise<FinanceTransaction>;
+  list(depotGroupId?: number): Promise<FinanceTransaction[]>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
@@ -592,4 +620,6 @@ interface Window {
   stopGroups: StopGroupsApi;
   liveries: LiveriesApi;
   gameClock: GameClockApi;
+  companyUpgrades: CompanyUpgradesApi;
+  finance: FinanceApi;
 }

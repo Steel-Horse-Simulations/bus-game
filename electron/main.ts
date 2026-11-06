@@ -133,6 +133,13 @@ import {
   getGameClock,
   setGameClock,
   type GameClock,
+  getCompanyUpgrades,
+  setHasUpgradableTicketApp,
+  setHasMobileAppLiveData,
+  setHasUpgradedAvlData,
+  getCompanyBalanceGBPPence,
+  recordFinanceTransaction,
+  listFinanceTransactions,
   type FareConfig,
   setCountryZoneBand,
   deleteCountryZoneBand,
@@ -675,6 +682,23 @@ function registerGameClockHandlers(): void {
   ipcMain.handle("gameClock:set", (_e, clock: GameClock) => setGameClock(save, clock));
 }
 
+function registerCompanyUpgradeHandlers(): void {
+  ipcMain.handle("companyUpgrades:get", () => getCompanyUpgrades(save));
+  ipcMain.handle("companyUpgrades:setHasUpgradableTicketApp", (_e, value: boolean) => setHasUpgradableTicketApp(save, value));
+  ipcMain.handle("companyUpgrades:setHasMobileAppLiveData", (_e, value: boolean) => setHasMobileAppLiveData(save, value));
+  ipcMain.handle("companyUpgrades:setHasUpgradedAvlData", (_e, value: boolean) => setHasUpgradedAvlData(save, value));
+}
+
+function registerFinanceHandlers(): void {
+  ipcMain.handle("finance:getBalance", () => getCompanyBalanceGBPPence(save));
+  ipcMain.handle(
+    "finance:record",
+    (_e, amountGBPPence: number, category: string, depotGroupId: number | null, description: string, gameDay: number) =>
+      recordFinanceTransaction(save, amountGBPPence, category, depotGroupId, description, gameDay),
+  );
+  ipcMain.handle("finance:list", (_e, depotGroupId?: number) => listFinanceTransactions(save, depotGroupId));
+}
+
 function registerStopGroupHandlers(): void {
   ipcMain.handle("stopGroups:create", () => createStopGroup(save));
   ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
@@ -780,6 +804,8 @@ app.whenReady().then(async () => {
   registerLongDistanceSectionHandlers();
   registerFarePricingHandlers();
   registerGameClockHandlers();
+  registerCompanyUpgradeHandlers();
+  registerFinanceHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

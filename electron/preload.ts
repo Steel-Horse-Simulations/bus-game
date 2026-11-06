@@ -46,6 +46,8 @@ import type {
   CountryZoneBand,
   IslandZoneBand,
   GameClock,
+  CompanyUpgrades,
+  FinanceTransaction,
 } from "./db.mts";
 
 // The override layer (DESIGN.md §1, electron/db.mts) — the renderer's only
@@ -462,4 +464,18 @@ contextBridge.exposeInMainWorld("farePricing", {
 contextBridge.exposeInMainWorld("gameClock", {
   get: () => ipcRenderer.invoke("gameClock:get") as Promise<GameClock>,
   set: (clock: GameClock) => ipcRenderer.invoke("gameClock:set", clock) as Promise<void>,
+});
+
+contextBridge.exposeInMainWorld("companyUpgrades", {
+  get: () => ipcRenderer.invoke("companyUpgrades:get") as Promise<CompanyUpgrades>,
+  setHasUpgradableTicketApp: (value: boolean) => ipcRenderer.invoke("companyUpgrades:setHasUpgradableTicketApp", value) as Promise<void>,
+  setHasMobileAppLiveData: (value: boolean) => ipcRenderer.invoke("companyUpgrades:setHasMobileAppLiveData", value) as Promise<void>,
+  setHasUpgradedAvlData: (value: boolean) => ipcRenderer.invoke("companyUpgrades:setHasUpgradedAvlData", value) as Promise<void>,
+});
+
+contextBridge.exposeInMainWorld("finance", {
+  getBalance: () => ipcRenderer.invoke("finance:getBalance") as Promise<number>,
+  record: (amountGBPPence: number, category: string, depotGroupId: number | null, description: string, gameDay: number) =>
+    ipcRenderer.invoke("finance:record", amountGBPPence, category, depotGroupId, description, gameDay) as Promise<FinanceTransaction>,
+  list: (depotGroupId?: number) => ipcRenderer.invoke("finance:list", depotGroupId) as Promise<FinanceTransaction[]>,
 });
