@@ -16,7 +16,7 @@ built — see `OPEN-ITEMS.md` for how it maps onto the current build order.
 | ITSO/concessionary pass reader | Yes (standard on all tiers) | Yes | Yes |
 | Cash sales | Slower, manual change | Faster change-giving | Faster change-giving |
 | QR code scanning | No | Yes | Yes |
-| Data upload | End-of-day only (when the bus returns to depot) | End-of-day only | Real-time over 4G |
+| Data upload | Only while the bus is physically at a depot or bus station | Only while the bus is physically at a depot or bus station | Real-time over 4G |
 | GPS-linked automatic fare-stage calculation (uses AVL position) | No | No | Yes |
 | Automatic Passenger Counting (APC), feeding real boarding/alighting counts into the demand sim | No | No | Yes |
 
@@ -35,6 +35,29 @@ even if another group is on Mid.
 day. It is paper by default and becomes digital once the depot group's
 machines are upgraded to Advanced. The fields recorded and the maintenance
 consequences are not specified yet.
+
+**Card vs cash, confirmed 2026-11-06** — the two payment types reach the
+company's own books on genuinely different paths, not the same "data
+upload" mechanism:
+
+- **Card transactions** upload only while the bus is physically at a
+  depot or bus station (Basic/Mid — a real connectivity constraint, not
+  a fixed time of day; it can happen several times a day if the bus
+  passes through one, not only once at the end of service) or in
+  real time over 4G (Advanced, no location constraint at all).
+- **Cash transactions** never upload electronically at all, on any tier
+  — they're physically processed the **next working day**, by one of
+  the depot's own **local admin team**, between **08:30 and 12:00**.
+  **The more cash transactions there are, the longer processing takes**
+  — real admin staff counting and reconciling a physical cash float,
+  not an instant electronic settlement. Scales with volume, not with
+  which ticket machine tier is fitted — tier only affects card data
+  upload, never cash.
+
+Not yet wired into anything — there's no real per-journey fare revenue
+for a bus to actually collect yet (Phase 4's passenger simulation), so
+there's nothing concrete for this upload/processing delay to apply to.
+Recorded here as the confirmed rule for once that revenue exists.
 
 ---
 
