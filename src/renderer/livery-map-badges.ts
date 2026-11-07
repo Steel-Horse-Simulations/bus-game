@@ -20,9 +20,10 @@ import * as maplibregl from "maplibre-gl";
 import { liveryBadgeUrl, liveryBadgeNames, hasLiveryBadge } from "./livery-badges.mts";
 import {
   isLongDistanceLiveryName,
-  longDistanceNationLockReason,
+  longDistanceLocationLockReason,
   liveryRestrictionForArea,
   isLocalOnlyLiveryName,
+  isSightseeingLiveryName,
 } from "./livery-seed-data.mts";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -67,11 +68,15 @@ function seededUnitInterval(seed: string): number {
 // nothing in the save qualifies (falls back to the plain route-coloured
 // circle). Filters out: liveries with no real badge art (only "Highland
 // Council" as of 2026-11-05, livery-seed-data.mts), long-distance
-// liveries on a non-long-distance route or outside their nation, a
+// liveries on a non-long-distance route, outside their nation, or (for a
+// livery with its own depot-group allowlist, e.g. "Citylink/West Coast
+// Motors") a route not based out of one of those specific depot groups, a
 // local-only livery on a long-distance route (added 2026-11-07 — unlike
 // the Configure screen, this function already knows the real route's own
 // `routeType`, so the exclusion is genuinely enforceable here, not just a
-// UI note), and any livery an area restriction doesn't accept.
+// UI note), a sightseeing livery on anything but a sightseeing route and
+// vice versa (same reasoning, same date), and any livery an area
+// restriction doesn't accept.
 export function pickLiveryForJourney(
   route: Route,
   departureMinutes: number,
@@ -82,10 +87,12 @@ export function pickLiveryForJourney(
     if (!hasLiveryBadge(l.name)) return false;
     if (isLongDistanceLiveryName(l.name)) {
       if (route.routeType !== "long_distance") return false;
-      if (depotGroup && longDistanceNationLockReason(l.name, depotGroup.region)) return false;
+      if (depotGroup && longDistanceLocationLockReason(l.name, depotGroup)) return false;
       return true;
     }
     if (isLocalOnlyLiveryName(l.name) && route.routeType === "long_distance") return false;
+    if (isSightseeingLiveryName(l.name)) return route.routeType === "sightseeing";
+    if (route.routeType === "sightseeing") return false;
     if (depotGroup) {
       const restriction = liveryRestrictionForArea(depotGroup.name);
       if (restriction && !restriction.accepted.includes(l.name)) return false;

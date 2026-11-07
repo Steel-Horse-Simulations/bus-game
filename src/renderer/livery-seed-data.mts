@@ -83,6 +83,12 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // on screen; still a flagged neutral placeholder, no reference photo
   // supplied.
   "National Express Local": { primary: "#57534e", secondary: "#f5f5f4" },
+
+  // Added 2026-11-07 (user request) — a real dual-branded livery: West
+  // Coast Motors runs a few vehicles double-branded for Citylink on their
+  // Citylink services. No reference photo supplied, same flagged neutral
+  // placeholder treatment as the others above.
+  "Citylink/West Coast Motors": { primary: "#3f3f46", secondary: "#d4d4d8" },
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
@@ -134,7 +140,12 @@ export function liveryRestrictionForArea(depotGroupName: string): { accepted: st
 // and Wales implemented... this can only be used on long distance
 // routes") — the exact same nation/vehicle-lock shape as MegaBus below
 // (England/Wales-only, coaches only), not a new mechanism.
-export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "Ember", "MegaBus", "National Express"];
+//
+// "Citylink/West Coast Motors" added 2026-11-07, same batch — West Coast
+// Motors' real double-branded vehicles on Citylink services. Narrower
+// than a nation lock: locked to Glasgow and Oban depots specifically (see
+// LIVERY_DEPOT_GROUP_LOCKS below), not all of Scotland.
+export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "Ember", "MegaBus", "National Express", "Citylink/West Coast Motors"];
 
 export function isLongDistanceLiveryName(name: string): boolean {
   return LONG_DISTANCE_LIVERY_NAMES.includes(name);
@@ -187,15 +198,60 @@ export function longDistanceNationLockReason(liveryName: string, depotGroupRegio
   return null;
 }
 
+// A long-distance livery locked to specific NAMED depot groups rather
+// than a whole nation — narrower than longDistanceNationLockReason above,
+// added 2026-11-07 for "Citylink/West Coast Motors," which West Coast
+// Motors only double-brands on vehicles based at Glasgow and Oban. Keyed
+// by depot group NAME, same matching convention as RESTRICTED_AREA_
+// LIVERIES above (the real save's own depot group names, not the broader
+// `region` field).
+export const LIVERY_DEPOT_GROUP_LOCKS: Record<string, string[]> = {
+  "Citylink/West Coast Motors": ["Glasgow", "Oban"],
+};
+
+// Combines the nation lock and the (rarer, narrower) specific-depot-group
+// lock into the one reason a long-distance livery can't be used from this
+// depot group, or null if it's allowed. A livery with its own entry in
+// LIVERY_DEPOT_GROUP_LOCKS is checked against that allowlist only — it's
+// strictly narrower than a nation, so the broader nation check would never
+// add anything once the depot-group check already passed/failed. Every
+// other long-distance livery falls through to the plain nation check,
+// unchanged.
+export function longDistanceLocationLockReason(liveryName: string, depotGroup: { name: string; region: string }): string | null {
+  const depotLock = LIVERY_DEPOT_GROUP_LOCKS[liveryName];
+  if (depotLock) {
+    return depotLock.includes(depotGroup.name) ? null : `${liveryName} is only used from: ${depotLock.join(", ")}.`;
+  }
+  return longDistanceNationLockReason(liveryName, depotGroup.region);
+}
+
+// Sightseeing vehicles and the Sightseeing livery are mutually exclusive,
+// confirmed 2026-11-07: "Sightseeing buses can only have the Sightseeing
+// livery and any of it's variants if any get added. Sightseeing livery
+// can only be used on sightseeing buses." Matched by name prefix, not an
+// exact-name list, so a future variant ("Sightseeing Gold" or similar)
+// doesn't need this function touched again.
+const SIGHTSEEING_VEHICLE_CATEGORY = "Specialised (sightseeing, open-top only)";
+
+export function isSightseeingLiveryName(name: string): boolean {
+  return name === "Sightseeing" || name.startsWith("Sightseeing ");
+}
+
 // Returns why a livery can't be used on this vehicle model, or null if it's
 // allowed. Checked separately from the area/nation locks above — a
 // long-distance livery is exempt from the area lock but still
 // vehicle-locked, so both checks have to pass.
 export function liveryVehicleLockReason(liveryName: string, vehicle: { id: string; category: string }): string | null {
+  if (isSightseeingLiveryName(liveryName)) {
+    return vehicle.category === SIGHTSEEING_VEHICLE_CATEGORY ? null : "Sightseeing liveries are locked to sightseeing/open-top vehicles only.";
+  }
+  if (vehicle.category === SIGHTSEEING_VEHICLE_CATEGORY) {
+    return "A sightseeing vehicle can only carry a Sightseeing livery.";
+  }
   if (liveryName === "Ember") {
     return vehicle.id === "yutong-coach" ? null : "Ember is locked to the Yutong coach only.";
   }
-  if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express") {
+  if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express" || liveryName === "Citylink/West Coast Motors") {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
   }
   return null;
@@ -216,8 +272,14 @@ export function liveryUnavailableReason(
   if (!depotGroup) return null;
 
   if (isLongDistanceLiveryName(liveryName)) {
-    return longDistanceNationLockReason(liveryName, depotGroup.region);
+    return longDistanceLocationLockReason(liveryName, depotGroup);
   }
+  // Sightseeing is also exempt from area locks, same reasoning as long-
+  // distance liveries above — it's the ONLY livery a sightseeing vehicle
+  // can carry (liveryVehicleLockReason), so a remote depot's own small
+  // accepted-list (Skye's Rapsons-only, say) must never block it; the
+  // vehicle lock already does all the real restricting here.
+  if (isSightseeingLiveryName(liveryName)) return null;
 
   const restriction = liveryRestrictionForArea(depotGroup.name);
   if (restriction && !restriction.accepted.includes(liveryName)) {

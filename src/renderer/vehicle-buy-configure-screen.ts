@@ -270,7 +270,7 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       longDistanceNote.style.color = "var(--text-muted)";
       longDistanceNote.style.marginTop = "4px";
       longDistanceNote.textContent = nationForRegion(group.region) === "scotland"
-        ? "Citylink and Ember are allowed in every Scottish depot but are long-distance only (not enforced yet). Citylink needs a coach; Ember needs the Yutong coach specifically."
+        ? "Citylink and Ember are allowed in every Scottish depot but are long-distance only (not enforced yet). Citylink needs a coach; Ember needs the Yutong coach specifically. Citylink/West Coast Motors is the same but Glasgow and Oban depots only."
         : "MegaBus and National Express are allowed in every England/Wales depot but are long-distance only (not enforced yet). Both need a coach.";
       col1.appendChild(longDistanceNote);
     }
@@ -295,17 +295,23 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     strip.style.gap = "4px";
     strip.style.marginTop = "8px";
 
+    // Confirmed 2026-11-07, user request: "in the configure page liverys
+    // will only show for vehicles they can be applied to otherwise they
+    // will be hidden" (and, same message, "only show liverys that can be
+    // bought for use in the specific depot where a vehicle will be
+    // based") — a locked livery used to render greyed-out and disabled;
+    // now it's filtered out of the strip entirely, for ANY lock reason
+    // (vehicle type, nation, specific depot group, area, sightseeing),
+    // since liveryLockReason already combines all of them.
     for (const livery of ctx.liveries) {
-      const lockReason = liveryLockReason(livery.name);
-      const accepted = lockReason === null;
+      if (!liveryIsAccepted(livery.name)) continue;
       const thumb = document.createElement("div");
       thumb.style.width = "36px";
       thumb.style.height = "20px";
       thumb.style.borderRadius = "3px";
-      thumb.style.cursor = accepted ? "pointer" : "not-allowed";
-      thumb.style.opacity = accepted ? "1" : "0.35";
+      thumb.style.cursor = "pointer";
       thumb.style.border = selectedLiveryId === livery.id ? "2px solid var(--border-accent)" : "1px solid var(--border-strong)";
-      thumb.title = accepted ? livery.name : lockReason;
+      thumb.title = livery.name;
       const url = liveryBadgeUrl(livery.name);
       if (url) {
         thumb.style.backgroundImage = `url(${url})`;
@@ -313,12 +319,10 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       } else {
         thumb.style.background = livery.primaryColour;
       }
-      if (accepted) {
-        thumb.addEventListener("click", () => {
-          selectedLiveryId = livery.id;
-          rerenderCol1();
-        });
-      }
+      thumb.addEventListener("click", () => {
+        selectedLiveryId = livery.id;
+        rerenderCol1();
+      });
       strip.appendChild(thumb);
     }
     col1.appendChild(strip);
