@@ -1113,20 +1113,22 @@ journey.
   - **Christmas Eve** and **New Year's Eve** default to that day's normal
     timetable with an early finish to the evening service. The last
     working's departure time depends on what it has to do, confirmed
-    2026-11-06, settled over several rounds: **6:00pm if the last run is
-    already heading toward wherever the route would normally end its day
-    anyway** (reusing the route's own existing short-working/extension
+    2026-11-06/07, settled over several rounds: **6:00pm if the last run
+    is already heading toward wherever the route would normally end its
+    day anyway** (reusing the route's own existing short-working/extension
     pattern, not its full daytime terminus, if the two differ) — a single
     one-way run, nothing dead-mileaged. **5:00pm instead if it genuinely
     has to go out to the terminus and then run back** (an out-and-back,
     because nowhere sensible to end the day exists further out) — **and
-    only where the out-and-back combined doesn't exceed 4 hours**; a
-    route whose out-and-back would take longer than that isn't resolved
-    yet, flagged rather than guessed. This replaced an earlier, more
-    convoluted "compare the terminus's and a bus station's distance to
-    the depot" idea — the concern that prompted it ("it shouldn't run out
-    to a tiny village then run dead 30 miles to get back to the depot")
-    is already covered by the 5pm/out-and-back case above.
+    only where the out-and-back combined doesn't exceed 6 hours** (raised
+    from an initial 4 hours). **A route whose out-and-back would exceed 6
+    hours simply doesn't run its last working at all that day** — closing
+    what had been an open gap, rather than guessing a fallback time. This
+    replaced an earlier, more convoluted "compare the terminus's and a bus
+    station's distance to the depot" idea — the concern that prompted it
+    ("it shouldn't run out to a tiny village then run dead 30 miles to get
+    back to the depot") is already covered by the 5pm/out-and-back case
+    above.
   - **Boxing Day** and **New Year's Day** default to a Sunday-level
     timetable everywhere in the UK, **starting 9:00am, confirmed
     2026-11-06** (replacing Sunday's own normal start time on these two
