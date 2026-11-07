@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate } from "../src/renderer/fleet-numbering.mts";
 import { minimumStartingTier, TICKET_MACHINE_PRICE_GBP, type TicketMachineTier } from "../src/renderer/ticket-machine.mts";
+import { OPERATOR_LIVERIES } from "../src/renderer/livery-seed-data.mts";
 export type { TicketMachineTier } from "../src/renderer/ticket-machine.mts";
 
 export type SaveDb = DatabaseSync;
@@ -10,7 +11,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 54;
+export const SCHEMA_VERSION = 55;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -411,6 +412,35 @@ CREATE TABLE IF NOT EXISTS livery_support_icon_overrides (
   icon TEXT NOT NULL CHECK (icon IN ('spanner', 'person', 'recovery', 'parcel')),
   colour TEXT NOT NULL CHECK (colour IN ('black', 'white')),
   PRIMARY KEY (livery_id, icon)
+);
+
+-- Operator groups (T155, livery-seed-data.mts's OPERATOR_LIVERIES) — a
+-- depot GROUP's own player-set enabled-operator list, replacing nothing
+-- (RESTRICTED_AREA_LIVERIES/the other existing locks still apply,
+-- ANDed together) but adding this new, general, player-editable layer
+-- on top. No row for a given (depot_group_id, operator_name) pair means
+-- that operator is DISABLED there — every existing and newly-created
+-- depot group is seeded with every operator enabled (openSave/
+-- createDepotGroup) so this ships without silently narrowing anyone's
+-- existing fleet down to plain white only.
+CREATE TABLE IF NOT EXISTS depot_group_operators (
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id) ON DELETE CASCADE,
+  operator_name TEXT NOT NULL,
+  PRIMARY KEY (depot_group_id, operator_name)
+);
+
+-- A single DEPOT's own narrower selection within whatever its depot
+-- group's enabled operators allow (T155) — no rows at all means "not
+-- narrowed, inherits everything the group allows" (confirmed directly),
+-- not "nothing available." A livery tied to another via
+-- LIVERY_LINKED_TO (training liveries, Stagecoach Electric/First
+-- Electric) ignores this table entirely for itself — it rides along
+-- with whichever trigger livery is actually available at this depot,
+-- confirmed never needing its own explicit row here.
+CREATE TABLE IF NOT EXISTS depot_liveries (
+  depot_id INTEGER NOT NULL REFERENCES depots(id) ON DELETE CASCADE,
+  livery_id INTEGER NOT NULL REFERENCES liveries(id) ON DELETE CASCADE,
+  PRIMARY KEY (depot_id, livery_id)
 );
 
 -- A repaint shop the player has placed (OPERATIONS.md §5 — Ferrymill is
@@ -1455,6 +1485,24 @@ export function openSave(path: string): SaveDb {
     // side only. Plain ADD COLUMN, every existing depot group defaults
     // to the same blue routes already default to.
     db.exec("ALTER TABLE depot_groups ADD COLUMN colour TEXT NOT NULL DEFAULT '#3b82f6'");
+    db.exec("PRAGMA user_version = 54");
+  } else if (currentVersion === 54) {
+    // v54 -> v55: operator groups (T155) — depot_group_operators and
+    // depot_liveries are both brand new, CREATE TABLE IF NOT EXISTS in
+    // SCHEMA above creates them. Every EXISTING depot group is seeded
+    // with every operator enabled here — without this, a depot group
+    // with zero enabled-operator rows would read as "nothing allowed,
+    // plain white only" (the real, confirmed rule for a genuinely empty
+    // list), silently breaking every save's existing fleet the moment
+    // this ships. New depot groups get the same full seeding from
+    // createDepotGroup itself, not from this migration.
+    const groupIds = (db.prepare("SELECT id FROM depot_groups").all() as { id: number }[]).map((r) => r.id);
+    const insertOperator = db.prepare("INSERT OR IGNORE INTO depot_group_operators (depot_group_id, operator_name) VALUES (?, ?)");
+    for (const groupId of groupIds) {
+      for (const operatorName of Object.keys(OPERATOR_LIVERIES)) {
+        insertOperator.run(groupId, operatorName);
+      }
+    }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1543,6 +1591,14 @@ export function createDepotGroup(db: SaveDb, name: string, region: string): Depo
   );
   const startingTier = minimumStartingTier(existingTiers);
   const result = db.prepare("INSERT INTO depot_groups (name, region, ticket_machine_tier) VALUES (?, ?, ?)").run(name, region, startingTier);
+  const newGroupId = Number(result.lastInsertRowid);
+  // T155: a brand new depot group starts with every operator enabled —
+  // same "unrestricted by default" behaviour every depot group already
+  // had before this system existed, not a surprising empty start.
+  const insertOperator = db.prepare("INSERT OR IGNORE INTO depot_group_operators (depot_group_id, operator_name) VALUES (?, ?)");
+  for (const operatorName of Object.keys(OPERATOR_LIVERIES)) {
+    insertOperator.run(newGroupId, operatorName);
+  }
   return {
     id: Number(result.lastInsertRowid),
     name,
@@ -1563,6 +1619,51 @@ export function listDepotGroups(db: SaveDb): DepotGroup[] {
 
 export function setDepotGroupColour(db: SaveDb, id: number, colour: string): void {
   db.prepare("UPDATE depot_groups SET colour = ? WHERE id = ?").run(colour, id);
+}
+
+// T155 — this depot group's own enabled operators (livery-seed-
+// data.mts's OPERATOR_LIVERIES). An empty array is a real, valid state
+// ("plain white only, confirmed directly") — only createDepotGroup/the
+// v54->v55 migration seed the "everyone enabled" default, never this
+// getter itself.
+export function getEnabledOperatorsForDepotGroup(db: SaveDb, depotGroupId: number): string[] {
+  return (db.prepare("SELECT operator_name FROM depot_group_operators WHERE depot_group_id = ?").all(depotGroupId) as { operator_name: string }[]).map(
+    (r) => r.operator_name,
+  );
+}
+
+// Replaces the whole enabled-operator set for this depot group — the
+// caller passes the complete new list (e.g. every checked box in the
+// panel), not a single toggle, same "replace the whole set" shape as
+// setRouteBranding elsewhere in this file.
+export function setEnabledOperatorsForDepotGroup(db: SaveDb, depotGroupId: number, operatorNames: readonly string[]): void {
+  db.prepare("DELETE FROM depot_group_operators WHERE depot_group_id = ?").run(depotGroupId);
+  const insert = db.prepare("INSERT INTO depot_group_operators (depot_group_id, operator_name) VALUES (?, ?)");
+  for (const name of operatorNames) insert.run(depotGroupId, name);
+}
+
+// T155 — a single DEPOT's own narrower livery selection, by livery id.
+// Null means "not narrowed, inherits everything the depot group's own
+// enabled operators allow" (confirmed directly) — a real, different
+// state from "narrowed to nothing," which is an empty array. Known,
+// accepted limitation: since "narrowed to nothing" and "never narrowed"
+// are both zero rows in the table, this getter can't actually tell them
+// apart — it always returns null (unrestricted) once nothing is stored,
+// even if the player explicitly unchecked every livery through a UI
+// that allowed it. Flagged rather than silently guessed past.
+export function getNarrowedLiveriesForDepot(db: SaveDb, depotId: number): number[] | null {
+  const rows = db.prepare("SELECT livery_id FROM depot_liveries WHERE depot_id = ?").all(depotId) as { livery_id: number }[];
+  return rows.length === 0 ? null : rows.map((r) => r.livery_id);
+}
+
+// Pass an empty array (not null) to explicitly narrow to nothing, or a
+// real list of livery ids to narrow to exactly those. There's no way
+// to call this with "clear back to unrestricted" other than deleting
+// every row some other way — same known limitation as the getter above.
+export function setNarrowedLiveriesForDepot(db: SaveDb, depotId: number, liveryIds: readonly number[]): void {
+  db.prepare("DELETE FROM depot_liveries WHERE depot_id = ?").run(depotId);
+  const insert = db.prepare("INSERT INTO depot_liveries (depot_id, livery_id) VALUES (?, ?)");
+  for (const liveryId of liveryIds) insert.run(depotId, liveryId);
 }
 
 // A direct tier change on an EXISTING group — never ratchet-checked

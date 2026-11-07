@@ -23,6 +23,8 @@ interface DepotGroupsApi {
   setTicketMachineTier(id: number, tier: TicketMachineTier): Promise<void>;
   setTapOnTapOff(id: number, hasTapOnTapOff: boolean): Promise<void>;
   setColour(id: number, colour: string): Promise<void>;
+  getEnabledOperators(id: number): Promise<string[]>;
+  setEnabledOperators(id: number, operatorNames: string[]): Promise<void>;
   delete(id: number): Promise<void>;
 }
 
@@ -233,6 +235,8 @@ interface DepotsApi {
   setEntranceMode(id: number, mode: DepotEntranceMode): Promise<void>;
   deleteEntrance(id: number): Promise<void>;
   delete(id: number): Promise<void>;
+  getNarrowedLiveries(id: number): Promise<number[] | null>;
+  setNarrowedLiveries(id: number, liveryIds: number[]): Promise<void>;
 }
 
 type DealerManufacturer = "volvo" | "adl" | "western_commercial" | "wrightbus" | "yutong";

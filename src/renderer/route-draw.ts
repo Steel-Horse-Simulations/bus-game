@@ -718,8 +718,17 @@ export async function mountRouteDrawTool(
     const group = depotGroups.find((g) => g.id === selectedDepotGroupId);
     const number = numberInput.value.trim() || "?";
     const eligible = liveries.filter((l) => liveryEligibleForRoute(l.name, { routeType: draftRouteType, number }, group));
-    if (!eligible.some((l) => l.id === selectedBrandingLiveryId)) {
-      selectedBrandingLiveryId = eligible[0]?.id ?? null;
+    // Live bug report (2026-11-07): "I cant set a branding to none, it
+    // defaults to first training and if i set it to none and save it
+    // jumps back." Root cause was this auto-defaulting itself — it ran
+    // on every refresh, so null (the deliberate "none" choice) got
+    // silently overwritten back to eligible[0] the moment anything
+    // re-rendered. Branding should never auto-pick a livery the player
+    // didn't choose; it only needs to fall back to "none" (not to some
+    // other eligible livery) if a previously-chosen one stops being
+    // eligible, e.g. after a depot group change.
+    if (selectedBrandingLiveryId !== null && !eligible.some((l) => l.id === selectedBrandingLiveryId)) {
+      selectedBrandingLiveryId = null;
     }
     const brandingLabel = document.createElement("div");
     brandingLabel.className = "label-muted";

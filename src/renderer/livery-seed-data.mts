@@ -89,6 +89,13 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // Citylink services. No reference photo supplied, same flagged neutral
   // placeholder treatment as the others above.
   "Citylink/West Coast Motors": { primary: "#3f3f46", secondary: "#d4d4d8" },
+
+  // Added 2026-11-07 (user request, T155 — the operator-group work) —
+  // three more real/confirmed liveries, all flagged neutral placeholders,
+  // no reference photos supplied for any of them.
+  McGills: { primary: "#44403c", secondary: "#fafaf9" }, // real West-of-Scotland operator
+  Railair: { primary: "#1e1b4b", secondary: "#c7d2fe" }, // UK-EXPANSION.md §9a's own station-to-airport product
+  "First Electric": { primary: "#3730a3", secondary: "#e0e7ff" }, // electric-only variant, First Bus group
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
@@ -117,6 +124,114 @@ export const RESTRICTED_AREA_LIVERIES: Record<string, { accepted: string[]; pref
 
 export function liveryRestrictionForArea(depotGroupName: string): { accepted: string[]; preferred: string } | null {
   return RESTRICTED_AREA_LIVERIES[depotGroupName] ?? null;
+}
+
+// --- Operator groups (T155, confirmed 2026-11-07 over an extended live
+// discussion) — a general, player-editable replacement for the fixed
+// RESTRICTED_AREA_LIVERIES table above (kept, separate, "AND"ed
+// together, not replaced — confirmed directly). Hardcoded here, not
+// player-created: the player only picks WHICH whole operators a depot
+// group enables, and then narrows individual liveries per depot; the
+// operators themselves (which liveries belong to which real company)
+// are fixed, the same as every other hardcoded livery fact in this
+// file. Every real livery belongs to exactly one operator, even a
+// singleton of just itself — confirmed directly, not assumed, including
+// for liveries that already have their own separate mechanism
+// (sightseeing, the long-distance ones) — they're ALSO an operator, on
+// top of whatever else already locks them, not exempt from this layer.
+// The 4 training liveries are deliberately absent — see
+// LIVERY_LINKED_TO below, they're never a direct operator member, their
+// own availability is entirely derived from their trigger livery's.
+export const OPERATOR_LIVERIES: Record<string, string[]> = {
+  Lothian: ["Lothian", "Lothian Country", "East Coast Buses", "Airlink 100", "SkyLink", "Lothian Girraffe", "Lothian Coaches"],
+  Stagecoach: ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric", "Stagecoach Jet", "Oxford Tube"],
+  McGills: ["McGills", "Explore Dundee", "Midland Bluebird"],
+  "First Bus": ["First Bus", "Express 500", "Express 100", "First Electric"],
+  "Lochs Motor Transport": ["Lochs Motor Transport"],
+  "Shiel Buses": ["Shiel Buses"],
+  "West Coast Motors": ["West Coast Motors", "Borders Buses", "Citylink/West Coast Motors"],
+  Citylink: ["Citylink", "Air"],
+  Ember: ["Ember"],
+  MegaBus: ["MegaBus"],
+  "National Express": ["National Express", "National Express Local"],
+  "Highland Council": ["D&E", "Highland Council"],
+  "Shetland Transport": ["Shetland Transport"],
+  "Orkney Council": ["Orkney Council"],
+  SPT: ["SPT"],
+  "Hebridean Transport": ["Hebridean Transport"],
+  "North Uist Transport": ["North Uist Transport"],
+  "Islay Coaches": ["Islay Coaches"],
+  Rapsons: ["Rapsons"],
+  ScotRail: ["ScotRail"],
+  Railair: ["Railair"],
+  // Always enabled everywhere, confirmed directly — not something a
+  // depot group needs to turn on, same as its own existing hard vehicle
+  // lock already makes it universally available in spirit.
+  Sightseeing: ["Sightseeing"],
+};
+
+export function liveryOperator(liveryName: string): string | null {
+  for (const [operator, liveries] of Object.entries(OPERATOR_LIVERIES)) {
+    if (liveries.includes(liveryName)) return operator;
+  }
+  return null;
+}
+
+// Liveries that are never selected directly — they ride along silently
+// whenever ANY of their own trigger liveries is actually available at a
+// given DEPOT (not just the depot group), confirmed 2026-11-07: "they
+// will be tied to specific liveries, so if the base livery is enabled
+// in a depot the corresponding training livery is silently enabled
+// too." Stagecoach Electric itself is also linked (to plain Stagecoach
+// and Stagecoach Dark, not Jet) even though it's a real selectable
+// operator-group member in its own right — both things are true at
+// once, confirmed directly ("tied to... so if either are enabled...
+// Electric is too").
+export const LIVERY_LINKED_TO: Record<string, string[]> = {
+  "First Training": ["First Bus"],
+  "First Electric": ["First Bus"],
+  "Stagecoach Electric": ["Stagecoach", "Stagecoach Dark"],
+  "Stagecoach Training - Blue": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
+  "Stagecoach Training - Teal": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
+  "Stagecoach Training - Yellow": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
+};
+
+// Whether a DEPOT GROUP's own enabled-operators list (db.mts's
+// getEnabledOperatorsForDepotGroup) permits this livery at all — the
+// general, player-editable layer, checked independently of (and in
+// addition to) every other lock in this file. `enabledOperators`
+// undefined means the caller hasn't fetched it — not checked then, same
+// "only restrict what can actually be checked" convention as
+// `depotGroup` elsewhere. Sightseeing is always enabled everywhere,
+// confirmed directly, so it's exempt from needing to appear in the list
+// at all.
+export function operatorNotEnabledReason(liveryName: string, enabledOperators: readonly string[] | undefined): string | null {
+  if (enabledOperators === undefined) return null;
+  if (isSightseeingLiveryName(liveryName)) return null;
+  const operator = liveryOperator(liveryName);
+  if (operator === null) return null;
+  return enabledOperators.includes(operator) ? null : `${operator} isn't enabled for this depot group.`;
+}
+
+// Whether a specific DEPOT's own narrower selection (db.mts's
+// getNarrowedLiveriesForDepot, already resolved from ids to names by
+// the caller) permits this livery — the second, finer tier, only
+// meaningful once the livery's whole operator is already enabled at
+// the group level above. `narrowedLiveryNames` null or undefined both
+// mean "not narrowed, inherits everything the group allows" (confirmed
+// directly — a real depot starts unrestricted, not blocked). A livery
+// linked to others (training liveries, Stagecoach Electric/First
+// Electric) is NEVER checked by its own name here — it rides along
+// with whichever of its own trigger liveries is itself available at
+// this depot, recursively (confirmed directly, "silently enabled too").
+export function depotNarrowingReason(liveryName: string, narrowedLiveryNames: readonly string[] | null | undefined): string | null {
+  if (narrowedLiveryNames === undefined || narrowedLiveryNames === null) return null;
+  const triggers = LIVERY_LINKED_TO[liveryName];
+  if (triggers) {
+    const anyTriggerAvailable = triggers.some((t) => depotNarrowingReason(t, narrowedLiveryNames) === null);
+    return anyTriggerAvailable ? null : `${liveryName} needs one of its own trigger liveries enabled at this depot.`;
+  }
+  return narrowedLiveryNames.includes(liveryName) ? null : `${liveryName} isn't selected for this specific depot.`;
 }
 
 // Long-distance operator liveries (the user's own instruction, 2026-10-18,
@@ -382,6 +497,14 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   if (liveryName === "ScotRail") {
     return scotRailVehicleReason(vehicle, powerType);
   }
+  // Stagecoach Electric / First Electric (T155, confirmed 2026-11-07) —
+  // electric vehicles only, same "real configured power, not just a
+  // model capable of it" pattern as ScotRail above, and the same
+  // optional-powerType convention (omitted means only unconfigured-power
+  // callers are left unblocked, not that electric is assumed).
+  if ((liveryName === "Stagecoach Electric" || liveryName === "First Electric") && powerType !== undefined && powerType !== "electric") {
+    return `${liveryName} is locked to electric vehicles only.`;
+  }
   const routeTypeReason = vehicleRouteTypeReason(liveryName, vehicle.id);
   if (routeTypeReason) return routeTypeReason;
   return null;
@@ -402,7 +525,11 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
 // available at all when `route` is given AND matches: "its mostly for
 // purchasing for the 398 for example and the only way for that livery
 // to appear," the player's own words. Every other livery is unaffected
-// by `route` being present or absent.
+// by `route` being present or absent. `enabledOperators`/
+// `narrowedLiveryNames` are T155's two-tier operator-group system —
+// both undefined when the caller hasn't fetched them, same "only
+// restrict what can actually be checked" convention as everything else
+// here.
 export function liveryUnavailableReason(
   liveryName: string,
   vehicle: { id: string; category: string },
@@ -410,6 +537,8 @@ export function liveryUnavailableReason(
   currentVehicleCount?: number,
   powerType?: string,
   route?: { number: string },
+  enabledOperators?: readonly string[],
+  narrowedLiveryNames?: readonly string[] | null,
 ): string | null {
   const vehicleReason = liveryVehicleLockReason(liveryName, vehicle, powerType);
   if (vehicleReason) return vehicleReason;
@@ -421,6 +550,10 @@ export function liveryUnavailableReason(
   if (requiredRoute !== undefined && (!route || route.number !== requiredRoute)) {
     return `${liveryName} is only available when buying for route ${requiredRoute}.`;
   }
+  const operatorReason = operatorNotEnabledReason(liveryName, enabledOperators);
+  if (operatorReason) return operatorReason;
+  const narrowReason = depotNarrowingReason(liveryName, narrowedLiveryNames);
+  if (narrowReason) return narrowReason;
   if (!depotGroup) return null;
 
   if (isLongDistanceLiveryName(liveryName)) {
@@ -464,6 +597,14 @@ export function liveryEligibleForRoute(
   route: { routeType: RouteType; number: string },
   depotGroup: { name: string; region: string } | undefined,
 ): boolean {
+  // A link-only livery (the 4 training ones — no operator entry of its
+  // own, see OPERATOR_LIVERIES/LIVERY_LINKED_TO) is never directly
+  // selectable here — it only ever rides along with its own trigger
+  // livery (depotNarrowingReason). Live bug report (2026-11-07):
+  // without this guard, First Training had no route-type/area
+  // restriction of its own to fail, so it silently leaked through as
+  // "eligible" for an ordinary route's branding picker.
+  if (liveryOperator(liveryName) === null) return false;
   if (isLongDistanceLiveryName(liveryName)) {
     if (route.routeType !== "long_distance") return false;
     if (depotGroup && longDistanceLocationLockReason(liveryName, depotGroup)) return false;

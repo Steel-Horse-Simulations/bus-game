@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld("depotGroups", {
   setTapOnTapOff: (id: number, hasTapOnTapOff: boolean) =>
     ipcRenderer.invoke("depotGroups:setTapOnTapOff", id, hasTapOnTapOff) as Promise<void>,
   setColour: (id: number, colour: string) => ipcRenderer.invoke("depotGroups:setColour", id, colour) as Promise<void>,
+  getEnabledOperators: (id: number) => ipcRenderer.invoke("depotGroups:getEnabledOperators", id) as Promise<string[]>,
+  setEnabledOperators: (id: number, operatorNames: string[]) =>
+    ipcRenderer.invoke("depotGroups:setEnabledOperators", id, operatorNames) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depotGroups:delete", id) as Promise<void>,
 });
 
@@ -244,6 +247,8 @@ contextBridge.exposeInMainWorld("depots", {
   setEntranceMode: (id: number, mode: DepotEntranceMode) => ipcRenderer.invoke("depots:setEntranceMode", id, mode) as Promise<void>,
   deleteEntrance: (id: number) => ipcRenderer.invoke("depots:deleteEntrance", id) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depots:delete", id) as Promise<void>,
+  getNarrowedLiveries: (id: number) => ipcRenderer.invoke("depots:getNarrowedLiveries", id) as Promise<number[] | null>,
+  setNarrowedLiveries: (id: number, liveryIds: number[]) => ipcRenderer.invoke("depots:setNarrowedLiveries", id, liveryIds) as Promise<void>,
 });
 
 // Dealers (T62, OPEN-ITEMS.md) — exact mirror of the depots bridge above,

@@ -22,6 +22,10 @@ import {
   setDepotGroupTicketMachineTier,
   setDepotGroupTapOnTapOff,
   setDepotGroupColour,
+  getEnabledOperatorsForDepotGroup,
+  setEnabledOperatorsForDepotGroup,
+  getNarrowedLiveriesForDepot,
+  setNarrowedLiveriesForDepot,
   deleteDepotGroup,
   createRoute,
   listRoutes,
@@ -280,6 +284,10 @@ function registerDepotGroupHandlers(): void {
     setDepotGroupTapOnTapOff(save, id, hasTapOnTapOff),
   );
   ipcMain.handle("depotGroups:setColour", (_e, id: number, colour: string) => setDepotGroupColour(save, id, colour));
+  ipcMain.handle("depotGroups:getEnabledOperators", (_e, id: number) => getEnabledOperatorsForDepotGroup(save, id));
+  ipcMain.handle("depotGroups:setEnabledOperators", (_e, id: number, operatorNames: string[]) =>
+    setEnabledOperatorsForDepotGroup(save, id, operatorNames),
+  );
   ipcMain.handle("depotGroups:delete", (_e, id: number) => deleteDepotGroup(save, id));
 }
 
@@ -451,6 +459,8 @@ function registerDepotHandlers(): void {
   ipcMain.handle("depots:setEntranceMode", (_e, id: number, mode: DepotEntranceMode) => setDepotEntranceMode(save, id, mode));
   ipcMain.handle("depots:deleteEntrance", (_e, id: number) => deleteDepotEntrance(save, id));
   ipcMain.handle("depots:delete", (_e, id: number) => deleteDepot(save, id));
+  ipcMain.handle("depots:getNarrowedLiveries", (_e, id: number) => getNarrowedLiveriesForDepot(save, id));
+  ipcMain.handle("depots:setNarrowedLiveries", (_e, id: number, liveryIds: number[]) => setNarrowedLiveriesForDepot(save, id, liveryIds));
 }
 
 // Dealers (T62, OPEN-ITEMS.md) — exact mirror of registerDepotHandlers

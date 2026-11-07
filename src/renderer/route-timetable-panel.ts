@@ -942,10 +942,15 @@ export function createRouteTimetableEditor(
       statusLine.textContent = bandsError;
       return;
     }
-    if (currentBands.length === 0 && currentCustomMinutes.size === 0) {
-      statusLine.textContent = "Add at least one time-of-day band or one custom departure.";
-      return;
-    }
+    // Live bug report (2026-11-07): "I cant set a timetable to have no
+    // services on a day, it says I have to have at least one." This used
+    // to require at least one band or custom departure before saving —
+    // removed; zero of both is a real, deliberate state (this day type
+    // genuinely runs no service) and the pure logic underneath already
+    // handles it safely throughout (generateDepartureMinutesForBands([])
+    // returns [], validateNightWindow/validateNightFinishTime both treat
+    // an empty minutes list as trivially valid) — this was an added UI
+    // restriction, not something anything downstream actually needed.
     // Route types (2026-10-31, tightened 2026-11-01): a Night-type
     // route's last departure must be no later than 03:45 (UK-EXPANSION.md
     // §10's own window, tightened from the doc's general "typically
