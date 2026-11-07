@@ -10,7 +10,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 52;
+export const SCHEMA_VERSION = 53;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -162,7 +162,9 @@ CREATE TABLE IF NOT EXISTS routes (
   hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
   segments TEXT NOT NULL DEFAULT '[]',
   route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance')),
-  is_minor_variation INTEGER NOT NULL DEFAULT 0
+  is_minor_variation INTEGER NOT NULL DEFAULT 0,
+  assigned_livery_id INTEGER REFERENCES liveries(id),
+  use_branded_colour INTEGER NOT NULL DEFAULT 0
 );
 
 -- Shared long-distance sections (live design discussion, 2026-10-31) — a
@@ -576,7 +578,8 @@ CREATE TABLE IF NOT EXISTS vehicles (
   condition REAL NOT NULL DEFAULT 100,
   purchase_price_gbp INTEGER NOT NULL,
   bought_at TEXT NOT NULL,
-  livery_id INTEGER REFERENCES liveries(id)
+  livery_id INTEGER REFERENCES liveries(id),
+  bought_for_route_id INTEGER REFERENCES routes(id)
 );
 
 -- A line in the current, uncommitted order (OPERATIONS.md §3 "Buying") —
@@ -606,7 +609,8 @@ CREATE TABLE IF NOT EXISTS basket_items (
   unit_price_gbp INTEGER NOT NULL,
   payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
   is_used INTEGER NOT NULL DEFAULT 0,
-  used_condition REAL
+  used_condition REAL,
+  bought_for_route_id INTEGER REFERENCES routes(id)
 );
 
 -- One vehicle "placed" (OPERATIONS.md §3 "Delivery and transfers") after
@@ -633,7 +637,8 @@ CREATE TABLE IF NOT EXISTS vehicle_orders (
   payment_method TEXT NOT NULL CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
   is_used INTEGER NOT NULL DEFAULT 0,
   used_condition REAL,
-  ordered_at TEXT NOT NULL
+  ordered_at TEXT NOT NULL,
+  bought_for_route_id INTEGER REFERENCES routes(id)
 );
 
 -- Fare zones (DESIGN.md §9, Phase 4 increment 1 of the fares build):
@@ -1419,6 +1424,23 @@ export function openSave(path: string): SaveDb {
     // seed functions needing the renderer's own boot sequence for real
     // reference data, except this one real figure is simple enough to
     // seed directly here rather than round-trip through the renderer.
+    db.exec("PRAGMA user_version = 52");
+  } else if (currentVersion === 52) {
+    // v52 -> v53: route branding (DESIGN.md/OPEN-ITEMS T153) — a route
+    // can be assigned a livery and opt into tinting it with the route's
+    // own existing `colour` field rather than that livery's plain
+    // default colours. Plain ADD COLUMN, no CHECK referencing another
+    // column, so no rebuild needed (confirmed safe this way earlier this
+    // session). Also vehicles.bought_for_route_id (T153) — which route a
+    // vehicle was bought for, recorded for reference only, nothing reads
+    // it as an enforced link. A new FK dependent on `routes` — routes
+    // itself must never again be rebuilt via rename (the FK-corruption
+    // bug fixed earlier this session), only ever ADD COLUMN.
+    db.exec("ALTER TABLE routes ADD COLUMN assigned_livery_id INTEGER REFERENCES liveries(id)");
+    db.exec("ALTER TABLE routes ADD COLUMN use_branded_colour INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE vehicles ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
+    db.exec("ALTER TABLE basket_items ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
+    db.exec("ALTER TABLE vehicle_orders ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1600,6 +1622,12 @@ export interface Route {
   segments: RouteSegment[];
   routeType: RouteType;
   isMinorVariation: boolean;
+  // Route branding (T153, confirmed 2026-11-07) — set via
+  // setRouteBranding, not createRoute/updateRoute, same "dedicated
+  // setter for a less-central field" pattern as depot groups' own
+  // ticket machine tier.
+  assignedLiveryId: number | null;
+  useBrandedColour: boolean;
 }
 
 // A route's own build sequence (shared long-distance sections, 2026-10-31)
@@ -1632,6 +1660,8 @@ interface RouteRow {
   segments: string;
   route_type: string;
   is_minor_variation: number;
+  assigned_livery_id: number | null;
+  use_branded_colour: number;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -1653,6 +1683,8 @@ function routeFromRow(row: RouteRow): Route {
     segments: JSON.parse(row.segments) as RouteSegment[],
     routeType: row.route_type as RouteType,
     isMinorVariation: row.is_minor_variation !== 0,
+    assignedLiveryId: row.assigned_livery_id === null ? null : Number(row.assigned_livery_id),
+    useBrandedColour: row.use_branded_colour !== 0,
   };
 }
 
@@ -1716,6 +1748,8 @@ export function createRoute(
     segments,
     routeType,
     isMinorVariation,
+    assignedLiveryId: null,
+    useBrandedColour: false,
   };
 }
 
@@ -1750,6 +1784,13 @@ export function updateRoute(
   if (isMinorVariation && variationLetter !== null) {
     throw new Error("updateRoute: a minor variation can't also have a variation letter");
   }
+  // Branding (assigned_livery_id/use_branded_colour) is set via its own
+  // setRouteBranding, not here — fetched so the returned object reflects
+  // what's actually still in the DB rather than silently resetting it in
+  // the caller's eyes (this UPDATE never touches those two columns).
+  const existingBranding = db.prepare("SELECT assigned_livery_id, use_branded_colour FROM routes WHERE id = ?").get(id) as
+    | { assigned_livery_id: number | null; use_branded_colour: number }
+    | undefined;
   db.prepare(
     `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?, is_minor_variation = ?
      WHERE id = ?`,
@@ -1790,7 +1831,23 @@ export function updateRoute(
     segments,
     routeType,
     isMinorVariation,
+    assignedLiveryId: existingBranding?.assigned_livery_id ?? null,
+    useBrandedColour: (existingBranding?.use_branded_colour ?? 0) !== 0,
   };
+}
+
+// Sets a route's own branding (T153, confirmed 2026-11-07) — a separate
+// setter from createRoute/updateRoute above, same "dedicated setter for
+// a less-central field" pattern as depot groups' own ticket machine
+// tier. `assignedLiveryId` is NOT validated against the normal lock
+// system here — that's a pure-logic concern (livery-seed-data.mts's
+// liveryEligibleForRoute), checked by the caller (route-panel.ts)
+// before calling this, same separation already used everywhere else in
+// this file (e.g. createDepotGroup's own ticket-machine-tier ratchet
+// lives in db.mts because it needs other DB rows to check; this needs
+// nothing from the DB at all, so it stays in the renderer).
+export function setRouteBranding(db: SaveDb, routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean): void {
+  db.prepare("UPDATE routes SET assigned_livery_id = ?, use_branded_colour = ? WHERE id = ?").run(assignedLiveryId, useBrandedColour ? 1 : 0, routeId);
 }
 
 // Refreshes a composed route's own cached "points" to match what it should
@@ -1891,7 +1948,7 @@ export function setRoutePickupDropoffOverride(
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation, assigned_livery_id, use_branded_colour FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
@@ -2998,6 +3055,11 @@ export interface Vehicle {
   purchasePriceGBP: number;
   boughtAt: string;
   liveryId: number | null;
+  // Which route this vehicle was bought for (T153, confirmed
+  // 2026-11-07) — recorded for reference only, same convention as the
+  // comment on Route.assignedLiveryId in depot-groups.d.ts; nothing
+  // reads this as an enforced link.
+  boughtForRouteId: number | null;
 }
 
 // Buys one vehicle: computes its real category digit from the model/
@@ -3019,6 +3081,7 @@ export function buyVehicle(
   purchasePriceGBP: number,
   liveryId: number | null = null,
   conditionOverride: number | null = null,
+  boughtForRouteId: number | null = null,
 ): Vehicle {
   const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
   if (!depot) throw new Error(`buyVehicle: depot ${depotId} not found`);
@@ -3037,10 +3100,10 @@ export function buyVehicle(
   const result = db
     .prepare(
       `INSERT INTO vehicles
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), liveryId);
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), liveryId, boughtForRouteId);
 
   return {
     id: Number(result.lastInsertRowid),
@@ -3056,13 +3119,14 @@ export function buyVehicle(
     purchasePriceGBP,
     boughtAt: boughtAt.toISOString(),
     liveryId,
+    boughtForRouteId,
   };
 }
 
 export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
        FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
     )
     .all(depotGroupId) as {
@@ -3079,6 +3143,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     purchase_price_gbp: number;
     bought_at: string;
     livery_id: number | null;
+    bought_for_route_id: number | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -3094,6 +3159,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     purchasePriceGBP: r.purchase_price_gbp,
     boughtAt: r.bought_at,
     liveryId: r.livery_id,
+    boughtForRouteId: r.bought_for_route_id,
   }));
 }
 
@@ -3103,7 +3169,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
 export function listAllVehicles(db: SaveDb): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
        FROM vehicles ORDER BY fleet_number`,
     )
     .all() as {
@@ -3120,6 +3186,7 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     purchase_price_gbp: number;
     bought_at: string;
     livery_id: number | null;
+    bought_for_route_id: number | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -3135,6 +3202,7 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     purchasePriceGBP: r.purchase_price_gbp,
     boughtAt: r.bought_at,
     liveryId: r.livery_id,
+    boughtForRouteId: r.bought_for_route_id,
   }));
 }
 
@@ -3156,7 +3224,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
   db.prepare("UPDATE vehicles SET depot_id = ?, depot_group_id = ? WHERE id = ?").run(newDepotId, depot.depot_group_id, vehicleId);
   const row = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
        FROM vehicles WHERE id = ?`,
     )
     .get(vehicleId) as {
@@ -3173,6 +3241,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     purchase_price_gbp: number;
     bought_at: string;
     livery_id: number | null;
+    bought_for_route_id: number | null;
   };
   return {
     id: row.id,
@@ -3188,6 +3257,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     purchasePriceGBP: row.purchase_price_gbp,
     boughtAt: row.bought_at,
     liveryId: row.livery_id,
+    boughtForRouteId: row.bought_for_route_id,
   };
 }
 
@@ -3209,6 +3279,10 @@ export interface BasketItem {
   paymentMethod: "buy_outright" | "lease" | "lease_to_own";
   isUsed: boolean;
   usedCondition: number | null;
+  // Which route this line is being bought for (T153, confirmed
+  // 2026-11-07) — carried through basket -> order -> the real vehicle,
+  // recorded for reference only (see Vehicle.boughtForRouteId).
+  boughtForRouteId: number | null;
 }
 
 interface BasketItemRow {
@@ -3226,6 +3300,7 @@ interface BasketItemRow {
   payment_method: "buy_outright" | "lease" | "lease_to_own";
   is_used: number;
   used_condition: number | null;
+  bought_for_route_id: number | null;
 }
 
 function basketItemFromRow(r: BasketItemRow): BasketItem {
@@ -3244,6 +3319,7 @@ function basketItemFromRow(r: BasketItemRow): BasketItem {
     paymentMethod: r.payment_method,
     isUsed: !!r.is_used,
     usedCondition: r.used_condition,
+    boughtForRouteId: r.bought_for_route_id,
   };
 }
 
@@ -3262,14 +3338,15 @@ export function addBasketItem(
   paymentMethod: "buy_outright" | "lease" | "lease_to_own",
   isUsed: boolean,
   usedCondition: number | null,
+  boughtForRouteId: number | null = null,
 ): BasketItem {
   const result = db
     .prepare(
       `INSERT INTO basket_items
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, liveryId, manufacturer, quantity, unitPriceGBP, paymentMethod, isUsed ? 1 : 0, usedCondition);
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, liveryId, manufacturer, quantity, unitPriceGBP, paymentMethod, isUsed ? 1 : 0, usedCondition, boughtForRouteId);
   return {
     id: Number(result.lastInsertRowid),
     depotGroupId,
@@ -3285,13 +3362,14 @@ export function addBasketItem(
     paymentMethod,
     isUsed,
     usedCondition,
+    boughtForRouteId,
   };
 }
 
 export function listBasket(db: SaveDb): BasketItem[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id
        FROM basket_items ORDER BY id`,
     )
     .all() as unknown as BasketItemRow[];
@@ -3326,8 +3404,8 @@ export function placeOrder(db: SaveDb): number {
   const orderedAt = new Date().toISOString();
   const insert = db.prepare(
     `INSERT INTO vehicle_orders
-      (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   let count = 0;
   for (const item of items) {
@@ -3345,6 +3423,7 @@ export function placeOrder(db: SaveDb): number {
         item.isUsed ? 1 : 0,
         item.usedCondition,
         orderedAt,
+        item.boughtForRouteId,
       );
       count++;
     }
@@ -3371,6 +3450,7 @@ export interface VehicleOrder {
   isUsed: boolean;
   usedCondition: number | null;
   orderedAt: string;
+  boughtForRouteId: number | null;
 }
 
 interface VehicleOrderRow {
@@ -3387,6 +3467,7 @@ interface VehicleOrderRow {
   is_used: number;
   used_condition: number | null;
   ordered_at: string;
+  bought_for_route_id: number | null;
 }
 
 function vehicleOrderFromRow(r: VehicleOrderRow): VehicleOrder {
@@ -3404,13 +3485,14 @@ function vehicleOrderFromRow(r: VehicleOrderRow): VehicleOrder {
     isUsed: !!r.is_used,
     usedCondition: r.used_condition,
     orderedAt: r.ordered_at,
+    boughtForRouteId: r.bought_for_route_id,
   };
 }
 
 export function listOrders(db: SaveDb): VehicleOrder[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id
        FROM vehicle_orders ORDER BY ordered_at`,
     )
     .all() as unknown as VehicleOrderRow[];
@@ -3427,7 +3509,7 @@ export function listOrders(db: SaveDb): VehicleOrder[] {
 export function collectOrder(db: SaveDb, orderId: number): Vehicle {
   const order = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id
        FROM vehicle_orders WHERE id = ?`,
     )
     .get(orderId) as VehicleOrderRow | undefined;
@@ -3443,6 +3525,7 @@ export function collectOrder(db: SaveDb, orderId: number): Vehicle {
     order.unit_price_gbp,
     order.livery_id,
     order.is_used ? order.used_condition : null,
+    order.bought_for_route_id,
   );
   db.prepare("DELETE FROM vehicle_orders WHERE id = ?").run(orderId);
   return vehicle;

@@ -64,6 +64,16 @@ interface Route {
   segments: RouteSegment[];
   routeType: RouteType;
   isMinorVariation: boolean;
+  // Route branding (T153, confirmed 2026-11-07) — set via RoutesApi.
+  // setBranding, not createRoute/update, same "dedicated setter for a
+  // less-central field" pattern as depot groups' own ticket machine tier.
+  assignedLiveryId: number | null;
+  // When true, the assigned livery's branding-mask region should be
+  // tinted with this route's own `colour` above instead of that livery's
+  // plain default colours. The actual mask-tint rendering doesn't exist
+  // yet (OPERATIONS.md §4's masks aren't built) — this is the data side
+  // only, confirmed as the deliberate first step.
+  useBrandedColour: boolean;
 }
 
 // A route's own build sequence (shared long-distance sections) — see
@@ -129,6 +139,7 @@ interface RoutesApi {
     pointIndex: number,
     value: "pickup_only" | "setdown_only" | "skip" | null,
   ): Promise<void>;
+  setBranding(routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean): Promise<void>;
 }
 
 type DayType = "monday_friday" | "saturday" | "sunday";
@@ -414,6 +425,10 @@ interface Vehicle {
   purchasePriceGBP: number;
   boughtAt: string;
   liveryId: number | null;
+  // Which route this vehicle was bought for (T153, confirmed 2026-11-07)
+  // — recorded for reference only, same as the comment on Route.
+  // assignedLiveryId above; nothing reads this as an enforced link.
+  boughtForRouteId: number | null;
 }
 
 interface VehiclesApi {
@@ -440,6 +455,7 @@ interface BasketItem {
   paymentMethod: PaymentMethod;
   isUsed: boolean;
   usedCondition: number | null;
+  boughtForRouteId: number | null;
 }
 
 interface BasketApi {
@@ -457,6 +473,7 @@ interface BasketApi {
     paymentMethod: PaymentMethod,
     isUsed: boolean,
     usedCondition: number | null,
+    boughtForRouteId?: number | null,
   ): Promise<BasketItem>;
   list(): Promise<BasketItem[]>;
   setQuantity(basketItemId: number, quantity: number): Promise<void>;
@@ -480,6 +497,7 @@ interface VehicleOrder {
   isUsed: boolean;
   usedCondition: number | null;
   orderedAt: string;
+  boughtForRouteId: number | null;
 }
 
 interface OrdersApi {

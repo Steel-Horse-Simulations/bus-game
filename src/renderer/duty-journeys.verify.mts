@@ -29,6 +29,8 @@ const route: Route = {
   segments: [],
   routeType: "ordinary",
   isMinorVariation: false,
+  assignedLiveryId: null,
+  useBrandedColour: false,
 };
 
 const timetable: RouteTimetable = {

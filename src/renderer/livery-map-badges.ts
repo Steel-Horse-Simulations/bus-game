@@ -18,26 +18,7 @@
 // only shows on a genuinely long-distance route, etc.).
 import * as maplibregl from "maplibre-gl";
 import { liveryBadgeUrl, liveryBadgeNames, hasLiveryBadge } from "./livery-badges.mts";
-import {
-  isLongDistanceLiveryName,
-  longDistanceLocationLockReason,
-  liveryRestrictionForArea,
-  isLocalOnlyLiveryName,
-  isSightseeingLiveryName,
-  liveryRouteTypeReason,
-  liverySpecificRouteReason,
-  type RouteTypeCategory,
-} from "./livery-seed-data.mts";
-
-// Maps a real route's own routeType onto the 3-category system
-// VEHICLE_ROUTE_TYPES/LIVERY_ROUTE_TYPES use (livery-seed-data.mts) —
-// null for "sightseeing" since that's handled entirely separately above.
-function routeTypeCategoryFor(routeType: Route["routeType"]): RouteTypeCategory | null {
-  if (routeType === "ordinary" || routeType === "night") return "local_night";
-  if (routeType === "airport_express") return "airport";
-  if (routeType === "long_distance") return "long_distance";
-  return null;
-}
+import { liveryEligibleForRoute } from "./livery-seed-data.mts";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -79,45 +60,18 @@ function seededUnitInterval(seed: string): number {
 
 // Picks a plausible random livery for one simulated journey, or null if
 // nothing in the save qualifies (falls back to the plain route-coloured
-// circle). Filters out: liveries with no real badge art (only "Highland
-// Council" as of 2026-11-05, livery-seed-data.mts), long-distance
-// liveries on a non-long-distance route, outside their nation, or (for a
-// livery with its own depot-group allowlist, e.g. "Citylink/West Coast
-// Motors") a route not based out of one of those specific depot groups, a
-// local-only livery on a long-distance route (added 2026-11-07 — unlike
-// the Configure screen, this function already knows the real route's own
-// `routeType`, so the exclusion is genuinely enforceable here, not just a
-// UI note), a sightseeing livery on anything but a sightseeing route and
-// vice versa (same reasoning, same date), and any livery an area
-// restriction doesn't accept.
+// circle). Filters out liveries with no real badge art, then defers every
+// other rule (area/nation/depot-group/route-type/specific-route/
+// sightseeing locks) to `liveryEligibleForRoute` — the exact same check
+// route branding (T153) validates its own assigned livery against,
+// extracted once rather than duplicated (CLAUDE.md: "build it once").
 export function pickLiveryForJourney(
   route: Route,
   departureMinutes: number,
   liveries: Livery[],
   depotGroup: DepotGroup | undefined,
 ): Livery | null {
-  const candidates = liveries.filter((l) => {
-    if (!hasLiveryBadge(l.name)) return false;
-    if (isLongDistanceLiveryName(l.name)) {
-      if (route.routeType !== "long_distance") return false;
-      if (depotGroup && longDistanceLocationLockReason(l.name, depotGroup)) return false;
-      return true;
-    }
-    if (isLocalOnlyLiveryName(l.name) && route.routeType === "long_distance") return false;
-    if (isSightseeingLiveryName(l.name)) return route.routeType === "sightseeing";
-    if (route.routeType === "sightseeing") return false;
-    // General route-type lock + specific-named-route lock (T152,
-    // confirmed 2026-11-07) — a no-op for every livery not in either map
-    // (training-only, private-hire-only, or genuinely unrestricted).
-    if (liverySpecificRouteReason(l.name, route)) return false;
-    const category = routeTypeCategoryFor(route.routeType);
-    if (category && liveryRouteTypeReason(l.name, category)) return false;
-    if (depotGroup) {
-      const restriction = liveryRestrictionForArea(depotGroup.name);
-      if (restriction && !restriction.accepted.includes(l.name)) return false;
-    }
-    return true;
-  });
+  const candidates = liveries.filter((l) => hasLiveryBadge(l.name) && liveryEligibleForRoute(l.name, route, depotGroup));
   if (candidates.length === 0) return null;
   const index = Math.floor(seededUnitInterval(`${route.id}:${departureMinutes}`) * candidates.length);
   return candidates[index];

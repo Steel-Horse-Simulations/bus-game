@@ -33,6 +33,8 @@ function route(
     segments: [],
     routeType: "ordinary",
     isMinorVariation: false,
+    assignedLiveryId: null,
+    useBrandedColour: false,
   };
 }
 

@@ -1254,6 +1254,13 @@ accessibility, cleanliness, stop and station quality, and three staff figures �
 driver score, friendliness and happiness. These need to feed **one satisfaction
 number** rather than stacking as six separate bonuses.
 
+**Route branding mismatch, confirmed 2026-11-07** — once a route has its own
+assigned livery (§11 "Route display," T153), a bus still running in the wrong
+(default) livery there is allowed to run, but costs **a small satisfaction
+drop for each incorrectly-liveried vehicle**. Design only — needs the real
+satisfaction system above to exist before it can actually be calculated;
+recorded as the confirmed rule for once it does.
+
 ---
 
 ## 9. Fares and ticketing

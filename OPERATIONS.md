@@ -628,6 +628,15 @@ This gives sub-categories rather than separate liveries: the operator's standard
 livery with a purple flash and the same livery with an orange one are the same
 asset with different branding colours, applied to specific vehicles.
 
+**Data side built 2026-11-07 (T153)** — a route can now be assigned a livery
+and opt into tinting its mask with the route's own `colour` instead of that
+livery's plain default (`routes.assigned_livery_id`/`use_branded_colour`,
+set from the route editor's own "Branding" section, "locks still apply" —
+only a livery already valid for that route's depot group/type is offered).
+The actual mask-tinted badge render is still not built at all (the mask
+files themselves don't exist in code yet, confirmed earlier this session) —
+this is the data side only, the deliberate first step.
+
 ### Repainting
 Repainting is deliberately expensive and slow.
 

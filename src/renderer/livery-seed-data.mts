@@ -310,10 +310,7 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
 // the player's own words — "it will be [the contract] once added" /
 // "doesn't exist in the game yet" — so there's genuinely nothing to match
 // yet; left in so the lock activates the moment such a route exists,
-// rather than needing this file touched again. ScotRail's own vehicle
-// category isn't separately restricted (no entry in VEHICLE_ROUTE_TYPES
-// overlap needed) since it's a rail-interchange shuttle, not physically
-// different from ordinary local work.
+// rather than needing this file touched again.
 export const LIVERY_SPECIFIC_ROUTE: Record<string, string> = {
   "Airlink 100": "Airlink 100",
   "Lothian Girraffe": "Airlink 100",
@@ -347,11 +344,29 @@ function vehicleRouteTypeReason(liveryName: string, vehicleId: string): string |
     : `${liveryName} (${liveryTypes.join("/")}) doesn't match this vehicle's own route types (${vehicleTypes.join("/")}).`;
 }
 
+// Route 398's own real vehicle requirement, DESIGN.md: "Must be ScotRail
+// liveried, electric, single deck." Confirmed 2026-11-07: ScotRail's own
+// livery should be locked to the exact same vehicles — category plus the
+// actually CONFIGURED power type, not just a model capable of electric
+// (the player's own choice over the category-only alternative), so this
+// needs the real selected power threaded in, unlike every other vehicle
+// lock above which only ever needed id/category.
+const SINGLE_DECK_CATEGORY = "Single-deckers / midibuses";
+
+function scotRailVehicleReason(vehicle: { category: string }, powerType: string | undefined): string | null {
+  if (vehicle.category !== SINGLE_DECK_CATEGORY) return "ScotRail (Route 398) is locked to single-deckers/midibuses only.";
+  if (powerType !== undefined && powerType !== "electric") return "ScotRail (Route 398) is locked to electric vehicles only.";
+  return null;
+}
+
 // Returns why a livery can't be used on this vehicle model, or null if it's
 // allowed. Checked separately from the area/nation locks above — a
 // long-distance livery is exempt from the area lock but still
-// vehicle-locked, so both checks have to pass.
-export function liveryVehicleLockReason(liveryName: string, vehicle: { id: string; category: string }): string | null {
+// vehicle-locked, so both checks have to pass. `powerType` is optional —
+// omitted, only the category half of the ScotRail check applies (the
+// caller hasn't settled on a power choice yet); every other livery here
+// ignores it entirely.
+export function liveryVehicleLockReason(liveryName: string, vehicle: { id: string; category: string }, powerType?: string): string | null {
   if (isSightseeingLiveryName(liveryName)) {
     return vehicle.category === SIGHTSEEING_VEHICLE_CATEGORY ? null : "Sightseeing liveries are locked to sightseeing/open-top vehicles only.";
   }
@@ -363,6 +378,9 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   }
   if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express" || liveryName === "Citylink/West Coast Motors") {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
+  }
+  if (liveryName === "ScotRail") {
+    return scotRailVehicleReason(vehicle, powerType);
   }
   const routeTypeReason = vehicleRouteTypeReason(liveryName, vehicle.id);
   if (routeTypeReason) return routeTypeReason;
@@ -378,17 +396,30 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
 // undefined when the caller hasn't fetched the real save's own vehicle
 // list — the cap simply isn't checked then, same "only restrict what can
 // actually be checked" principle as the depotGroup-undefined case.
+// `route` is the real route the vehicle is being bought for (T153,
+// confirmed 2026-11-07, Configure's own "buying for a specific route"
+// tickbox) — a specific-route-locked livery (ScotRail etc.) is only ever
+// available at all when `route` is given AND matches: "its mostly for
+// purchasing for the 398 for example and the only way for that livery
+// to appear," the player's own words. Every other livery is unaffected
+// by `route` being present or absent.
 export function liveryUnavailableReason(
   liveryName: string,
   vehicle: { id: string; category: string },
   depotGroup: { name: string; region: string } | undefined,
   currentVehicleCount?: number,
+  powerType?: string,
+  route?: { number: string },
 ): string | null {
-  const vehicleReason = liveryVehicleLockReason(liveryName, vehicle);
+  const vehicleReason = liveryVehicleLockReason(liveryName, vehicle, powerType);
   if (vehicleReason) return vehicleReason;
   if (currentVehicleCount !== undefined) {
     const capReason = liveryCapReason(liveryName, currentVehicleCount);
     if (capReason) return capReason;
+  }
+  const requiredRoute = LIVERY_SPECIFIC_ROUTE[liveryName];
+  if (requiredRoute !== undefined && (!route || route.number !== requiredRoute)) {
+    return `${liveryName} is only available when buying for route ${requiredRoute}.`;
   }
   if (!depotGroup) return null;
 
@@ -407,6 +438,48 @@ export function liveryUnavailableReason(
     return `${depotGroup.name} only accepts: ${restriction.accepted.join(", ")} (preferred: ${restriction.preferred})`;
   }
   return null;
+}
+
+// Maps a real route's own routeType onto the 3-category system
+// VEHICLE_ROUTE_TYPES/LIVERY_ROUTE_TYPES use — null for "sightseeing"
+// since that's handled entirely separately (isSightseeingLiveryName).
+export function routeTypeCategoryFor(routeType: RouteType): RouteTypeCategory | null {
+  if (routeType === "ordinary" || routeType === "night") return "local_night";
+  if (routeType === "airport_express") return "airport";
+  if (routeType === "long_distance") return "long_distance";
+  return null;
+}
+
+// Whether a livery is eligible for a ROUTE in general — no specific
+// vehicle in mind, unlike liveryVehicleLockReason/liveryUnavailableReason
+// above. Shared by `pickLiveryForJourney` (livery-map-badges.ts, the
+// map's own random per-journey picker) and route branding (T153,
+// confirmed 2026-11-07: "in player made routes... an option in the
+// route to set a certain livery" — the player's own choice there is
+// still subject to "locks still apply," the same rules as everywhere
+// else, not a free, unrestricted pick). Extracted here once rather than
+// duplicated in both places (CLAUDE.md: "build it once").
+export function liveryEligibleForRoute(
+  liveryName: string,
+  route: { routeType: RouteType; number: string },
+  depotGroup: { name: string; region: string } | undefined,
+): boolean {
+  if (isLongDistanceLiveryName(liveryName)) {
+    if (route.routeType !== "long_distance") return false;
+    if (depotGroup && longDistanceLocationLockReason(liveryName, depotGroup)) return false;
+    return true;
+  }
+  if (isLocalOnlyLiveryName(liveryName) && route.routeType === "long_distance") return false;
+  if (isSightseeingLiveryName(liveryName)) return route.routeType === "sightseeing";
+  if (route.routeType === "sightseeing") return false;
+  if (liverySpecificRouteReason(liveryName, route)) return false;
+  const category = routeTypeCategoryFor(route.routeType);
+  if (category && liveryRouteTypeReason(liveryName, category)) return false;
+  if (depotGroup) {
+    const restriction = liveryRestrictionForArea(depotGroup.name);
+    if (restriction && !restriction.accepted.includes(liveryName)) return false;
+  }
+  return true;
 }
 
 // A livery capped at a fixed number of vehicles ever, company-wide —

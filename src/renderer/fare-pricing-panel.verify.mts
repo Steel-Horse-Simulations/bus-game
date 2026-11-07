@@ -58,6 +58,8 @@ function route(routeType: RouteType, depotGroupId = 1): Route {
     segments: [],
     routeType,
     isMinorVariation: false,
+    assignedLiveryId: null,
+    useBrandedColour: false,
   };
 }
 

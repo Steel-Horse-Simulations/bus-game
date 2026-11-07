@@ -18,6 +18,7 @@ import { stopsPanelState, busStationsState } from "./stops-layer";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
 import { startTerminusColour } from "./start-terminus-colours";
+import { liveryEligibleForRoute } from "./livery-seed-data.mts";
 import {
   composeVariation,
   resolveRoutePoints,
@@ -522,6 +523,9 @@ export async function mountRouteDrawTool(
     nameInput.value = "";
     colourInput.value = DEFAULT_ROUTE_COLOUR;
     map.setPaintProperty("route-draft-line", "line-color", DEFAULT_ROUTE_COLOUR);
+    selectedBrandingLiveryId = null;
+    useBrandedColour = false;
+    refreshBrandingOptions();
     saveStatusEl.hidden = true;
     updateHeader();
     refresh();
@@ -692,8 +696,70 @@ export async function mountRouteDrawTool(
   let depotGroups: DepotGroup[] = [];
   let selectedDepotGroupId: number | null = null;
 
+  // Route branding (T153, confirmed 2026-11-07): "in player made routes
+  // with specific branding there should be an option in the route to
+  // set a certain livery or variation of a livery if it is just route
+  // colour." "Locks still apply" — only a livery `liveryEligibleForRoute`
+  // actually allows for this route's own depot group/type is offered, so
+  // this can't be used to sneak past the normal nation/area/vehicle-type
+  // rules. The actual mask-tinted badge render doesn't exist yet
+  // (OPERATIONS.md §4) — this is the data side only, confirmed as the
+  // deliberate first step; the checkbox just records intent for later.
+  let liveries: Livery[] = [];
+  let selectedBrandingLiveryId: number | null = null;
+  let useBrandedColour = false;
+  const brandingContainer = document.createElement("div");
+  brandingContainer.style.display = "flex";
+  brandingContainer.style.flexDirection = "column";
+  brandingContainer.style.gap = "4px";
+
+  const refreshBrandingOptions = (): void => {
+    brandingContainer.innerHTML = "";
+    const group = depotGroups.find((g) => g.id === selectedDepotGroupId);
+    const number = numberInput.value.trim() || "?";
+    const eligible = liveries.filter((l) => liveryEligibleForRoute(l.name, { routeType: draftRouteType, number }, group));
+    if (!eligible.some((l) => l.id === selectedBrandingLiveryId)) {
+      selectedBrandingLiveryId = eligible[0]?.id ?? null;
+    }
+    const brandingLabel = document.createElement("div");
+    brandingLabel.className = "label-muted";
+    brandingLabel.textContent = "Branding (optional)";
+    brandingContainer.appendChild(brandingLabel);
+    if (eligible.length === 0) {
+      const none = document.createElement("div");
+      none.className = "label-muted";
+      none.style.fontSize = "11px";
+      none.textContent = "No livery is eligible for this route's depot group/type yet.";
+      brandingContainer.appendChild(none);
+    } else {
+      const noneOption = "(none)";
+      const selectedLivery = eligible.find((l) => l.id === selectedBrandingLiveryId);
+      const brandingDropdown = createDropdown([noneOption, ...eligible.map((l) => l.name)], selectedLivery?.name ?? noneOption, (name) => {
+        selectedBrandingLiveryId = name === noneOption ? null : (eligible.find((l) => l.name === name)?.id ?? null);
+      });
+      brandingContainer.appendChild(brandingDropdown.el);
+
+      const brandedColourLabel = document.createElement("label");
+      brandedColourLabel.style.display = "flex";
+      brandedColourLabel.style.alignItems = "center";
+      brandedColourLabel.style.gap = "6px";
+      brandedColourLabel.style.fontSize = "11px";
+      const brandedColourCheckbox = document.createElement("input");
+      brandedColourCheckbox.type = "checkbox";
+      brandedColourCheckbox.checked = useBrandedColour;
+      brandedColourCheckbox.addEventListener("change", () => {
+        useBrandedColour = brandedColourCheckbox.checked;
+      });
+      brandedColourLabel.appendChild(brandedColourCheckbox);
+      brandedColourLabel.appendChild(
+        document.createTextNode("Use this route's own colour (tinted livery) instead of the default"),
+      );
+      brandingContainer.appendChild(brandedColourLabel);
+    }
+  };
+
   const refreshDepotGroupOptions = async () => {
-    depotGroups = await window.depotGroups.list();
+    [depotGroups, liveries] = await Promise.all([window.depotGroups.list(), window.liveries.list()]);
     if (selectedDepotGroupId === null || !depotGroups.some((g) => g.id === selectedDepotGroupId)) {
       selectedDepotGroupId = depotGroups[0]?.id ?? null;
     }
@@ -711,9 +777,11 @@ export async function mountRouteDrawTool(
       selected.name,
       (value) => {
         selectedDepotGroupId = depotGroups.find((g) => g.name === value)?.id ?? null;
+        refreshBrandingOptions();
       },
     );
     depotGroupContainer.appendChild(dropdown.el);
+    refreshBrandingOptions();
   };
 
   const saveButton = document.createElement("button");
@@ -871,6 +939,11 @@ export async function mountRouteDrawTool(
       saveStatusEl.textContent = `Saved route ${number} to "${group.name}" (drawn direction is ${orientation})${directionNote}.`;
     }
 
+    // Route branding (T153) — a separate setter, not part of create/
+    // update above, same "dedicated setter for a less-central field"
+    // pattern used elsewhere in this project.
+    await window.routes.setBranding(savedRouteId, selectedBrandingLiveryId, useBrandedColour);
+
     // Combining variations (DESIGN.md §6): this save may have changed a
     // diversion other variations reuse, or (if this route IS a trunk) the
     // shared points a composed variation builds on — refresh every one of
@@ -894,6 +967,7 @@ export async function mountRouteDrawTool(
   saveSection.appendChild(numberRow);
   saveSection.appendChild(nameInput);
   saveSection.appendChild(depotGroupContainer);
+  saveSection.appendChild(brandingContainer);
   saveSection.appendChild(saveButton);
   saveSection.appendChild(saveStatusEl);
   body.appendChild(saveSection);
@@ -1762,6 +1836,9 @@ export async function mountRouteDrawTool(
       colourInput.value = route.colour;
       map.setPaintProperty("route-draft-line", "line-color", route.colour);
       selectedDepotGroupId = route.depotGroupId;
+      selectedBrandingLiveryId = route.assignedLiveryId;
+      useBrandedColour = route.useBrandedColour;
+      refreshBrandingOptions();
       rebuildRoute();
       refresh();
       renderVariationSection();
@@ -1789,6 +1866,11 @@ export async function mountRouteDrawTool(
       colourInput.value = parent.colour;
       map.setPaintProperty("route-draft-line", "line-color", parent.colour);
       selectedDepotGroupId = parent.depotGroupId;
+      // A variation inherits its parent's branding by default (same
+      // operator, same look) — same precedent as the colour line above.
+      selectedBrandingLiveryId = parent.assignedLiveryId;
+      useBrandedColour = parent.useBrandedColour;
+      refreshBrandingOptions();
       // The next unused letter among this parent's existing variations
       // (A, B, C...) — a starting suggestion the player can override in
       // either the number field or the letter field, independently.

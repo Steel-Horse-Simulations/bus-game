@@ -28,6 +28,7 @@ import {
   refreshComposedRoutePoints,
   deleteRoute,
   setRoutePickupDropoffOverride,
+  setRouteBranding,
   type DayType,
   type TimingPoint,
   type TimeBand,
@@ -376,6 +377,9 @@ function registerRouteHandlers(): void {
     (_e, routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | "skip" | null) =>
       setRoutePickupDropoffOverride(save, routeId, pointIndex, value),
   );
+  ipcMain.handle("routes:setBranding", (_e, routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean) =>
+    setRouteBranding(save, routeId, assignedLiveryId, useBrandedColour),
+  );
 }
 
 // Route timetables (DESIGN.md §7) — see electron/db.mts for what's built so
@@ -542,6 +546,7 @@ function registerBasketAndOrderHandlers(): void {
       paymentMethod: "buy_outright" | "lease" | "lease_to_own",
       isUsed: boolean,
       usedCondition: number | null,
+      boughtForRouteId: number | null,
     ) =>
       addBasketItem(
         save,
@@ -558,6 +563,7 @@ function registerBasketAndOrderHandlers(): void {
         paymentMethod,
         isUsed,
         usedCondition,
+        boughtForRouteId,
       ),
   );
   ipcMain.handle("basket:list", () => listBasket(save));

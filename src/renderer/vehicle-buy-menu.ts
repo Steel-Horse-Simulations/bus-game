@@ -74,14 +74,18 @@ export function mountVehicleBuyMenu(): void {
   let ownedVehicles: Vehicle[] = [];
   let basketItems: BasketItem[] = [];
   let orders: VehicleOrder[] = [];
+  // Added 2026-11-07, T153 — "buying for a specific route" needs the
+  // real route list to populate its dropdown (filtered by depot group).
+  let routes: Route[] = [];
 
   async function fetchAll(): Promise<void> {
-    [depotGroups, depots, liveries, basketItems, orders] = await Promise.all([
+    [depotGroups, depots, liveries, basketItems, orders, routes] = await Promise.all([
       window.depotGroups.list(),
       window.depots.list(),
       window.liveries.list(),
       window.basket.list(),
       window.orders.list(),
+      window.routes.list(),
     ]);
     const perGroup = await Promise.all(depotGroups.map((g) => window.vehicles.listForDepotGroup(g.id)));
     ownedVehicles = perGroup.flat();
@@ -119,6 +123,7 @@ export function mountVehicleBuyMenu(): void {
         depots,
         liveries,
         ownedVehicles,
+        routes,
         onAddedToBasket: () => {
           configuringVehicle = null;
           activeTab = "basket";

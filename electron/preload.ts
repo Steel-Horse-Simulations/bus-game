@@ -169,6 +169,8 @@ contextBridge.exposeInMainWorld("routes", {
     value: "pickup_only" | "setdown_only" | "skip" | null,
   ) =>
     ipcRenderer.invoke("routes:setPickupDropoffOverride", routeId, pointIndex, value) as Promise<void>,
+  setBranding: (routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean) =>
+    ipcRenderer.invoke("routes:setBranding", routeId, assignedLiveryId, useBrandedColour) as Promise<void>,
 });
 
 // Shared long-distance sections (live design discussion, 2026-10-31) — see
@@ -390,6 +392,7 @@ contextBridge.exposeInMainWorld("basket", {
     paymentMethod: "buy_outright" | "lease" | "lease_to_own",
     isUsed: boolean,
     usedCondition: number | null,
+    boughtForRouteId: number | null = null,
   ) =>
     ipcRenderer.invoke(
       "basket:add",
@@ -406,6 +409,7 @@ contextBridge.exposeInMainWorld("basket", {
       paymentMethod,
       isUsed,
       usedCondition,
+      boughtForRouteId,
     ) as Promise<BasketItem>,
   list: () => ipcRenderer.invoke("basket:list") as Promise<BasketItem[]>,
   setQuantity: (basketItemId: number, quantity: number) => ipcRenderer.invoke("basket:setQuantity", basketItemId, quantity) as Promise<void>,

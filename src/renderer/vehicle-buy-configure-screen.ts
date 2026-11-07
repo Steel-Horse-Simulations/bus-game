@@ -35,6 +35,11 @@ interface ConfigureContext {
   // "undefined means not checked" convention liveryUnavailableReason
   // already uses for depotGroup.
   ownedVehicles?: { liveryId: number | null }[];
+  // Every route in the save (T153, confirmed 2026-11-07) — "buying for
+  // a specific route" filters this by the selected depot GROUP (not
+  // depot specifically, your own call when asked) to populate its
+  // dropdown.
+  routes: Route[];
   onAddedToBasket: () => void;
   onBack: () => void;
 }
@@ -127,9 +132,18 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
   let selectedDepotId: number | null = null;
   let quantity = 1;
   let paymentMethod: PaymentMethod = "buy_outright";
+  // "Buying for a specific route" (T153, confirmed 2026-11-07) — null
+  // means the tickbox is unticked. Recorded on the vehicle for
+  // reference only, but ALSO the only way a specific-route-locked
+  // livery (ScotRail etc.) ever becomes selectable at all.
+  let boughtForRouteId: number | null = null;
 
   function currentDepotGroup(): DepotGroup | undefined {
     return ctx.depotGroups.find((g) => g.id === selectedDepotGroupId);
+  }
+
+  function routesInSelectedDepotGroup(): Route[] {
+    return ctx.routes.filter((r) => r.depotGroupId === selectedDepotGroupId);
   }
 
   function liveryRestriction(): { accepted: string[]; preferred: string } | null {
@@ -144,7 +158,15 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
 
   function liveryLockReason(name: string): string | null {
     const livery = ctx.liveries.find((l) => l.name === name);
-    return liveryUnavailableReason(name, vehicle, currentDepotGroup(), livery ? currentVehicleCountForLivery(livery.id) : undefined);
+    const route = boughtForRouteId === null ? undefined : ctx.routes.find((r) => r.id === boughtForRouteId);
+    return liveryUnavailableReason(
+      name,
+      vehicle,
+      currentDepotGroup(),
+      livery ? currentVehicleCountForLivery(livery.id) : undefined,
+      selectedPower,
+      route,
+    );
   }
 
   function liveryIsAccepted(name: string): boolean {
@@ -302,6 +324,55 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     localOnlyNote.textContent = "National Express Local is local-routes only (not enforced yet at purchase time).";
     col1.appendChild(localOnlyNote);
 
+    // "Buying for a specific route" (T153, confirmed 2026-11-07) — the
+    // only way a specific-route-locked livery (ScotRail for Route 398,
+    // say) ever becomes selectable at all. Recorded on the vehicle
+    // afterward for reference only (boughtForRouteId), nothing enforces
+    // it beyond this picker. Routes filtered by depot GROUP only (your
+    // own call — routes don't store a specific depot today).
+    const routeSection = document.createElement("div");
+    routeSection.style.marginTop = "10px";
+    const routeCheckboxLabel = document.createElement("label");
+    routeCheckboxLabel.style.display = "flex";
+    routeCheckboxLabel.style.alignItems = "center";
+    routeCheckboxLabel.style.gap = "6px";
+    routeCheckboxLabel.style.fontSize = "12px";
+    routeCheckboxLabel.style.cursor = "pointer";
+    const routeCheckbox = document.createElement("input");
+    routeCheckbox.type = "checkbox";
+    routeCheckbox.checked = boughtForRouteId !== null;
+    routeCheckboxLabel.appendChild(routeCheckbox);
+    routeCheckboxLabel.appendChild(document.createTextNode("Buying for a specific route"));
+    routeSection.appendChild(routeCheckboxLabel);
+
+    const routesHere = routesInSelectedDepotGroup();
+    if (routeCheckbox.checked) {
+      if (routesHere.length === 0) {
+        const noRoutes = document.createElement("div");
+        noRoutes.className = "label-muted";
+        noRoutes.style.fontSize = "11px";
+        noRoutes.style.marginTop = "4px";
+        noRoutes.textContent = "This depot group has no routes yet.";
+        routeSection.appendChild(noRoutes);
+      } else {
+        const routeLabel = (r: Route): string => (r.name ? `${r.number} - ${r.name}` : r.number);
+        const currentRoute = routesHere.find((r) => r.id === boughtForRouteId) ?? routesHere[0];
+        const routeDropdown = createDropdown(routesHere.map(routeLabel), routeLabel(currentRoute), (label) => {
+          boughtForRouteId = routesHere.find((r) => routeLabel(r) === label)?.id ?? null;
+          applyLiveryLockDefault();
+          rerenderCol1();
+        });
+        routeDropdown.el.style.marginTop = "4px";
+        routeSection.appendChild(routeDropdown.el);
+      }
+    }
+    routeCheckbox.addEventListener("change", () => {
+      boughtForRouteId = routeCheckbox.checked ? (routesInSelectedDepotGroup()[0]?.id ?? null) : null;
+      applyLiveryLockDefault();
+      rerenderCol1();
+    });
+    col1.appendChild(routeSection);
+
     const strip = document.createElement("div");
     strip.style.display = "flex";
     strip.style.flexWrap = "wrap";
@@ -357,6 +428,13 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
             selectedPower = found.powerType;
             selectedLength = lengthsForPower(vehicle, selectedPower)[0];
             selectedEnergyOptionIndex = 0;
+            // Confirmed 2026-11-07: ScotRail's own livery is locked to
+            // electric single-deckers specifically, the real power type,
+            // not just a model capable of it — so changing power can
+            // reveal or hide it, same as a depot-group change already
+            // reveals/hides area-locked liveries.
+            applyLiveryLockDefault();
+            rerenderCol1();
             rerenderCol2();
             rerenderCol3();
             renderPaymentSection();
@@ -558,6 +636,10 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       currentDepotGroup()?.name ?? ctx.depotGroups[0].name,
       (name) => {
         selectedDepotGroupId = ctx.depotGroups.find((g) => g.name === name)?.id ?? null;
+        // A route belongs to one depot group — switching group can leave
+        // boughtForRouteId pointing at a route that's no longer in the
+        // newly-selected group's own list.
+        if (!routesInSelectedDepotGroup().some((r) => r.id === boughtForRouteId)) boughtForRouteId = null;
         applyLiveryLockDefault();
         rerenderCol1();
         rerenderCol3();
@@ -692,6 +774,7 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
           paymentMethod,
           false,
           null,
+          boughtForRouteId,
         );
         ctx.onAddedToBasket();
       } finally {
