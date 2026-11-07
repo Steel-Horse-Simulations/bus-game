@@ -28,6 +28,13 @@ interface ConfigureContext {
   depotGroups: DepotGroup[];
   depots: Depot[];
   liveries: Livery[];
+  // Every vehicle the company already owns, across every depot group —
+  // added 2026-11-07 for Lothian Girraffe's own 1-vehicle-ever cap
+  // (liveryCapReason, livery-seed-data.mts). Optional so a caller that
+  // genuinely has no such list yet just skips the cap check, same
+  // "undefined means not checked" convention liveryUnavailableReason
+  // already uses for depotGroup.
+  ownedVehicles?: { liveryId: number | null }[];
   onAddedToBasket: () => void;
   onBack: () => void;
 }
@@ -130,8 +137,14 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     return group ? liveryRestrictionForArea(group.name) : null;
   }
 
+  function currentVehicleCountForLivery(liveryId: number): number | undefined {
+    if (!ctx.ownedVehicles) return undefined;
+    return ctx.ownedVehicles.filter((v) => v.liveryId === liveryId).length;
+  }
+
   function liveryLockReason(name: string): string | null {
-    return liveryUnavailableReason(name, vehicle, currentDepotGroup());
+    const livery = ctx.liveries.find((l) => l.name === name);
+    return liveryUnavailableReason(name, vehicle, currentDepotGroup(), livery ? currentVehicleCountForLivery(livery.id) : undefined);
   }
 
   function liveryIsAccepted(name: string): boolean {

@@ -237,6 +237,116 @@ export function isSightseeingLiveryName(name: string): boolean {
   return name === "Sightseeing" || name.startsWith("Sightseeing ");
 }
 
+// General route-type lock (DESIGN.md/OPEN-ITEMS T152), confirmed per
+// vehicle and per livery 2026-11-07 through direct multiple-choice
+// questions — "adding a lock to stop the wrong livery being used on the
+// wrong routes, also to stop long distance liverys being added to the
+// wrong vehicles." Three categories (a 4th, "Sightseeing," is deliberately
+// NOT part of this — it's its own separate, closed, hard lock above,
+// since the vehicle/livery pairing there is 1:1 and exhaustive already).
+export type RouteTypeCategory = "long_distance" | "airport" | "local_night";
+
+// Which route types each vehicle MODEL is suited for. The 2 sightseeing
+// open-top models are deliberately absent — SIGHTSEEING_VEHICLE_CATEGORY
+// above already fully governs them.
+export const VEHICLE_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
+  "adl-enviro400": ["local_night", "airport"],
+  "adl-enviro400-xlb": ["local_night", "airport"],
+  "wrightbus-streetdeck": ["local_night", "airport"],
+  "adl-enviro200": ["local_night"],
+  "volvo-7900": ["local_night", "airport"],
+  "mcv-evora": ["local_night"],
+  "wrightbus-gb-kite": ["local_night"],
+  "yutong-e10-e12": ["local_night", "airport"],
+  "evm-cityline": ["local_night"],
+  "volvo-9700": ["airport", "long_distance"],
+  "volvo-9700dd": ["airport", "long_distance"],
+  "yutong-coach": ["long_distance", "airport"], // covers both real T12E/T15E lengths, one catalogue entry
+};
+
+// Which route types each GENERAL livery is valid for — excludes every
+// livery with its own separate, more specific mechanism instead: the 2
+// sightseeing liveries (isSightseeingLiveryName), the 4 training-only
+// liveries and Lothian Coaches' private-hire-only case (none listed here
+// at all — "not part of this general system" is the correct reading of a
+// missing entry, not "allowed everywhere"), and the 8 liveries locked to
+// one specific named route (LIVERY_SPECIFIC_ROUTE below, checked instead
+// of a general category).
+export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
+  Lothian: ["local_night"],
+  Stagecoach: ["local_night"],
+  "Borders Buses": ["local_night"],
+  "D&E": ["local_night"],
+  "East Coast Buses": ["local_night"],
+  "Explore Dundee": ["local_night"],
+  "First Bus": ["local_night"],
+  "Hebridean Transport": ["local_night"],
+  "Islay Coaches": ["local_night"],
+  "Lochs Motor Transport": ["local_night"],
+  "Lothian Country": ["local_night"],
+  "Midland Bluebird": ["local_night"],
+  "North Uist Transport": ["local_night"],
+  "Orkney Council": ["local_night"],
+  Rapsons: ["local_night"],
+  "Shetland Transport": ["local_night"],
+  "Shiel Buses": ["local_night"],
+  SPT: ["local_night"],
+  "Stagecoach Dark": ["local_night"],
+  "Stagecoach Electric": ["local_night"],
+  "Stagecoach Jet": ["airport"],
+  "West Coast Motors": ["local_night"],
+  "Highland Council": ["local_night"],
+  Citylink: ["long_distance"],
+  Ember: ["long_distance"],
+  MegaBus: ["long_distance"],
+  "National Express": ["long_distance"],
+  "National Express Local": ["local_night"],
+  "Citylink/West Coast Motors": ["long_distance"],
+};
+
+// Liveries locked to one specific named route rather than a general
+// category, confirmed 2026-11-07 — matched against a real route's own
+// `number`. Four of these (Air, Express 100, SkyLink, Oxford Tube) are
+// the player's own words — "it will be [the contract] once added" /
+// "doesn't exist in the game yet" — so there's genuinely nothing to match
+// yet; left in so the lock activates the moment such a route exists,
+// rather than needing this file touched again. ScotRail's own vehicle
+// category isn't separately restricted (no entry in VEHICLE_ROUTE_TYPES
+// overlap needed) since it's a rail-interchange shuttle, not physically
+// different from ordinary local work.
+export const LIVERY_SPECIFIC_ROUTE: Record<string, string> = {
+  "Airlink 100": "Airlink 100",
+  "Lothian Girraffe": "Airlink 100",
+  "Express 500": "500",
+  ScotRail: "398",
+  Air: "Air",
+  "Express 100": "Express 100",
+  SkyLink: "SkyLink",
+  "Oxford Tube": "Oxford Tube",
+};
+
+export function liveryRouteTypeReason(liveryName: string, routeType: RouteTypeCategory): string | null {
+  const allowed = LIVERY_ROUTE_TYPES[liveryName];
+  if (!allowed) return null; // not part of this general system — handled elsewhere, or genuinely unrestricted
+  return allowed.includes(routeType) ? null : `${liveryName} isn't used on ${routeType.replace("_", "/")} routes.`;
+}
+
+export function liverySpecificRouteReason(liveryName: string, route: { number: string }): string | null {
+  const requiredRoute = LIVERY_SPECIFIC_ROUTE[liveryName];
+  if (!requiredRoute) return null;
+  return route.number === requiredRoute ? null : `${liveryName} is locked to route ${requiredRoute}.`;
+}
+
+function vehicleRouteTypeReason(liveryName: string, vehicleId: string): string | null {
+  const liveryTypes = LIVERY_ROUTE_TYPES[liveryName];
+  if (!liveryTypes) return null;
+  const vehicleTypes = VEHICLE_ROUTE_TYPES[vehicleId];
+  if (!vehicleTypes) return null; // a vehicle model not in this map (the 2 sightseeing ones) has its own hard lock already
+  return liveryTypes.some((t) => vehicleTypes.includes(t))
+    ? null
+    : `${liveryName} (${liveryTypes.join("/")}) doesn't match this vehicle's own route types (${vehicleTypes.join("/")}).`;
+}
+
 // Returns why a livery can't be used on this vehicle model, or null if it's
 // allowed. Checked separately from the area/nation locks above — a
 // long-distance livery is exempt from the area lock but still
@@ -254,21 +364,32 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express" || liveryName === "Citylink/West Coast Motors") {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
   }
+  const routeTypeReason = vehicleRouteTypeReason(liveryName, vehicle.id);
+  if (routeTypeReason) return routeTypeReason;
   return null;
 }
 
 // Combines every lock a livery can be subject to — vehicle type, nation
-// (long-distance liveries only), and area (everything else) — into the one
-// reason it can't be used right now, or null if it's allowed. `depotGroup`
-// is undefined when no depot group exists/is selected yet, in which case
-// only the vehicle lock applies.
+// (long-distance liveries only), area (everything else), and a fixed
+// vehicle-count cap (Lothian Girraffe only, see liveryCapReason) — into
+// the one reason it can't be used right now, or null if it's allowed.
+// `depotGroup` is undefined when no depot group exists/is selected yet, in
+// which case only the vehicle lock applies. `currentVehicleCount` is
+// undefined when the caller hasn't fetched the real save's own vehicle
+// list — the cap simply isn't checked then, same "only restrict what can
+// actually be checked" principle as the depotGroup-undefined case.
 export function liveryUnavailableReason(
   liveryName: string,
   vehicle: { id: string; category: string },
   depotGroup: { name: string; region: string } | undefined,
+  currentVehicleCount?: number,
 ): string | null {
   const vehicleReason = liveryVehicleLockReason(liveryName, vehicle);
   if (vehicleReason) return vehicleReason;
+  if (currentVehicleCount !== undefined) {
+    const capReason = liveryCapReason(liveryName, currentVehicleCount);
+    if (capReason) return capReason;
+  }
   if (!depotGroup) return null;
 
   if (isLongDistanceLiveryName(liveryName)) {
@@ -286,6 +407,27 @@ export function liveryUnavailableReason(
     return `${depotGroup.name} only accepts: ${restriction.accepted.join(", ")} (preferred: ${restriction.preferred})`;
   }
   return null;
+}
+
+// A livery capped at a fixed number of vehicles ever, company-wide —
+// confirmed 2026-11-07: "Lothian Girraffe, only 1 vehicle can have this
+// livery after that it is hidden from the menu" (it's also locked to the
+// Airlink 100 route specifically, same as the regular Airlink 100 livery
+// — not enforced anywhere yet, same honesty pattern as every other
+// route-specific lock, since no vehicle is assigned to a specific route
+// at purchase time). Genuinely different in kind from every lock above —
+// it depends on how many vehicles already exist with this livery in the
+// real save, not just static vehicle/depot metadata, so it's checked
+// separately via the optional parameter on liveryUnavailableReason below
+// rather than folded into liveryVehicleLockReason.
+export const LIVERY_MAX_VEHICLE_COUNT: Record<string, number> = {
+  "Lothian Girraffe": 1,
+};
+
+export function liveryCapReason(liveryName: string, currentVehicleCount: number): string | null {
+  const max = LIVERY_MAX_VEHICLE_COUNT[liveryName];
+  if (max === undefined) return null;
+  return currentVehicleCount >= max ? `Only ${max} vehicle${max === 1 ? "" : "s"} can ever carry ${liveryName}.` : null;
 }
 
 // Idempotent, matched by name — same pattern as dealer-reference-pins.ts's

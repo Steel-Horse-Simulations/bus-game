@@ -24,7 +24,20 @@ import {
   liveryRestrictionForArea,
   isLocalOnlyLiveryName,
   isSightseeingLiveryName,
+  liveryRouteTypeReason,
+  liverySpecificRouteReason,
+  type RouteTypeCategory,
 } from "./livery-seed-data.mts";
+
+// Maps a real route's own routeType onto the 3-category system
+// VEHICLE_ROUTE_TYPES/LIVERY_ROUTE_TYPES use (livery-seed-data.mts) —
+// null for "sightseeing" since that's handled entirely separately above.
+function routeTypeCategoryFor(routeType: Route["routeType"]): RouteTypeCategory | null {
+  if (routeType === "ordinary" || routeType === "night") return "local_night";
+  if (routeType === "airport_express") return "airport";
+  if (routeType === "long_distance") return "long_distance";
+  return null;
+}
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -93,6 +106,12 @@ export function pickLiveryForJourney(
     if (isLocalOnlyLiveryName(l.name) && route.routeType === "long_distance") return false;
     if (isSightseeingLiveryName(l.name)) return route.routeType === "sightseeing";
     if (route.routeType === "sightseeing") return false;
+    // General route-type lock + specific-named-route lock (T152,
+    // confirmed 2026-11-07) — a no-op for every livery not in either map
+    // (training-only, private-hire-only, or genuinely unrestricted).
+    if (liverySpecificRouteReason(l.name, route)) return false;
+    const category = routeTypeCategoryFor(route.routeType);
+    if (category && liveryRouteTypeReason(l.name, category)) return false;
     if (depotGroup) {
       const restriction = liveryRestrictionForArea(depotGroup.name);
       if (restriction && !restriction.accepted.includes(l.name)) return false;

@@ -118,6 +118,7 @@ export function mountVehicleBuyMenu(): void {
         depotGroups,
         depots,
         liveries,
+        ownedVehicles,
         onAddedToBasket: () => {
           configuringVehicle = null;
           activeTab = "basket";
