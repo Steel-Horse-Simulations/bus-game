@@ -71,6 +71,18 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // nothing here implies a colour that hasn't actually been confirmed.
   // Replace with real sampled colours once a reference photo is supplied.
   "Oxford Tube": { primary: "#4b5563", secondary: "#e5e7eb" },
+
+  // Re-added 2026-11-07 (user request, "we now have England and Wales
+  // implemented") after being removed outright on 2026-10-18 — see the
+  // long-distance block below for the lock reasoning. Same placeholder
+  // pair it had the first time round, not re-sampled, since no real photo
+  // exists any more now than it did then.
+  "National Express": { primary: "#52525b", secondary: "#e4e4e7" },
+  // Added alongside it, same request — a distinct livery, not a re-use of
+  // National Express's own colours, so the two read as genuinely separate
+  // on screen; still a flagged neutral placeholder, no reference photo
+  // supplied.
+  "National Express Local": { primary: "#57534e", secondary: "#f5f5f4" },
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
@@ -117,10 +129,35 @@ export function liveryRestrictionForArea(depotGroupName: string): { accepted: st
 // "Can only run on long-distance services" is NOT enforced anywhere — no
 // system assigns a vehicle to a specific route/service at purchase time yet
 // (that's Phase 2 route-level work) — so this is a UI note only.
-export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "Ember", "MegaBus"];
+//
+// National Express re-added 2026-11-07 (user request, "we now have England
+// and Wales implemented... this can only be used on long distance
+// routes") — the exact same nation/vehicle-lock shape as MegaBus below
+// (England/Wales-only, coaches only), not a new mechanism.
+export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "Ember", "MegaBus", "National Express"];
 
 export function isLongDistanceLiveryName(name: string): boolean {
   return LONG_DISTANCE_LIVERY_NAMES.includes(name);
+}
+
+// The opposite restriction, added 2026-11-07 for the same request's second
+// half ("National Express Local as another livery that can only be used
+// on local routes"). Confirmed directly rather than assumed: nothing
+// stops a LOCAL livery being used on a long-distance route today either,
+// for the exact same reason the long-distance note above isn't enforced
+// — no system assigns a vehicle to a specific route at purchase time. So
+// this is a UI note only at Configure time, same honesty pattern as
+// above. It IS checked in `pickLiveryForJourney` (livery-map-badges.ts)
+// though, unlike the Configure-time note — that function already knows
+// the real route's own `routeType` when picking a plausible random
+// livery for a journey, so the exclusion is genuinely enforceable there,
+// not just a note. No nation or vehicle-type lock — unlike National
+// Express itself, this wasn't asked for, and no other local livery is
+// nation/vehicle-locked either.
+export const LOCAL_ONLY_LIVERY_NAMES = ["National Express Local"];
+
+export function isLocalOnlyLiveryName(name: string): boolean {
+  return LOCAL_ONLY_LIVERY_NAMES.includes(name);
 }
 
 export type Nation = "scotland" | "england-wales";
@@ -136,16 +173,16 @@ export function nationForRegion(region: string): Nation {
 }
 
 // Returns why a long-distance livery can't be used from a depot group in
-// this region, or null if it's allowed there. Only Citylink/Ember/MegaBus
-// are nation-locked — every other livery goes through the area-lock table
-// instead (liveryRestrictionForArea).
+// this region, or null if it's allowed there. Only Citylink/Ember/MegaBus/
+// National Express are nation-locked — every other livery goes through the
+// area-lock table instead (liveryRestrictionForArea).
 export function longDistanceNationLockReason(liveryName: string, depotGroupRegion: string): string | null {
   const nation = nationForRegion(depotGroupRegion);
   if ((liveryName === "Citylink" || liveryName === "Ember") && nation !== "scotland") {
     return `${liveryName} is a Scotland-only livery.`;
   }
-  if (liveryName === "MegaBus" && nation !== "england-wales") {
-    return "MegaBus is an England/Wales-only livery.";
+  if ((liveryName === "MegaBus" || liveryName === "National Express") && nation !== "england-wales") {
+    return `${liveryName} is an England/Wales-only livery.`;
   }
   return null;
 }
@@ -158,7 +195,7 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   if (liveryName === "Ember") {
     return vehicle.id === "yutong-coach" ? null : "Ember is locked to the Yutong coach only.";
   }
-  if (liveryName === "Citylink" || liveryName === "MegaBus") {
+  if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express") {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
   }
   return null;

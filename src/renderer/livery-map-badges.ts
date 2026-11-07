@@ -22,6 +22,7 @@ import {
   isLongDistanceLiveryName,
   longDistanceNationLockReason,
   liveryRestrictionForArea,
+  isLocalOnlyLiveryName,
 } from "./livery-seed-data.mts";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -66,8 +67,11 @@ function seededUnitInterval(seed: string): number {
 // nothing in the save qualifies (falls back to the plain route-coloured
 // circle). Filters out: liveries with no real badge art (only "Highland
 // Council" as of 2026-11-05, livery-seed-data.mts), long-distance
-// liveries on a non-long-distance route or outside their nation, and any
-// livery an area restriction doesn't accept.
+// liveries on a non-long-distance route or outside their nation, a
+// local-only livery on a long-distance route (added 2026-11-07 — unlike
+// the Configure screen, this function already knows the real route's own
+// `routeType`, so the exclusion is genuinely enforceable here, not just a
+// UI note), and any livery an area restriction doesn't accept.
 export function pickLiveryForJourney(
   route: Route,
   departureMinutes: number,
@@ -81,6 +85,7 @@ export function pickLiveryForJourney(
       if (depotGroup && longDistanceNationLockReason(l.name, depotGroup.region)) return false;
       return true;
     }
+    if (isLocalOnlyLiveryName(l.name) && route.routeType === "long_distance") return false;
     if (depotGroup) {
       const restriction = liveryRestrictionForArea(depotGroup.name);
       if (restriction && !restriction.accepted.includes(l.name)) return false;

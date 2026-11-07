@@ -271,9 +271,23 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       longDistanceNote.style.marginTop = "4px";
       longDistanceNote.textContent = nationForRegion(group.region) === "scotland"
         ? "Citylink and Ember are allowed in every Scottish depot but are long-distance only (not enforced yet). Citylink needs a coach; Ember needs the Yutong coach specifically."
-        : "MegaBus is allowed in every England/Wales depot but is long-distance only (not enforced yet). Needs a coach.";
+        : "MegaBus and National Express are allowed in every England/Wales depot but are long-distance only (not enforced yet). Both need a coach.";
       col1.appendChild(longDistanceNote);
     }
+
+    // Added 2026-11-07, user request — the opposite restriction: National
+    // Express Local is local-routes only. No nation/depot lock (unlike
+    // National Express itself), so this shows regardless of region —
+    // same "not enforced yet at purchase time" honesty as the note above,
+    // though it IS actually applied where it can be (the map's random
+    // livery picker, livery-map-badges.mts, already knows a route's own
+    // type).
+    const localOnlyNote = document.createElement("div");
+    localOnlyNote.style.fontSize = "11px";
+    localOnlyNote.style.color = "var(--text-muted)";
+    localOnlyNote.style.marginTop = "4px";
+    localOnlyNote.textContent = "National Express Local is local-routes only (not enforced yet at purchase time).";
+    col1.appendChild(localOnlyNote);
 
     const strip = document.createElement("div");
     strip.style.display = "flex";
