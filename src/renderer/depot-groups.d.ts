@@ -136,7 +136,7 @@ type DayType = "monday_friday" | "saturday" | "sunday";
 interface TimingPoint {
   pointIndex: number;
   legMinutes: number;
-  dwellSeconds: number;
+  dwellMinutes: number;
 }
 
 interface TimeBand {

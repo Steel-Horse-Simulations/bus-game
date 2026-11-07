@@ -766,7 +766,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
               );
               if (legMinutesInput.value !== "") {
                 const legMinutes = Math.max(0, Math.round(Number(legMinutesInput.value) || 0));
-                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellSeconds: 0 });
+                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellMinutes: 0 });
               }
               timetableEditorState.onTimingPointsEdited?.();
               void renderList();
@@ -803,14 +803,14 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
             // disappears the moment it holds a real value, "0" included).
             const dwellLabel = document.createElement("label");
             dwellLabel.className = "label-muted";
-            dwellLabel.textContent = "Dwell/layover before departing again (seconds, 0 if none):";
+            dwellLabel.textContent = "Dwell/layover before departing again (minutes, 0 if none):";
             controls.appendChild(dwellLabel);
             const dwellInput = document.createElement("input");
             dwellInput.className = "field";
             dwellInput.type = "number";
             dwellInput.min = "0";
             dwellInput.step = "1";
-            dwellInput.value = String(timingPoint?.dwellSeconds ?? 0);
+            dwellInput.value = String(timingPoint?.dwellMinutes ?? 0);
             dwellInput.disabled = timingPoint === null;
             controls.appendChild(dwellInput);
 
@@ -820,8 +820,8 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
               );
               if (tpCheckbox.checked) {
                 const legMinutes = Math.max(0, Math.round(Number(legMinutesInput.value) || 0));
-                const dwellSeconds = Math.max(0, Math.round(Number(dwellInput.value) || 0));
-                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellSeconds });
+                const dwellMinutes = Math.max(0, Math.round(Number(dwellInput.value) || 0));
+                timetableEditorState.timingPoints.push({ pointIndex: i, legMinutes, dwellMinutes });
               }
               timetableEditorState.onTimingPointsEdited?.();
               void renderList();

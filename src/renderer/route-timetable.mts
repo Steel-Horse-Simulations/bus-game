@@ -16,13 +16,15 @@ export const DAY_TYPES: readonly DayType[] = ["monday_friday", "saturday", "sund
 // times, not a "wait here" duration. The bus is held at a timing point
 // only as a side effect of the published time being longer than the
 // fastest possible running time; that padding is computed, never entered
-// directly. "dwellSeconds" is an optional layover (departure - arrival at
-// this same point, e.g. a bus station stand) — 0 for the common case where
-// a timing point is just passed through.
+// directly. "dwellMinutes" is an optional layover (departure - arrival at
+// this same point, e.g. a bus station stand), in whole minutes — 0 for the
+// common case where a timing point is just passed through. Whole minutes,
+// not seconds, confirmed 2026-11-07: "timetables run on minutes not
+// seconds," matching legMinutes right above it.
 export interface TimingPoint {
   pointIndex: number;
   legMinutes: number;
-  dwellSeconds: number;
+  dwellMinutes: number;
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -268,8 +270,8 @@ export function validateTimingPoints(
     if (!Number.isInteger(tp.legMinutes) || tp.legMinutes < 0) {
       return "A timing point's leg time must be a whole number of minutes, at least 0.";
     }
-    if (!Number.isFinite(tp.dwellSeconds) || tp.dwellSeconds < 0) {
-      return "A timing point's dwell (layover) can't be negative.";
+    if (!Number.isInteger(tp.dwellMinutes) || tp.dwellMinutes < 0) {
+      return "A timing point's dwell (layover) must be a whole number of minutes, at least 0.";
     }
   }
   return null;
@@ -356,7 +358,7 @@ export function computeOffsets(
 
     const arrival = anchorDeparture + targetSeconds;
     arrivalOffsetsSeconds[tp.pointIndex] = arrival;
-    departureOffsetsSeconds[tp.pointIndex] = arrival + tp.dwellSeconds;
+    departureOffsetsSeconds[tp.pointIndex] = arrival + tp.dwellMinutes * 60;
     estimated[tp.pointIndex] = false;
 
     anchorIndex = tp.pointIndex;

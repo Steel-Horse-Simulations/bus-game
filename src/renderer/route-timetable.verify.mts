@@ -57,39 +57,43 @@ assert(
 const stopStopWaypoint = [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "waypoint" as const }];
 assert(validateTimingPoints(stopStopWaypoint, []) === null, "no timing points is always valid");
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellSeconds: 0 }]) === null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: 0 }]) === null,
   "a timing point on a real stop is valid",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 2, legMinutes: 5, dwellSeconds: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 2, legMinutes: 5, dwellMinutes: 0 }]) !== null,
   "a timing point on a waypoint is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 5, legMinutes: 5, dwellSeconds: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 5, legMinutes: 5, dwellMinutes: 0 }]) !== null,
   "an out-of-range timing point index is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 0, legMinutes: 5, dwellSeconds: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 0, legMinutes: 5, dwellMinutes: 0 }]) !== null,
   "point 0 can't be flagged as a timing point — it's always the journey's own departure",
 );
 assert(
   validateTimingPoints(stopStopWaypoint, [
-    { pointIndex: 1, legMinutes: 5, dwellSeconds: 0 },
-    { pointIndex: 1, legMinutes: 8, dwellSeconds: 0 },
+    { pointIndex: 1, legMinutes: 5, dwellMinutes: 0 },
+    { pointIndex: 1, legMinutes: 8, dwellMinutes: 0 },
   ]) !== null,
   "the same stop flagged twice as a timing point is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: -1, dwellSeconds: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: -1, dwellMinutes: 0 }]) !== null,
   "a negative leg time is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 1.5, dwellSeconds: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 1.5, dwellMinutes: 0 }]) !== null,
   "a fractional leg time is rejected — published times are whole minutes",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellSeconds: -1 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: -1 }]) !== null,
   "a negative dwell is rejected",
+);
+assert(
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: 1.5 }]) !== null,
+  "a fractional dwell is rejected — timetables run on minutes, not seconds",
 );
 
 // --- computeOffsets ---
@@ -118,7 +122,7 @@ assert(
   const { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints } = computeOffsets(
     3,
     [100, 200],
-    [{ pointIndex: 1, legMinutes: 3, dwellSeconds: 0 }],
+    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 0 }],
   );
   assert(arrivalOffsetsSeconds[1] === 180, "arrival at the timing point matches its published leg time, not the natural running time");
   assert(departureOffsetsSeconds[1] === 180, "departure equals arrival when there's no dwell");
@@ -131,14 +135,15 @@ assert(
 }
 
 // A dwell (layover) makes departure later than arrival at that one point,
-// same as a bus station stand.
+// same as a bus station stand. dwellMinutes is whole minutes, converted to
+// seconds internally — a 1-minute dwell here, not 30 seconds.
 {
   const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsets(
     3,
     [100, 200],
-    [{ pointIndex: 1, legMinutes: 3, dwellSeconds: 30 }],
+    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 1 }],
   );
-  assert(arrivalOffsetsSeconds[1] === 180 && departureOffsetsSeconds[1] === 210, "a dwell adds to departure without moving arrival");
+  assert(arrivalOffsetsSeconds[1] === 180 && departureOffsetsSeconds[1] === 240, "a dwell adds to departure without moving arrival (180 + 60)");
 }
 
 // An intermediate stop between two timing points is estimated
@@ -153,7 +158,7 @@ assert(
   const { arrivalOffsetsSeconds, estimated } = computeOffsets(
     4,
     [100, 300, 100],
-    [{ pointIndex: 3, legMinutes: 10, dwellSeconds: 0 }],
+    [{ pointIndex: 3, legMinutes: 10, dwellMinutes: 0 }],
   );
   assert(arrivalOffsetsSeconds[1] === 120, "an intermediate stop's estimate reflects its own share of natural running time (120/600)");
   assert(arrivalOffsetsSeconds[2] === 480, "same for the next intermediate stop (480/600)");
@@ -168,7 +173,7 @@ assert(
   const { arrivalOffsetsSeconds, infeasibleTimingPoints } = computeOffsets(
     2,
     [200],
-    [{ pointIndex: 1, legMinutes: 1, dwellSeconds: 0 }], // 60s published, 200s natural
+    [{ pointIndex: 1, legMinutes: 1, dwellMinutes: 0 }], // 60s published, 200s natural
   );
   assert(arrivalOffsetsSeconds[1] === 200, "an infeasible timing point falls back to the fastest achievable time");
   assert(
@@ -189,7 +194,7 @@ assert(
   const { arrivalOffsetsSeconds, estimated } = computeOffsets(
     4,
     [100, 200, 50],
-    [{ pointIndex: 1, legMinutes: 3, dwellSeconds: 0 }],
+    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 0 }],
   );
   assert(arrivalOffsetsSeconds[2] === arrivalOffsetsSeconds[1] + 200, "the trailing leg after the last explicit timing point is unpadded natural running time");
   assert(estimated[2] === true, "a genuinely intermediate trailing stop (not the terminus) is still an estimate");

@@ -255,7 +255,7 @@ function timetable(
   // own computation — not an error, not silently misapplied to the wrong
   // point.
   const outboundIgnoringInboundTimingPoint = computeOffsetsForDirection(r, "outbound", legTimesSeconds, [
-    { pointIndex: 5, legMinutes: 99, dwellSeconds: 0 },
+    { pointIndex: 5, legMinutes: 99, dwellMinutes: 0 },
   ]);
   assert(
     JSON.stringify(outboundIgnoringInboundTimingPoint.arrivalOffsetsSeconds) === JSON.stringify(outbound.arrivalOffsetsSeconds),
