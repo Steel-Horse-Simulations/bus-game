@@ -62,9 +62,16 @@ export function buildMergedGridTable(
   tableWrap.style.display = "flex";
   tableWrap.style.padding = "12px 16px";
 
+  // "arr."/"dep." suffix for a row whose stop splits into separate
+  // arrival/departure times (DESIGN.md §7, confirmed 2026-11-07) — kept as
+  // plain text for width measurement (the italic styling below is purely
+  // visual and doesn't change the glyphs' own widths enough to matter at
+  // this font size).
+  const linePartSuffixes: Record<string, string> = { arrival: " arr.", departure: " dep." };
   const stopNames = grid.rows.map((row) => stopName(row.osmId));
+  const stopDisplayTexts = grid.rows.map((row, i) => stopNames[i] + (row.linePart ? linePartSuffixes[row.linePart] : ""));
   const CELL_PADDING_PX = 14; // 4px + 10px, or 2×7px — matches every cell's own padding below.
-  const stopColumnWidthPx = measureMaxTextWidthPx(stopNames) + CELL_PADDING_PX;
+  const stopColumnWidthPx = measureMaxTextWidthPx(stopDisplayTexts) + CELL_PADDING_PX;
   // HHMM is always exactly 4 digits, "-" always 1 character — one
   // measurement covers every possible cell value in this column.
   const timeColumnWidthPx = measureMaxTextWidthPx(["0000", "-"]) + CELL_PADDING_PX;
@@ -173,7 +180,15 @@ export function buildMergedGridTable(
     const rowBackground = rowIndex % 2 === 1 ? "var(--bg-accent)" : "var(--bg-surface-2)";
 
     const stopCell = document.createElement("div");
-    stopCell.textContent = stopNames[rowIndex];
+    stopCell.appendChild(document.createTextNode(stopNames[rowIndex]));
+    const linePart = row.linePart;
+    if (linePart) {
+      // Italic suffix so it visibly reads as "added by the grid," not part
+      // of the stop's own real name (confirmed 2026-11-07).
+      const suffixEl = document.createElement("i");
+      suffixEl.textContent = linePartSuffixes[linePart];
+      stopCell.appendChild(suffixEl);
+    }
     stopCell.style.height = `${ROW_HEIGHT_PX}px`;
     stopCell.style.lineHeight = `${ROW_HEIGHT_PX - 8}px`; // minus the 4px+4px vertical padding below.
     stopCell.style.backgroundColor = rowBackground;

@@ -19,6 +19,13 @@ export interface RouteTimetableGridRow {
   // but never appears on a passenger-facing timetable, so it's never a row
   // (DESIGN.md §7's grid is stop-shaped, not point-shaped).
   osmId: number;
+  // Set only when this point's real arrival and departure times differ (a
+  // timing point with a genuine dwell) — DESIGN.md §7 "Timing points with
+  // separate arrival and departure times," confirmed 2026-11-07: such a
+  // stop gets two grid rows ("arr."/"dep.") instead of being silently
+  // collapsed to departure-only like an ordinary stop. Undefined for every
+  // other row, which keeps exactly today's single-row behaviour.
+  linePart?: "arrival" | "departure";
 }
 
 export interface RouteTimetableGrid {
@@ -71,7 +78,16 @@ export function buildRouteTimetableGrid(
   );
   const rows: RouteTimetableGridRow[] = [];
   route.points.forEach((p, pointIndex) => {
-    if (p.kind === "stop" && p.osmId !== undefined) rows.push({ pointIndex, osmId: p.osmId });
+    if (p.kind !== "stop" || p.osmId === undefined) return;
+    const osmId = p.osmId;
+    // A genuine dwell (timing-point layover) splits into two rows; equal
+    // arrival/departure offsets (the ordinary case) stay a single row.
+    if (timetable.arrivalOffsetsSeconds[pointIndex] !== timetable.departureOffsetsSeconds[pointIndex]) {
+      rows.push({ pointIndex, osmId, linePart: "arrival" });
+      rows.push({ pointIndex, osmId, linePart: "departure" });
+    } else {
+      rows.push({ pointIndex, osmId });
+    }
   });
 
   let allGeneratedMinutes: number[] = [];
@@ -88,9 +104,12 @@ export function buildRouteTimetableGrid(
   const baseMinutes = options.includeExcluded ? allGeneratedMinutes : applyExcludedDepartures(allGeneratedMinutes, timetable.excludedDepartureMinutes);
   const departureMinutes = mergeCustomDepartures(baseMinutes, timetable.customDepartureMinutes);
   const journeys: (number | null)[][] = departureMinutes.map((d) =>
-    rows.map((row) =>
-      skippedIndexes.has(row.pointIndex) ? null : Math.round(d + timetable.departureOffsetsSeconds[row.pointIndex] / 60),
-    ),
+    rows.map((row) => {
+      if (skippedIndexes.has(row.pointIndex)) return null;
+      const offsetSeconds =
+        row.linePart === "arrival" ? timetable.arrivalOffsetsSeconds[row.pointIndex] : timetable.departureOffsetsSeconds[row.pointIndex];
+      return Math.round(d + offsetSeconds / 60);
+    }),
   );
   const excluded = departureMinutes.map((d) => excludedMinutes.has(d));
 
@@ -270,8 +289,8 @@ export function splitGridByDirection(route: Route, grid: RouteTimetableGrid): Ro
 // same merged row as the first visit (collapsing a loop's real start and
 // end into one row instead of two), and every route's own second visit
 // would collide on that same single row.
-export interface MergeStopSequencesResult {
-  merged: number[];
+export interface MergeStopSequencesResult<T = number> {
+  merged: T[];
   // One array per input sequence (same order/length as `sequences`,
   // including empty ones), giving the merged-row index for each of that
   // sequence's own elements in turn — how a caller places a route's own
@@ -281,7 +300,11 @@ export interface MergeStopSequencesResult {
   rowIndexInMerged: number[][];
 }
 
-export function mergeStopSequences(sequences: readonly (readonly number[])[]): MergeStopSequencesResult {
+// Generic over the element type (defaults to a plain osmId, every existing
+// caller's own usage) so buildMergedFamilyGrid below can merge on a richer
+// composite key (osmId + arrival/departure) instead, reusing this exact
+// walk rather than a second copy of it (CLAUDE.md: "build it once").
+export function mergeStopSequences<T>(sequences: readonly (readonly T[])[]): MergeStopSequencesResult<T> {
   const nonEmptyOrder = sequences.map((_, i) => i).filter((i) => sequences[i].length > 0);
   const rowIndexInMerged: number[][] = sequences.map(() => []);
   if (nonEmptyOrder.length === 0) return { merged: [], rowIndexInMerged };
@@ -289,7 +312,7 @@ export function mergeStopSequences(sequences: readonly (readonly number[])[]): M
   nonEmptyOrder.sort((a, b) => sequences[b].length - sequences[a].length);
   const [longestIndex, ...restIndexes] = nonEmptyOrder;
 
-  const merged: number[] = [...sequences[longestIndex]];
+  const merged: T[] = [...sequences[longestIndex]];
   rowIndexInMerged[longestIndex] = merged.map((_, i) => i);
 
   for (const seqIndex of restIndexes) {
@@ -361,7 +384,9 @@ export interface MergedGridColumn {
 }
 
 export interface MergedGrid {
-  rows: { osmId: number }[];
+  // linePart set only where some family member genuinely splits this
+  // physical stop into arrival/departure — see buildMergedFamilyGrid.
+  rows: { osmId: number; linePart?: "arrival" | "departure" }[];
   columns: MergedGridColumn[];
 }
 
@@ -372,15 +397,44 @@ function firstRealTimeMinutes(times: readonly (number | null)[]): number {
   return Infinity; // A column with no real times at all sorts last, not first.
 }
 
+// A merge key per row: an arrival row only ever matches another arrival row
+// at the same stop; a departure row and an ordinary (unsplit) row both key
+// the same way, since an unsplit stop's one time is conventionally "the
+// departure" already (today's existing behaviour) — so a member with no
+// timing-point split at a stop still lines up correctly against another
+// member that does split it there, landing on that split's departure row
+// rather than spawning a stray extra row of its own.
+function mergeKeyForRow(row: RouteTimetableGridRow): string {
+  return row.linePart === "arrival" ? `${row.osmId}:arr` : `${row.osmId}:dep`;
+}
+
 // Every family member's own journeys for one direction/day type, as
 // columns against one shared, merged stop list — the reference's own
 // "several related services on one page" shape (28/28A/27A interleaved
 // by real departure time, not grouped by route number first, matching
 // how a real departure board actually reads).
 export function buildMergedFamilyGrid(members: readonly MergedGridMember[]): MergedGrid {
-  const { merged: mergedOsmIds, rowIndexInMerged } = mergeStopSequences(
-    members.map((m) => m.grid.rows.map((r) => r.osmId)),
+  const { merged: mergedKeys, rowIndexInMerged } = mergeStopSequences(
+    members.map((m) => m.grid.rows.map(mergeKeyForRow)),
   );
+
+  // A ":dep" row only actually LABELS as "departure" where the same stop
+  // also has a sibling ":arr" row somewhere in the merged set — otherwise
+  // nobody in the family splits that stop, and it stays an ordinary,
+  // unlabelled single row exactly as it always has (confirmed 2026-11-07:
+  // "where the arrival and departure times are different" — only those
+  // stops get the two-line treatment, not every stop in the family).
+  const osmIdsWithArrival = new Set(
+    mergedKeys.filter((k) => k.endsWith(":arr")).map((k) => Number(k.slice(0, k.lastIndexOf(":")))),
+  );
+  const rows = mergedKeys.map((key) => {
+    const sep = key.lastIndexOf(":");
+    const osmId = Number(key.slice(0, sep));
+    const part = key.slice(sep + 1);
+    if (part === "arr") return { osmId, linePart: "arrival" as const };
+    if (osmIdsWithArrival.has(osmId)) return { osmId, linePart: "departure" as const };
+    return { osmId };
+  });
 
   const columns: MergedGridColumn[] = [];
   members.forEach((member, memberIndex) => {
@@ -390,7 +444,7 @@ export function buildMergedFamilyGrid(members: readonly MergedGridMember[]): Mer
     // would collapse onto just one of them (see mergeStopSequences).
     const mergedRowForLocalRow = rowIndexInMerged[memberIndex];
     member.grid.journeys.forEach((journey, journeyIndex) => {
-      const times = new Array<number | null>(mergedOsmIds.length).fill(null);
+      const times = new Array<number | null>(rows.length).fill(null);
       mergedRowForLocalRow.forEach((mergedRow, localIndex) => {
         times[mergedRow] = journey[localIndex];
       });
@@ -407,5 +461,5 @@ export function buildMergedFamilyGrid(members: readonly MergedGridMember[]): Mer
   });
   columns.sort((a, b) => firstRealTimeMinutes(a.times) - firstRealTimeMinutes(b.times));
 
-  return { rows: mergedOsmIds.map((osmId) => ({ osmId })), columns };
+  return { rows, columns };
 }

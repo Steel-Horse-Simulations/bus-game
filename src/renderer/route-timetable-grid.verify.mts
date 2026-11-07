@@ -446,4 +446,98 @@ function timetable(
   );
 }
 
+// buildRouteTimetableGrid — a real timing-point dwell splits into two
+// "arr."/"dep." rows; an ordinary stop (arrival === departure) stays one
+// row, confirmed 2026-11-07.
+{
+  const r = route([
+    { kind: "stop", osmId: 1 },
+    { kind: "stop", osmId: 2 }, // the timing point, with a 5-minute dwell
+    { kind: "stop", osmId: 3 },
+  ]);
+  const tt: RouteTimetable = {
+    id: 1,
+    routeId: 1,
+    dayType: "monday_friday",
+    direction: "both",
+    timeBands: [{ startMinutes: 480, endMinutes: 480, intervalMinutes: 30 }],
+    timingPoints: [],
+    arrivalOffsetsSeconds: [0, 600, 900], // stop 2 arrives at +10 min
+    departureOffsetsSeconds: [0, 900, 900], // stop 2 departs at +15 min (5-min dwell)
+    excludedDepartureMinutes: [],
+    customDepartureMinutes: [],
+  };
+  const grid = buildRouteTimetableGrid(r, tt);
+  assert(grid.rows.length === 4, `the dwelling stop becomes 2 rows, the other two stay 1 each — expected 4 total rows, got ${grid.rows.length}`);
+  assert(grid.rows[0].linePart === undefined, "stop 1 (no dwell) has no linePart");
+  assert(grid.rows[1].linePart === "arrival" && grid.rows[1].osmId === 2, "stop 2's first row is its arrival row");
+  assert(grid.rows[2].linePart === "departure" && grid.rows[2].osmId === 2, "stop 2's second row is its departure row");
+  assert(grid.rows[3].linePart === undefined, "stop 3 (no dwell) has no linePart");
+  assert(grid.journeys[0][1] === 490, `stop 2's arrival should be 480+10=490, got ${grid.journeys[0][1]}`);
+  assert(grid.journeys[0][2] === 495, `stop 2's departure should be 480+15=495, got ${grid.journeys[0][2]}`);
+}
+
+// buildMergedFamilyGrid — a member that splits a stop into arrival/
+// departure merges correctly against a member that doesn't split it at
+// all: the non-splitting member's time lands on the departure row (today's
+// existing single-row convention), leaving the arrival row as a genuine
+// gap for it, and the arrival/departure labels only appear because a real
+// split exists SOMEWHERE in the family — confirmed 2026-11-07.
+{
+  const splitting: MergedGridMember = {
+    routeId: 1,
+    routeNumber: "50",
+    routeColour: "#111111",
+    grid: {
+      rows: [
+        { pointIndex: 0, osmId: 1 },
+        { pointIndex: 1, osmId: 2, linePart: "arrival" },
+        { pointIndex: 1, osmId: 2, linePart: "departure" },
+        { pointIndex: 2, osmId: 3 },
+      ],
+      journeys: [[600, 610, 615, 625]],
+      excluded: [false],
+      departureMinutes: [600],
+    },
+  };
+  const plain: MergedGridMember = {
+    routeId: 2,
+    routeNumber: "50A",
+    routeColour: "#222222",
+    grid: {
+      rows: [{ pointIndex: 0, osmId: 1 }, { pointIndex: 1, osmId: 2 }, { pointIndex: 2, osmId: 3 }],
+      journeys: [[605, 618, 630]],
+      excluded: [false],
+      departureMinutes: [605],
+    },
+  };
+  const merged = buildMergedFamilyGrid([splitting, plain]);
+  assert(
+    JSON.stringify(merged.rows.map((r) => [r.osmId, r.linePart ?? null])) ===
+      JSON.stringify([[1, null], [2, "arrival"], [2, "departure"], [3, null]]),
+    `expected rows [1,-],[2,arr],[2,dep],[3,-], got ${JSON.stringify(merged.rows.map((r) => [r.osmId, r.linePart ?? null]))}`,
+  );
+  const splitCol = merged.columns.find((c) => c.routeNumber === "50")!;
+  const plainCol = merged.columns.find((c) => c.routeNumber === "50A")!;
+  assert(splitCol.times[1] === 610 && splitCol.times[2] === 615, "the splitting member keeps its distinct arrival and departure times");
+  assert(plainCol.times[1] === null, "the non-splitting member has no time on the arrival row — a genuine gap, not invented");
+  assert(plainCol.times[2] === 618, "the non-splitting member's one real time lands on the departure row");
+}
+
+// buildMergedFamilyGrid — nobody in the family splits any stop: rows carry
+// no linePart at all, exactly today's pre-existing behaviour, unchanged.
+{
+  const a: MergedGridMember = {
+    routeId: 1,
+    routeNumber: "1",
+    routeColour: "#111111",
+    grid: { rows: [{ pointIndex: 0, osmId: 1 }, { pointIndex: 1, osmId: 2 }], journeys: [[600, 610]], excluded: [false], departureMinutes: [600] },
+  };
+  const merged = buildMergedFamilyGrid([a]);
+  assert(
+    merged.rows.every((r) => r.linePart === undefined),
+    "no split anywhere in the family means no row carries a linePart",
+  );
+}
+
 console.log("\nAll route-timetable-grid checks passed.");
