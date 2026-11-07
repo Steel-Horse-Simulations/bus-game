@@ -637,6 +637,17 @@ The actual mask-tinted badge render is still not built at all (the mask
 files themselves don't exist in code yet, confirmed earlier this session) —
 this is the data side only, the deliberate first step.
 
+**A second, separate branding region confirmed 2026-11-07 (T154)** —
+distinct from the route-colour region above, not overriding it: each depot
+group now has its own stored `colour` (`depot_groups.colour`, a plain colour
+picker in the Depot groups panel), earmarked for a **second** mask region on
+the **Sightseeing livery specifically**, for now — e.g. a shared Sightseeing
+base pattern with a different accent per depot group's own fleet. Scoped
+narrower than it might sound: not a general per-depot-group tint for every
+livery, just this one case, by the player's own choice. Same honesty
+pattern as above — no mask-tinting renderer exists in code at all yet, so
+this is the data side only.
+
 ### Repainting
 Repainting is deliberately expensive and slow.
 

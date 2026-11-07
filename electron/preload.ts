@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld("depotGroups", {
     ipcRenderer.invoke("depotGroups:setTicketMachineTier", id, tier) as Promise<void>,
   setTapOnTapOff: (id: number, hasTapOnTapOff: boolean) =>
     ipcRenderer.invoke("depotGroups:setTapOnTapOff", id, hasTapOnTapOff) as Promise<void>,
+  setColour: (id: number, colour: string) => ipcRenderer.invoke("depotGroups:setColour", id, colour) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("depotGroups:delete", id) as Promise<void>,
 });
 

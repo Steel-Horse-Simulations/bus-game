@@ -8,6 +8,10 @@ interface DepotGroup {
   mainBusStationOsmId: number | null;
   ticketMachineTier: TicketMachineTier;
   hasTapOnTapOff: boolean;
+  // T154, confirmed 2026-11-07 — earmarked for a second branding-mask
+  // region on the Sightseeing livery specifically, data side only; no
+  // mask-tinting renderer exists in code at all yet.
+  colour: string;
 }
 
 interface DepotGroupsApi {
@@ -18,6 +22,7 @@ interface DepotGroupsApi {
   setMainBusStation(id: number, osmId: number | null): Promise<void>;
   setTicketMachineTier(id: number, tier: TicketMachineTier): Promise<void>;
   setTapOnTapOff(id: number, hasTapOnTapOff: boolean): Promise<void>;
+  setColour(id: number, colour: string): Promise<void>;
   delete(id: number): Promise<void>;
 }
 

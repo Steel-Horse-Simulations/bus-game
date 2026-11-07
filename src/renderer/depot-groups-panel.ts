@@ -467,10 +467,33 @@ export function mountDepotGroupsPanel(): void {
       tapOnTapOffRow.appendChild(tapOnTapOffCheckbox);
       tapOnTapOffRow.appendChild(tapOnTapOffLabelEl);
 
+      // The group's own colour (T154, confirmed 2026-11-07) — earmarked
+      // for a second branding-mask region on the Sightseeing livery,
+      // data side only for now, same honesty pattern as route branding.
+      const colourRow = document.createElement("label");
+      colourRow.style.display = "flex";
+      colourRow.style.gap = "6px";
+      colourRow.style.alignItems = "center";
+      colourRow.style.cursor = "pointer";
+      const colourLabelEl = document.createElement("span");
+      colourLabelEl.className = "label-muted";
+      colourLabelEl.textContent = "Colour";
+      const colourInput = document.createElement("input");
+      colourInput.type = "color";
+      colourInput.value = group.colour;
+      colourInput.style.width = "40px";
+      colourInput.style.padding = "0";
+      colourInput.addEventListener("change", () => {
+        void window.depotGroups.setColour(group.id, colourInput.value);
+      });
+      colourRow.appendChild(colourLabelEl);
+      colourRow.appendChild(colourInput);
+
       wrapper.appendChild(row);
       wrapper.appendChild(stationRow);
       wrapper.appendChild(ticketRow);
       wrapper.appendChild(tapOnTapOffRow);
+      wrapper.appendChild(colourRow);
       wrapper.appendChild(groupError);
       list.appendChild(wrapper);
     }

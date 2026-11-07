@@ -10,7 +10,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 54;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -38,7 +38,14 @@ CREATE TABLE IF NOT EXISTS depot_groups (
   region TEXT NOT NULL,
   main_bus_station_osm_id INTEGER,
   ticket_machine_tier TEXT NOT NULL DEFAULT 'basic' CHECK (ticket_machine_tier IN ('basic', 'mid', 'advanced')),
-  has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0
+  has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0,
+  -- A depot group's own colour (T154, confirmed 2026-11-07) — earmarked
+  -- for a second branding-mask region on the Sightseeing livery
+  -- specifically (for now), separate from whatever region a route's own
+  -- colour (T153) tints. Data side only — no mask-tinting renderer exists
+  -- in code at all yet (confirmed, not assumed). Same default as routes'
+  -- own colour, for consistency.
+  colour TEXT NOT NULL DEFAULT '#3b82f6'
 );
 
 CREATE TABLE IF NOT EXISTS osm_overrides (
@@ -1441,6 +1448,13 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE vehicles ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
     db.exec("ALTER TABLE basket_items ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
     db.exec("ALTER TABLE vehicle_orders ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
+    db.exec("PRAGMA user_version = 53");
+  } else if (currentVersion === 53) {
+    // v53 -> v54: depot_groups gains its own colour (T154) — earmarked
+    // for a second branding-mask region on the Sightseeing livery, data
+    // side only. Plain ADD COLUMN, every existing depot group defaults
+    // to the same blue routes already default to.
+    db.exec("ALTER TABLE depot_groups ADD COLUMN colour TEXT NOT NULL DEFAULT '#3b82f6'");
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } else if (currentVersion !== SCHEMA_VERSION) {
       throw new Error(
@@ -1491,6 +1505,9 @@ export interface DepotGroup {
   mainBusStationOsmId: number | null;
   ticketMachineTier: TicketMachineTier;
   hasTapOnTapOff: boolean;
+  // T154, confirmed 2026-11-07 — earmarked for a second branding-mask
+  // region on the Sightseeing livery specifically, data side only.
+  colour: string;
 }
 
 interface DepotGroupRow {
@@ -1500,6 +1517,7 @@ interface DepotGroupRow {
   main_bus_station_osm_id: number | null;
   ticket_machine_tier: TicketMachineTier;
   has_tap_on_tap_off: number;
+  colour: string;
 }
 
 function fromRow(row: DepotGroupRow): DepotGroup {
@@ -1510,6 +1528,7 @@ function fromRow(row: DepotGroupRow): DepotGroup {
     mainBusStationOsmId: row.main_bus_station_osm_id === null ? null : Number(row.main_bus_station_osm_id),
     ticketMachineTier: row.ticket_machine_tier,
     hasTapOnTapOff: row.has_tap_on_tap_off !== 0,
+    colour: row.colour,
   };
 }
 
@@ -1524,14 +1543,26 @@ export function createDepotGroup(db: SaveDb, name: string, region: string): Depo
   );
   const startingTier = minimumStartingTier(existingTiers);
   const result = db.prepare("INSERT INTO depot_groups (name, region, ticket_machine_tier) VALUES (?, ?, ?)").run(name, region, startingTier);
-  return { id: Number(result.lastInsertRowid), name, region, mainBusStationOsmId: null, ticketMachineTier: startingTier, hasTapOnTapOff: false };
+  return {
+    id: Number(result.lastInsertRowid),
+    name,
+    region,
+    mainBusStationOsmId: null,
+    ticketMachineTier: startingTier,
+    hasTapOnTapOff: false,
+    colour: "#3b82f6",
+  };
 }
 
 export function listDepotGroups(db: SaveDb): DepotGroup[] {
   const rows = db
-    .prepare("SELECT id, name, region, main_bus_station_osm_id, ticket_machine_tier, has_tap_on_tap_off FROM depot_groups ORDER BY name")
+    .prepare("SELECT id, name, region, main_bus_station_osm_id, ticket_machine_tier, has_tap_on_tap_off, colour FROM depot_groups ORDER BY name")
     .all() as unknown as DepotGroupRow[];
   return rows.map(fromRow);
+}
+
+export function setDepotGroupColour(db: SaveDb, id: number, colour: string): void {
+  db.prepare("UPDATE depot_groups SET colour = ? WHERE id = ?").run(colour, id);
 }
 
 // A direct tier change on an EXISTING group — never ratchet-checked

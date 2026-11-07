@@ -21,6 +21,7 @@ import {
   setDepotGroupMainBusStation,
   setDepotGroupTicketMachineTier,
   setDepotGroupTapOnTapOff,
+  setDepotGroupColour,
   deleteDepotGroup,
   createRoute,
   listRoutes,
@@ -278,6 +279,7 @@ function registerDepotGroupHandlers(): void {
   ipcMain.handle("depotGroups:setTapOnTapOff", (_e, id: number, hasTapOnTapOff: boolean) =>
     setDepotGroupTapOnTapOff(save, id, hasTapOnTapOff),
   );
+  ipcMain.handle("depotGroups:setColour", (_e, id: number, colour: string) => setDepotGroupColour(save, id, colour));
   ipcMain.handle("depotGroups:delete", (_e, id: number) => deleteDepotGroup(save, id));
 }
 
