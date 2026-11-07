@@ -144,7 +144,12 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     source: "vehicles",
     filter: noBadgeFilter,
     paint: {
-      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 5, 17, 10],
+      // Extra low-zoom stop (2026-11-07 live report: "can the icons
+      // scale in size please as I zoom out") — the interpolate only
+      // used to start at zoom 10, clamping to that same size for
+      // anything zoomed out further, which on a whole-UK map reads as
+      // "not scaling at all" once zoomed out past it.
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 2, 10, 5, 17, 10],
       "circle-color": ["get", "colour"],
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 1.5,
@@ -157,7 +162,7 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     filter: noBadgeFilter,
     layout: {
       "text-field": ["get", "number"],
-      "text-size": 10,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 4, 6, 10, 10, 17, 14],
       "text-offset": [0, 1.1],
       "text-allow-overlap": true,
       "text-ignore-placement": true,
@@ -174,7 +179,8 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   // rotated to the bus's own heading. icon-size is tuned by eye for a
   // 256x112 source image (unlike the 16x16 oneway-arrow below, which
   // needs its own much larger multiplier) — a cosmetic value to refine
-  // once seen live, not a measured one.
+  // once seen live, not a measured one. Extra low-zoom stop added
+  // 2026-11-07, same reason as vehicles-circle above.
   map.addLayer({
     id: "vehicles-badge",
     type: "symbol",
@@ -182,7 +188,7 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     filter: hasBadgeFilter,
     layout: {
       "icon-image": ["get", "badgeImage"],
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.09, 17, 0.22],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 4, 0.04, 10, 0.09, 17, 0.22],
       "icon-rotate": ["get", "bearing"],
       "icon-rotation-alignment": "map",
       "icon-allow-overlap": true,
@@ -192,7 +198,19 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
   // The route number, drawn on the badge itself per the real placement
   // ratio resolved from a live reference (OPERATIONS.md §4, Q14,
   // 2026-11-05): centred in the badge's own clear middle band, rotating
-  // with it rather than staying map-upright.
+  // with the badge rather than staying map-upright.
+  //
+  // Live bug report (2026-11-07, screenshot): rotating the number with
+  // the raw bearing reads upside-down for any vehicle heading roughly
+  // south (90°-270°) — correct per the Q14 "rotates with it" decision in
+  // the literal sense, but unreadable in practice, which is the actual
+  // defect. Fixed by normalizing the rotation into the readable half:
+  // past 90°/270° it flips 180° rather than continuing to rotate past
+  // upside-down, so the digits always read left-to-right no matter which
+  // way the bus is actually facing. The badge image itself (icon-rotate
+  // below) is untouched and still shows the true heading exactly —
+  // only the number's own rotation is clamped, not the vehicle's
+  // direction indicator.
   map.addLayer({
     id: "vehicles-badge-number",
     type: "symbol",
@@ -200,8 +218,15 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     filter: hasBadgeFilter,
     layout: {
       "text-field": ["get", "number"],
-      "text-size": ["interpolate", ["linear"], ["zoom"], 10, 6, 17, 14],
-      "text-rotate": ["get", "bearing"],
+      // Bumped (live request, same report) — 6-14 read too small even
+      // at max zoom.
+      "text-size": ["interpolate", ["linear"], ["zoom"], 10, 8, 17, 18],
+      "text-rotate": [
+        "let",
+        "b",
+        ["%", ["+", ["%", ["get", "bearing"], 360], 360], 360],
+        ["case", ["all", [">", ["var", "b"], 90], ["<", ["var", "b"], 270]], ["-", ["var", "b"], 180], ["var", "b"]],
+      ],
       "text-rotation-alignment": "map",
       "text-allow-overlap": true,
       "text-ignore-placement": true,
@@ -218,7 +243,7 @@ export async function mountVehicleSimulation(map: maplibregl.Map, router: Router
     source: "vehicles",
     layout: {
       "icon-image": "oneway-arrow",
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.35, 17, 0.6],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 4, 0.15, 10, 0.35, 17, 0.6],
       "icon-rotate": ["get", "bearing"],
       "icon-rotation-alignment": "map",
       "icon-allow-overlap": true,
