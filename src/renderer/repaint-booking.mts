@@ -15,78 +15,13 @@
 // Real cost deduction and the driven trip there and back are deferred to
 // Phase 5 (finance) and Phase 6 (drivers) respectively.
 import { findVehicleModel } from "./vehicle-catalogue.mts";
-
-const DAYS_PER_WEEK = 7;
-
-// Matches game-clock.mts's own weekday convention (0 = Monday epoch day,
-// so day index 5/6 = Saturday/Sunday) — day indices here are the same
-// whole-day units, just not carried as full GameDateTime objects since
-// turnaround is day-granularity only.
-function isWeekend(dayIndex: number): boolean {
-  const weekday = ((dayIndex % DAYS_PER_WEEK) + DAYS_PER_WEEK) % DAYS_PER_WEEK;
-  return weekday === 5 || weekday === 6;
-}
-
-export function nextWorkingDay(dayIndex: number): number {
-  let day = dayIndex;
-  while (isWeekend(day)) day++;
-  return day;
-}
-
-// The last of `workingDays` consecutive working days starting at
-// `startDayIndex`, which must already be a working day — inclusive of
-// the start day itself (a 1-day job starts and finishes the same day).
-export function lastWorkingDay(startDayIndex: number, workingDays: number): number {
-  let day = startDayIndex;
-  let remaining = workingDays;
-  while (remaining > 1) {
-    day = nextWorkingDay(day + 1);
-    remaining--;
-  }
-  return day;
-}
-
-export interface BookingWindow {
-  startDay: number;
-  completionDay: number;
-}
-
-function overlapsWindow(window: BookingWindow, startDay: number, completionDay: number): boolean {
-  return !(window.completionDay < startDay || window.startDay > completionDay);
-}
-
-// Finds the earliest working day a new booking can start without its own
-// full run ever pushing either live cap over its limit on any day it
-// occupies — the shop's own concurrent capacity (bays), and, for full
-// repaints only, the vehicle's depot group's "two away at once" cap
-// (OPERATIONS.md §5: "Only two vehicles per depot group may be away at
-// once, though several can be booked in one order and swapped in as
-// each finishes" — the queueing this function exists for). Walks forward
-// one candidate start day at a time rather than solving directly, since
-// both caps depend on the whole window a candidate start implies, not
-// just the start day itself. `groupCapBookings`/`groupAwayCap` should be
-// passed as empty/Infinity for a simple repaint, which never leaves the
-// home depot so the away cap doesn't apply to it (see
-// simpleRepaintTurnaroundDays' own comment).
-export function scheduleRepaintBooking(
-  todayDayIndex: number,
-  turnaroundWorkingDays: number,
-  shopBookings: readonly BookingWindow[],
-  shopConcurrentCapacity: number,
-  groupCapBookings: readonly BookingWindow[],
-  groupAwayCap: number,
-): BookingWindow {
-  let startDay = nextWorkingDay(todayDayIndex);
-  for (;;) {
-    const completionDay = lastWorkingDay(startDay, turnaroundWorkingDays);
-    const shopOverlap = shopBookings.filter((b) => overlapsWindow(b, startDay, completionDay)).length;
-    const groupOverlap = groupCapBookings.filter((b) => overlapsWindow(b, startDay, completionDay)).length;
-    if (shopOverlap < shopConcurrentCapacity && groupOverlap < groupAwayCap) {
-      return { startDay, completionDay };
-    }
-    startDay = nextWorkingDay(startDay + 1);
-  }
-}
+// The day-scheduling core below was extracted to workshop-booking.mts
+// (T179, confirmed 2026-11-13) once the re-power mechanic needed the
+// exact same "N working days, shop bays, depot-group away cap" logic —
+// none of it was ever actually repaint-specific, only the names here
+// were. Re-exported under the original names so no call site in this
+// file (or repaint-shop-panel.ts) needs to change.
+export { nextWorkingDay, lastWorkingDay, type BookingWindow, scheduleBooking as scheduleRepaintBooking } from "./workshop-booking.mts";
 
 // OPERATIONS.md §5's own repaint price table, by vehicle size/type.
 // "Small bus (40,000 range)" and "Double deck, single deck coach" are

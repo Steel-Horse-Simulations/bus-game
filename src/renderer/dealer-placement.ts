@@ -27,7 +27,7 @@ const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", fea
 const MANUFACTURER_LABELS: Record<DealerManufacturer, string> = {
   volvo: "Volvo",
   adl: "Alexander Dennis",
-  western_commercial: "Western Commercial",
+  evm: "EVM",
   wrightbus: "Wrightbus",
   yutong: "Yutong",
 };
@@ -437,6 +437,30 @@ export async function mountDealerPlacement(map: maplibregl.Map, router: Router):
       });
     });
     container.appendChild(completeButton);
+
+    // T179: which of a manufacturer's own (possibly many) dealer sites is
+    // the one that does re-powers — setDealerRepowerSite (db.mts) itself
+    // enforces "at most one per manufacturer", unmarking any previous
+    // holder, so this is a plain toggle rather than needing its own
+    // conflict handling here.
+    const repowerButton = document.createElement("button");
+    repowerButton.className = "btn";
+    repowerButton.style.marginTop = "6px";
+    repowerButton.textContent = dealer.isRepowerSite ? "✓ Re-power site" : "Mark as re-power site";
+    repowerButton.title = dealer.isRepowerSite
+      ? "Click to unmark — no dealer of this manufacturer will offer re-powers until another is marked"
+      : "This becomes the one place vehicles from this manufacturer get re-powered to electric/hydrogen";
+    repowerButton.addEventListener("click", () => {
+      const next = !dealer.isRepowerSite;
+      void window.dealers.setRepowerSite(dealer.id, next).then(() => {
+        dealers = dealers.map((d) => {
+          if (d.id === dealer.id) return { ...d, isRepowerSite: next };
+          return next && d.manufacturer === dealer.manufacturer ? { ...d, isRepowerSite: false } : d;
+        });
+        openDealerPopup({ ...dealer, isRepowerSite: next });
+      });
+    });
+    container.appendChild(repowerButton);
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "btn btn-danger";

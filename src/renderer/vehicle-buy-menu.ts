@@ -4,25 +4,29 @@
 // Configure (the per-model buy screen) isn't its own tab; it's reached by
 // clicking a Catalogue row, matching the spec's own screen list.
 import { type VehicleModel } from "./vehicle-catalogue.mts";
+import type { Router } from "./wasm/game_wasm.js";
 import { renderCatalogueScreen, type CatalogueFilters } from "./vehicle-buy-catalogue-screen";
 import { renderConfigureScreen } from "./vehicle-buy-configure-screen";
 import { renderBasketScreen } from "./vehicle-buy-basket-screen";
 import { renderUsedScreen } from "./vehicle-buy-used-screen";
 import { renderDeliveriesScreen } from "./vehicle-buy-deliveries-screen";
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
 
 type Tab = "catalogue" | "used" | "basket" | "deliveries";
 
-export function mountVehicleBuyMenu(): void {
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Vehicles";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "330px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
+// Shown/hidden by the Fleet section of the bottom bar (main-screen-
+// navigation.ts), not its own floating toggle button any more (2026-11-08,
+// live request: "get all menus working... instead of temporary ones").
+export const vehicleBuyMenuState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
+// `router` (added for Q18/Q19, OPEN-ITEMS.md Q18+Q19 plan) threads through
+// to the Configure screen's own vehicleRestrictionReason check — a vehicle
+// being bought for a specific route needs the router to re-resolve that
+// route's own real OSM maxweight/maxheight/maxlength/maxwidth limits
+// (§B's getters), since a route stores no cached figure of its own.
+export function mountVehicleBuyMenu(router: Router): void {
   const overlay = document.createElement("div");
   overlay.className = "panel";
   overlay.style.position = "fixed";
@@ -77,15 +81,29 @@ export function mountVehicleBuyMenu(): void {
   // Added 2026-11-07, T153 — "buying for a specific route" needs the
   // real route list to populate its dropdown (filtered by depot group).
   let routes: Route[] = [];
+  // T179 — the transfer row's "also re-power" checkbox needs to know
+  // which dealer (if any) is the current re-power site for a vehicle's
+  // own manufacturer, and the existing repaint/re-power bookings for the
+  // shared "2 away at once" depot-group cap (workshop-booking.mts).
+  let dealers: Dealer[] = [];
+  let repaintBookings: RepaintBooking[] = [];
+  let repowerBookings: RepowerBooking[] = [];
+  // Only needed for the real island away-cap (2026-11-19, see
+  // repower-booking-panel.ts's own identical comment).
+  let fareZones: FareZone[] = [];
 
   async function fetchAll(): Promise<void> {
-    [depotGroups, depots, liveries, basketItems, orders, routes] = await Promise.all([
+    [depotGroups, depots, liveries, basketItems, orders, routes, dealers, repaintBookings, repowerBookings, fareZones] = await Promise.all([
       window.depotGroups.list(),
       window.depots.list(),
       window.liveries.list(),
       window.basket.list(),
       window.orders.list(),
       window.routes.list(),
+      window.dealers.list(),
+      window.repaintBookings.listAll(),
+      window.repowerBookings.listAll(),
+      window.fareZones.listAll(),
     ]);
     const perGroup = await Promise.all(depotGroups.map((g) => window.vehicles.listForDepotGroup(g.id)));
     ownedVehicles = perGroup.flat();
@@ -124,6 +142,7 @@ export function mountVehicleBuyMenu(): void {
         liveries,
         ownedVehicles,
         routes,
+        router,
         onAddedToBasket: () => {
           configuringVehicle = null;
           activeTab = "basket";
@@ -179,22 +198,22 @@ export function mountVehicleBuyMenu(): void {
         depotGroups,
         depots,
         ownedVehicles,
+        dealers,
+        repaintBookings,
+        repowerBookings,
+        fareZones,
         onChanged: () => void renderActive(),
       });
       return;
     }
   }
 
-  let panelOpen = false;
-  toggle.addEventListener("click", () => {
-    panelOpen = !panelOpen;
-    overlay.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) void renderActive();
-  });
-  closeButton.addEventListener("click", () => {
-    panelOpen = false;
+  vehicleBuyMenuState.open = () => {
+    overlay.style.display = "flex";
+    void renderActive();
+  };
+  vehicleBuyMenuState.close = () => {
     overlay.style.display = "none";
-    toggle.classList.remove("is-active");
-  });
+  };
+  closeButton.addEventListener("click", () => vehicleBuyMenuState.close?.());
 }

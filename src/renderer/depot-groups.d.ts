@@ -51,7 +51,14 @@ interface RouteHailAndRideSection {
 // Long-distance fields only show once the depot group has a route of that
 // type) and, for "night", limits that route's own timetable to UK-
 // EXPANSION.md §10's real window (2345-0400).
-type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance";
+// "staff" (schema v57->v58, live request 2026-11-08: "add a staff bus
+// route type ... to get drivers to and from work") — OPERATIONS.md §7's
+// own "staff buses can run in the mornings between bus stations and
+// depots" line, extended to evenings too. Free (no fare-pricing panel
+// section, unlike every other type here), no enforced time window
+// (unlike night's own 2345-0400 rule) — drawn and timetabled exactly
+// like an ordinary route.
+type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance" | "staff";
 
 interface Route {
   id: number;
@@ -64,6 +71,10 @@ interface Route {
   colour: string;
   name: string | null;
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
+  // Which of "points" are timing points (schema v56->v57) — set via
+  // RoutesApi.setTimingPoint, not create/update, same pattern as
+  // pickupDropoffOverrides/branding above.
+  timingPointIndexes: number[];
   parentRouteId: number | null;
   variationLetter: string | null;
   composedFromRouteIds: number[];
@@ -81,6 +92,33 @@ interface Route {
   // yet (OPERATIONS.md §4's masks aren't built) — this is the data side
   // only, confirmed as the deliberate first step.
   useBrandedColour: boolean;
+  // Manual, player-set vehicle eligibility restrictions (Q19, OPEN-ITEMS.md
+  // Q18+Q19 plan) — set via RoutesApi.setVehicleRestrictions, not create/
+  // update, same "dedicated setter for a less-central field" pattern as
+  // assignedLiveryId/useBrandedColour above. Composes alongside the
+  // automatic OSM-road-limit axis (height/weight/length/width), which has
+  // no field here at all — it's computed from the pipeline road graph
+  // (the router's own last_route_min_max* getters) plus the vehicle
+  // catalogue, not stored on the route itself.
+  vehicleRestrictions: VehicleRestrictions;
+}
+
+// The 5 real broad vehicle classes (mirrors VehicleCategory in
+// vehicle-catalogue.mts — this file is ambient/global, so it duplicates
+// the literal union rather than importing it, same convention as
+// VehiclePowerType below duplicating PowerType).
+type VehicleRestrictionBaseType =
+  | "Double-deckers"
+  | "Specialised (sightseeing, open-top only)"
+  | "Single-deckers / midibuses"
+  | "Minibus"
+  | "Coaches";
+
+interface VehicleRestrictions {
+  baseType: VehicleRestrictionBaseType | null;
+  powerType: VehiclePowerType | null;
+  axleCount: "twin-axle" | "tri-axle" | null;
+  liveryId: number | null;
 }
 
 // A route's own build sequence (shared long-distance sections) — see
@@ -118,6 +156,7 @@ interface RoutesApi {
     segments: RouteSegment[],
     routeType: RouteType,
     isMinorVariation: boolean,
+    timingPointIndexes: number[],
   ): Promise<Route>;
   list(): Promise<Route[]>;
   depotGroupHasRouteType(depotGroupId: number, routeType: RouteType): Promise<boolean>;
@@ -138,6 +177,7 @@ interface RoutesApi {
     segments: RouteSegment[],
     routeType: RouteType,
     isMinorVariation: boolean,
+    timingPointIndexes: number[],
   ): Promise<Route>;
   refreshComposedPoints(id: number, points: RoutePoint[]): Promise<void>;
   delete(id: number): Promise<void>;
@@ -146,14 +186,30 @@ interface RoutesApi {
     pointIndex: number,
     value: "pickup_only" | "setdown_only" | "skip" | null,
   ): Promise<void>;
+  setTimingPoint(routeId: number, pointIndex: number, isTimingPoint: boolean): Promise<void>;
   setBranding(routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean): Promise<void>;
+  // setColour, not update — a pure colour change must never go through
+  // update's unconditional route_timetables wipe (2026-11-08 bug report:
+  // changing a route's colour was wiping its timetable).
+  setColour(routeId: number, colour: string): Promise<void>;
+  // Same "dedicated setter, not update" reasoning as setColour just above —
+  // a repair pass recomputing orientation (2026-11-12 bug fix) must not
+  // risk wiping every affected route's own timetable.
+  setOrientation(routeId: number, orientation: "inbound" | "outbound"): Promise<void>;
+  // Same "dedicated setter, not update" reasoning as setColour/
+  // setOrientation above — a plain write of the 4 restriction columns,
+  // nothing else, so it can never wipe route_timetables either.
+  setVehicleRestrictions(routeId: number, restrictions: VehicleRestrictions): Promise<void>;
 }
-
-type DayType = "monday_friday" | "saturday" | "sunday";
 
 interface TimingPoint {
   pointIndex: number;
-  legMinutes: number;
+  // Padding ABOVE the real fastest achievable time (2026-11-15) — see
+  // route-timetable.mts's own TimingPoint for the full reasoning.
+  // peakPaddingMinutes null means "no separate peak figure" (every
+  // island-route timing point, by the user's own restriction).
+  standardPaddingMinutes: number;
+  peakPaddingMinutes: number | null;
   dwellMinutes: number;
 }
 
@@ -168,27 +224,43 @@ type RouteTimetableDirection = "both" | "outbound" | "inbound";
 interface RouteTimetable {
   id: number;
   routeId: number;
-  dayType: DayType;
+  weekdayMask: number;
   direction: RouteTimetableDirection;
   timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
+  // Peak-variant offsets (2026-11-15) — same shape, computed with each
+  // timing point's own peakPaddingMinutes (falling back to standard where
+  // unset) instead of standardPaddingMinutes. buildRouteTimetableGrid
+  // picks per-journey between these and the plain pair above by that
+  // journey's own real departure clock time (route-timetable.mts's
+  // isPeakMinute).
+  arrivalOffsetsSecondsPeak: number[];
+  departureOffsetsSecondsPeak: number[];
   excludedDepartureMinutes: number[];
   customDepartureMinutes: number[];
+  // Schema v64->v65 — see electron/db.mts's route_timetables SCHEMA
+  // comment. Both null except for a mirroring component.
+  mirrorSourceTimetableId: number | null;
+  mirrorOffsetMinutes: number | null;
 }
 
 interface RouteTimetablesApi {
   upsert(
     routeId: number,
-    dayType: DayType,
+    weekdayMask: number,
     direction: RouteTimetableDirection,
     timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
+    arrivalOffsetsSecondsPeak: number[],
+    departureOffsetsSecondsPeak: number[],
     excludedDepartureMinutes: number[],
     customDepartureMinutes: number[],
+    mirrorSourceTimetableId: number | null,
+    mirrorOffsetMinutes: number | null,
   ): Promise<RouteTimetable>;
   listForRoute(routeId: number): Promise<RouteTimetable[]>;
   listAll(): Promise<RouteTimetable[]>;
@@ -200,12 +272,16 @@ interface PlayerStop {
   lon: number;
   lat: number;
   busLegal: boolean;
+  // Schema v57->v58 — non-null only for a depot's own staff-route stop
+  // (PlayerStopsApi.createForDepot).
+  depotId: number | null;
 }
 
 interface PlayerStopsApi {
   create(lon: number, lat: number, busLegal: boolean): Promise<PlayerStop>;
   list(): Promise<PlayerStop[]>;
   delete(osmId: number): Promise<void>;
+  createForDepot(depotId: number): Promise<PlayerStop>;
 }
 
 type DepotEntranceMode = "entry" | "exit" | "both";
@@ -239,7 +315,10 @@ interface DepotsApi {
   setNarrowedLiveries(id: number, liveryIds: number[]): Promise<void>;
 }
 
-type DealerManufacturer = "volvo" | "adl" | "western_commercial" | "wrightbus" | "yutong";
+// western_commercial -> evm (T179, schema v58->v59): Western Commercial's
+// Scottish ADL dealership role is superseded by EVM as the UK-wide
+// re-power/EV specialist — see db.mts's own dealers table SCHEMA comment.
+type DealerManufacturer = "volvo" | "adl" | "evm" | "wrightbus" | "yutong";
 type DealerEntranceMode = DepotEntranceMode;
 
 interface Dealer {
@@ -249,6 +328,9 @@ interface Dealer {
   lon: number;
   lat: number;
   isEntrancesComplete: boolean;
+  // T179: at most one dealer per manufacturer is the re-power site —
+  // enforced by setDealerRepowerSite (db.mts), not by this type.
+  isRepowerSite: boolean;
 }
 
 interface DealerEntrance {
@@ -270,9 +352,15 @@ interface DealersApi {
   deleteEntrance(id: number): Promise<void>;
   delete(id: number): Promise<void>;
   setEntrancesComplete(id: number, isComplete: boolean): Promise<void>;
+  setRepowerSite(id: number, isRepowerSite: boolean): Promise<void>;
 }
 
 interface StopGroupsApi {
+  create(): Promise<{ id: number }>;
+  list(): Promise<number[]>;
+}
+
+interface PlayerBusStationsApi {
   create(): Promise<{ id: number }>;
   list(): Promise<number[]>;
 }
@@ -331,6 +419,62 @@ interface RepaintShopsApi {
 
 type RepaintType = "full" | "simple";
 
+// Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9 redesign:
+// stop ownership dropped...", 2026-11-16). Keyed by real OSM stop id, not
+// a player-owned entity — see stop_upgrades' own CREATE TABLE comment in
+// db.mts.
+type StopUpgradeType = "seating" | "lighting" | "shelter";
+
+interface StopUpgradeState {
+  stopOsmId: number;
+  hasSeating: boolean;
+  hasLighting: boolean;
+  hasShelter: boolean;
+  seatingInstalledGameDay: number | null;
+  lightingInstalledGameDay: number | null;
+  shelterInstalledGameDay: number | null;
+}
+
+interface StopUpgradesApi {
+  listAll(): Promise<StopUpgradeState[]>;
+  get(stopOsmId: number): Promise<StopUpgradeState | null>;
+  install(stopOsmId: number, upgradeType: StopUpgradeType, gameDay: number): Promise<StopUpgradeState>;
+}
+
+// Route advertising (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+// dropped...", confirmed 2026-11-16) — player-bought only, never
+// council-triggered; see route_advertising_bookings' own CREATE TABLE
+// comment in db.mts for the full real design.
+type RouteAdvertisingMode = "specific_route" | "long_distance";
+
+interface RouteAdvertisingBooking {
+  id: number;
+  stopOsmId: number;
+  depotGroupId: number;
+  mode: RouteAdvertisingMode;
+  routeId: number | null;
+  operatorName: string | null;
+  bookedGameDay: number;
+  liveFromGameDay: number;
+}
+
+interface RouteAdvertisingApi {
+  listAll(): Promise<RouteAdvertisingBooking[]>;
+  listForStop(stopOsmId: number): Promise<RouteAdvertisingBooking[]>;
+  create(
+    stopOsmId: number,
+    depotGroupId: number,
+    mode: RouteAdvertisingMode,
+    routeId: number | null,
+    operatorName: string | null,
+    bookedGameDay: number,
+    liveFromGameDay: number,
+  ): Promise<RouteAdvertisingBooking>;
+  delete(id: number): Promise<void>;
+  listGeneratedMonths(bookingId: number): Promise<string[]>;
+  recordMonthsBilled(bookingId: number, monthKeys: string[]): Promise<void>;
+}
+
 interface RepaintBooking {
   id: number;
   vehicleId: number;
@@ -357,6 +501,34 @@ interface RepaintBookingsApi {
     startGameDay: number,
     completionGameDay: number,
   ): Promise<RepaintBooking>;
+  delete(id: number): Promise<void>;
+}
+
+type RepowerPowerType = "electric" | "hydrogen";
+
+interface RepowerBooking {
+  id: number;
+  vehicleId: number;
+  dealerId: number;
+  toPowerType: RepowerPowerType;
+  finalPriceGBP: number;
+  bookedGameDay: number;
+  startGameDay: number;
+  completionGameDay: number;
+}
+
+interface RepowerBookingsApi {
+  listAll(): Promise<RepowerBooking[]>;
+  create(
+    vehicleId: number,
+    dealerId: number,
+    toPowerType: RepowerPowerType,
+    finalPriceGBP: number,
+    bookedGameDay: number,
+    startGameDay: number,
+    completionGameDay: number,
+  ): Promise<RepowerBooking>;
+  collect(id: number): Promise<Vehicle>;
   delete(id: number): Promise<void>;
 }
 
@@ -402,20 +574,48 @@ interface Duty {
   id: number;
   depotGroupId: number;
   depotId: number;
-  dayType: DayType;
+  weekdayMask: number;
   dutyNumber: string;
   locked: boolean;
+  // Schema v57->v58 — set via DutiesApi.setDriver, not create. Null means
+  // unassigned.
+  driverId: number | null;
   pieces: DutyPiece[];
 }
 
 interface DutiesApi {
-  listForDepotGroup(depotGroupId: number, dayType: DayType): Promise<Duty[]>;
-  create(depotGroupId: number, depotId: number, dayType: DayType): Promise<Duty>;
+  listForDepotGroup(depotGroupId: number, weekdayMask: number): Promise<Duty[]>;
+  create(depotGroupId: number, depotId: number, weekdayMask: number): Promise<Duty>;
   delete(dutyId: number): Promise<void>;
   setLocked(dutyId: number, locked: boolean): Promise<void>;
   rename(dutyId: number, dutyNumber: string): Promise<void>;
   addPiece(dutyId: number, routeId: number, departureMinutes: number): Promise<DutyPiece>;
   removePiece(pieceId: number): Promise<void>;
+  setDriver(dutyId: number, driverId: number | null): Promise<void>;
+}
+
+// A driver (OPERATIONS.md §6), schema v57->v58 — see db.mts's own
+// "drivers" SCHEMA comment for this increment's deliberate scope.
+type DriverScore = "trainee" | "novice" | "competent" | "professional" | "fleet_elite";
+
+interface Driver {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  name: string;
+  score: DriverScore;
+  // Schema v60->v61 (T183 — private hire revival, Q20/OPEN-ITEMS.md). Null
+  // for every ordinary driver; set only on one auto-hired onto a private-
+  // hire vehicle (see db.mts's own drivers SCHEMA comment).
+  privateHireVehicleId: number | null;
+}
+
+interface DriversApi {
+  listForDepotGroup(depotGroupId: number): Promise<Driver[]>;
+  create(depotGroupId: number, depotId: number, name: string, score: DriverScore): Promise<Driver>;
+  rename(driverId: number, name: string): Promise<void>;
+  setScore(driverId: number, score: DriverScore): Promise<void>;
+  delete(driverId: number): Promise<void>;
 }
 
 type VehiclePowerType = "diesel" | "electric" | "hybrid" | "hydrogen";
@@ -433,11 +633,18 @@ interface Vehicle {
   condition: number;
   purchasePriceGBP: number;
   boughtAt: string;
+  // The real in-game day this vehicle was bought on (T179) — see
+  // db.mts's own vehicles table SCHEMA comment for why boughtAt (a real
+  // wall-clock timestamp) can't serve the re-power age gate.
+  boughtGameDay: number;
   liveryId: number | null;
   // Which route this vehicle was bought for (T153, confirmed 2026-11-07)
   // — recorded for reference only, same as the comment on Route.
   // assignedLiveryId above; nothing reads this as an enforced link.
   boughtForRouteId: number | null;
+  // How this vehicle was paid for (T185) — see db.mts's own vehicles
+  // table SCHEMA comment for the full reasoning.
+  paymentMethod: PaymentMethod;
 }
 
 interface VehiclesApi {
@@ -627,9 +834,24 @@ interface FinanceApi {
   list(depotGroupId?: number): Promise<FinanceTransaction[]>;
 }
 
+// T183 (private hire revival, Q20/OPEN-ITEMS.md) — plain storage only, see
+// private_hire_income_months' own SCHEMA comment in db.mts.
+interface PrivateHireIncomeApi {
+  listGeneratedMonths(vehicleId: number): Promise<string[]>;
+  markMonthsGenerated(vehicleId: number, monthKeys: string[]): Promise<void>;
+}
+
+// T185 (real lease billing, follow-up to T184) — plain storage only, see
+// lease_billing_months' own SCHEMA comment in db.mts.
+interface LeaseBillingApi {
+  listGeneratedMonths(vehicleId: number): Promise<string[]>;
+  recordMonthsBilled(vehicleId: number, monthKeys: string[], flipToOutright: boolean): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
+  drivers: DriversApi;
   vehicles: VehiclesApi;
   basket: BasketApi;
   farePricing: FarePricingApi;
@@ -637,6 +859,9 @@ interface Window {
   fareZones: FareZonesApi;
   repaintShops: RepaintShopsApi;
   repaintBookings: RepaintBookingsApi;
+  stopUpgrades: StopUpgradesApi;
+  routeAdvertising: RouteAdvertisingApi;
+  repowerBookings: RepowerBookingsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
   longDistanceSections: LongDistanceSectionsApi;
@@ -645,8 +870,11 @@ interface Window {
   depots: DepotsApi;
   dealers: DealersApi;
   stopGroups: StopGroupsApi;
+  playerBusStations: PlayerBusStationsApi;
   liveries: LiveriesApi;
   gameClock: GameClockApi;
   companyUpgrades: CompanyUpgradesApi;
   finance: FinanceApi;
+  privateHireIncome: PrivateHireIncomeApi;
+  leaseBilling: LeaseBillingApi;
 }

@@ -6,7 +6,19 @@
 // has at least one length, every "unspecified" capacity is a real,
 // intentional gap rather than a typo, and the derived axle-count rule
 // matches VEHICLE-SPECS.md §1's own worked examples.
-import { VEHICLE_MODELS, GENERAL_OPTIONS, axleCountForLength, generalOptionsFor, findVehicleModel, lengthsForPower, priceFor, priceForGeneralOption, seatedCapacityOf } from "./vehicle-catalogue.mts";
+import {
+  VEHICLE_MODELS,
+  GENERAL_OPTIONS,
+  axleCountForLength,
+  generalOptionsFor,
+  findVehicleModel,
+  lengthsForPower,
+  priceFor,
+  priceForGeneralOption,
+  seatedCapacityOf,
+  repowerTargetsFor,
+  minTopSpeedMphForRoute,
+} from "./vehicle-catalogue.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -45,13 +57,10 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
-  const coach = findVehicleModel("yutong-coach")!;
-  const gte12 = coach.lengths.find((l) => l.lengthM === 12)!;
-  const gte14 = coach.lengths.find((l) => l.lengthM === 14)!;
-  assert(gte14 !== undefined, "the Yutong coach's longer length is 14m (GTe14), not the old 15m (T15E)");
-  assert(gte12.capacity.kind === "seatedOnly" && gte12.capacity.seated === 50, "the Yutong GTe12 seats 50");
-  assert(gte14.capacity.kind === "seatedOnly" && gte14.capacity.seated === 57, "the Yutong GTe14 seats 57");
-  assert(axleCountForLength(gte14.lengthM) === "tri-axle", "14m is over the 12.9m threshold, so the GTe14 is correctly tri-axle");
+  // T181 (confirmed 2026-11-13): the Yutong coach was fully removed, not
+  // just discontinued (reversing T179's soft-removal) — real figures live
+  // only as a documented reference in VEHICLE-SPECS.md now.
+  assert(findVehicleModel("yutong-coach") === undefined, "the Yutong coach no longer exists as a catalogue entry");
 }
 
 {
@@ -189,7 +198,7 @@ function assert(cond: boolean, msg: string): void {
 {
   // Donor-priced vehicles (open-top) have no price of their own — priceFor
   // must say so honestly rather than returning a nonsense 0 or NaN.
-  const openTop = findVehicleModel("adl-enviro400-opentop-diesel")!;
+  const openTop = findVehicleModel("wrightbus-streetdeck-opentop")!;
   assert(priceFor(openTop, openTop.lengths[0]) === null, "a donor-priced vehicle has no price of its own — priceFor returns null, not a guessed figure");
 }
 
@@ -364,34 +373,68 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
-  // Yutong coach: GTe14 (14m) is the real second length, not the pricing
-  // note's approximate 15m — its delta is computed fresh from the
-  // standard formula against the real 2m difference, and (being a coach,
-  // crossing from the 12m base's twin-axle class) gets the dynamic axle
-  // charge on top.
-  const yutongCoach = findVehicleModel("yutong-coach")!;
-  const electricLengths = lengthsForPower(yutongCoach, "electric");
-  const gte12 = electricLengths.find((l) => l.lengthM === 12)!;
-  const gte14 = electricLengths.find((l) => l.lengthM === 14)!;
-  assert(axleCountForLength(gte12.lengthM) === "twin-axle" && axleCountForLength(gte14.lengthM) === "tri-axle", "the Yutong coach's two lengths straddle the axle-crossing threshold");
-  assert(gte14.priceDeltaGBP === 31_000, `the Yutong GTe14's raw length delta should be +£31,000 (20 x 10cm x 0.5% x £310,000, no rounding tie), got ${gte14.priceDeltaGBP}`);
+  // T181 (confirmed 2026-11-13): yutong-e10-e12 (the merged E10/E12 entry)
+  // was fully removed too, same as yutong-coach above — reversing T179's
+  // soft-removal for both Yutong models, not just one. Real figures live
+  // only as a documented reference in VEHICLE-SPECS.md now. Checked
+  // alongside the already-removed old separate yutong-e10/yutong-e12 ids
+  // (pre-dating the 2026-10-18 merge), same pattern as that existing check.
   assert(
-    priceFor(yutongCoach, gte14) === yutongCoach.basePriceGBP! + 31_000 + 15_000,
-    `the Yutong GTe14's total price should be base + £31,000 raw delta + £15,000 axle charge = £356,000, got ${priceFor(yutongCoach, gte14)}`,
+    findVehicleModel("yutong-e10-e12") === undefined && findVehicleModel("yutong-e10") === undefined && findVehicleModel("yutong-e12") === undefined,
+    "yutong-e10-e12 and the old separate yutong-e10/yutong-e12 ids no longer exist",
   );
-  assert(priceFor(yutongCoach, gte12) === yutongCoach.basePriceGBP, "the Yutong GTe12 (the shortest length) pays no delta or axle charge");
 }
 
 {
-  // The merged Yutong E10/E12 — one entry (like the GB Kite pattern), not
-  // two separate flat-priced models.
-  const yutongE = findVehicleModel("yutong-e10-e12")!;
-  assert(yutongE !== undefined, "yutong-e10-e12 exists as a single merged entry");
-  const e10 = yutongE.lengths.find((l) => l.lengthM === 10.9)!;
-  const e12 = yutongE.lengths.find((l) => l.lengthM === 12.2)!;
-  assert(e10.priceDeltaGBP === 0 || e10.priceDeltaGBP === undefined, "the E10's 10.9m is the merged model's shortest length, no delta");
-  assert(e12.priceDeltaGBP === 19_500, `the E12's 12.2m should be +£19,500, got ${e12.priceDeltaGBP}`);
-  assert(findVehicleModel("yutong-e10") === undefined && findVehicleModel("yutong-e12") === undefined, "the old separate yutong-e10/yutong-e12 ids no longer exist");
+  // T181: no vehicle model should be left marked `discontinued` — the two
+  // Yutong models T179 soft-removed were fully deleted instead, so the
+  // flag (kept as a mechanism for any future use) should currently be
+  // unused by every real catalogue entry.
+  assert(VEHICLE_MODELS.filter((v) => v.discontinued).length === 0, "no vehicle model is currently marked discontinued, now that the 2 Yutong models are fully removed");
+}
+
+{
+  // T179: repowerTargetsFor dedupes — evm-cityline has 2 separate electric
+  // LengthVariant rows at 7.4m (Stepped entrance / Low floor), which
+  // should still report "electric" only once.
+  const evmCityline = findVehicleModel("evm-cityline")!;
+  const targets = repowerTargetsFor(evmCityline, 7.4);
+  assert(targets.length === 1 && targets[0] === "electric", `evm-cityline at 7.4m should re-power to electric only once, got [${targets.join(", ")}]`);
+  assert(repowerTargetsFor(evmCityline, 99).length === 0, "a length the model doesn't have at all has no re-power targets");
+
+  // Most models have no electric/hydrogen variant yet (the later
+  // Q15-Q22 spec-population pass, deliberately not built here) — that's
+  // the expected, correct state for e.g. the Volvo 9700 coach.
+  const volvo9700 = findVehicleModel("volvo-9700")!;
+  const dieselLength = volvo9700.lengths.find((l) => l.powerType === "diesel")!;
+  assert(repowerTargetsFor(volvo9700, dieselLength.lengthM).length === 0, "the Volvo 9700 has no re-power target yet (expected, not a gap)");
+}
+
+// --- minTopSpeedMphForRoute (2026-11-19, "Each vehicle should have a
+// max speed", real per-model topSpeedMph) ---
+{
+  assert(
+    minTopSpeedMphForRoute("398", {}) === 50,
+    "ScotRail/398's real lock is Single-deckers/midibuses — every real model in that category is 50mph today, so the route's cap is 50",
+  );
+  assert(
+    minTopSpeedMphForRoute("57", { Citylink: "57" }) === 62,
+    "a route locked to a real coach-only livery (Citylink) gets the Coaches category's cap, 62",
+  );
+  assert(
+    minTopSpeedMphForRoute("12", {}) === 50,
+    "an unrestricted route (no real lock at all) conservatively uses the slowest model in the WHOLE catalogue, 50 — any model could end up running it",
+  );
+  // Real worked check of the actual catalogue data, not just the 3
+  // bucket cases above — proves this genuinely reads each model's own
+  // topSpeedMph rather than a hardcoded 50/62 pair, so a future
+  // per-model correction (the user's own stated plan: "we will go
+  // through later") changes this function's real output automatically.
+  const coachSpeeds = VEHICLE_MODELS.filter((v) => v.category === "Coaches").map((v) => v.topSpeedMph);
+  assert(
+    minTopSpeedMphForRoute("57", { Citylink: "57" }) === Math.min(...coachSpeeds),
+    "the Coaches-bucket result is the real minimum across every actual Coaches-category model, not a hardcoded 62",
+  );
 }
 
 console.log(`\n${VEHICLE_MODELS.length} vehicle models, ${VEHICLE_MODELS.reduce((n, v) => n + v.lengths.length, 0)} length variants total.`);

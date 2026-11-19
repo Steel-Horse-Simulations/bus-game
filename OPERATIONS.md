@@ -37,7 +37,7 @@ manager and the marketing manager.
 (`admin_level=6`). They are not the player's structure and will not align with
 depot groups — one group may deal with three councils. Council areas govern which
 council offers each contract, stop fees, station ownership, subsidies, and
-contract and school route numbering.
+contract route numbering.
 
 The full hierarchy is therefore **depot → depot group → region → company**, with
 council areas cutting across it.
@@ -295,9 +295,7 @@ vehicle by vehicle. The bulk discount below still groups the whole basket by
 manufacturer regardless of each vehicle's own destination or livery.
 
 **Work type flags.** A vehicle is flagged for one kind of work and cannot cross
-over. **Open-top double-deckers work sightseeing only**; **coaches and Sprinter
-vans flagged for private hire work private hire only**. A private hire vehicle
-can be returned to service work, but it costs time and money.
+over. **Open-top double-deckers work sightseeing only.**
 
 **Bulk discount.** Buying several at once is rewarded. The discount counts every
 vehicle in the order **from the same manufacturer**, whatever their model or
@@ -340,6 +338,16 @@ Three ways to pay:
 
 Real figures confirmed 2026-10-30, replacing the earlier placeholder
 instruction not to hard-code a rate or term.
+
+**Lease payments are real, recurring charges (2026-11-14).** A vehicle bought on
+lease or lease to own is billed every month, for real, at the rates above —
+not just a figure shown once at purchase time. The Fleet screen's "My fleet"
+tab shows each leased vehicle's own age, payment method, and real months/money
+remaining on its lease, and bills any months fallen due the moment that screen
+is opened. A plain lease simply stops billing once its 60 months are up (shown
+as "Lease term ended" — there's no return/extend/buy-out flow built yet); a
+lease to own flips to **buy outright** automatically at that same point, per
+"then ownership" above.
 
 **Missed payments** add that month's interest to the balance, so the player pays
 more overall. Vehicles are never repossessed.
@@ -489,16 +497,15 @@ Where accessibility is required:
 | Work | Requirement |
 |---|---|
 | Council contracts | Low floor, plus a minimum capacity set by the council |
-| School contracts | Low floor **or** coach — the exception |
 | Event contracts | Low floor only |
 | Cruise contracts | Any mix, but at least one low floor |
 | Sightseeing | Low floor only |
-| Private hire and tours | Anything |
+| Tours | Anything |
 
 Event and cruise requirements are enforced by **warning and penalty**, not by
 blocking the assignment. Running a stepped vehicle on service work always counts
-against the accessibility rating, so in practice stepped vehicles are for school
-contracts, private hire and tours.
+against the accessibility rating, so in practice stepped vehicles are for
+tours.
 
 ### Selling, scrapping and cascades
 Upgrades stay with a bus when sold and raise its sale price. Price is decided
@@ -707,6 +714,52 @@ one small image and two colours, that swap is trivial.
 Each livery is a badge image plus its two colours, as specified in §4. New
 liveries are added by supplying a new badge.
 
+### National Express Scottish (T190, 2026-11-14)
+Three National Express liveries exist: plain **National Express**, **National
+Express Local**, and **National Express Scottish**. The rule, confirmed
+directly: **any National Express livery can run to Scotland, but the
+Scottish one can only run to/from Scotland.**
+
+- Plain National Express and National Express Local are **unrestricted by
+  route destination** — the only geography either carries is National
+  Express's own existing England/Wales depot-region lock (it can't be bought
+  from a Scottish depot group at all; National Express Local carries no
+  depot-region lock either).
+- National Express Scottish carries **no depot-region lock of its own** —
+  deliberately, since locking it to England/Wales depots would contradict
+  "runs to/from Scotland." Instead it requires a **real route terminus
+  inside Scotland**: at least one of the route's two endpoints (not every
+  intermediate stop) must fall inside Scotland's real political border.
+- That check is against a **genuinely separate real boundary artefact**
+  (`scotland_boundary.bin`, built from Geofabrik's own `scotland.poly`
+  region file), not the pipeline's existing extract-clip boundary
+  (`extract-boundary.poly`), which is deliberately extended south into
+  England (the hand-drawn Carlisle/Berwick corridor) to capture the border
+  strip for the road-graph extract — using that one for a "is this really
+  in Scotland" check would wrongly pass Carlisle, Berwick-upon-Tweed and
+  Newcastle.
+- A missing/failed boundary load (e.g. the artefact not yet downloaded)
+  fails **open**: the restriction simply doesn't block anything rather than
+  crashing, matching this game's "no known limit" convention elsewhere.
+
+**Flagged, not built:** a duty-manager preference — when assigning a bus to
+a Scotland-bound National Express working, prefer a National Express
+Scottish vehicle over a plain National Express one if both are eligible.
+There is no vehicle-to-duty assignment mechanism in this game yet (a `Duty`
+carries no vehicle field, and no "morning assignment" process exists), so
+this is recorded here as a requirement for whenever that system is built,
+not implemented now. See OPEN-ITEMS.md.
+
+### National Express Welsh (2026-11-15)
+A fourth National Express livery, added at the user's own direct
+instruction: **follows all the same rules as National Express Scottish
+above, with Wales substituted for Scotland throughout.** No depot-region
+lock of its own; requires a real route terminus inside Wales (checked
+against a genuinely separate `wales_boundary.bin` artefact, built from
+Geofabrik's own `wales.poly` region file, same fail-open convention on a
+missing/failed load). Colours sampled directly from the real supplied
+badge artwork: body `#f1f0f0`, dragon/accent `#c8102e`.
+
 ---
 
 ## 6. Staff
@@ -767,9 +820,9 @@ fare model (DESIGN.md §9). Every ratio in the table below multiplies this.
 driver's wage, kept as an absolute bonus rather than folded into the ratio, since
 it's a small number of drivers rather than a whole role.
 
-**Casual roles are outside the ratio system entirely** — tour guides, school
-drivers and private hire drivers are paid per tour or per hour worked, since a
-ratio implies a standing wage they don't have.
+**Casual roles are outside the ratio system entirely** — tour guides are paid
+per tour or per hour worked, since a ratio implies a standing wage they don't
+have.
 
 Every employee has a tracked **driving licence and type**: normal (cars and
 vans), PSV (buses and coaches), or HGV (recovery unit). Engineers can be sent
@@ -1030,8 +1083,8 @@ four-day drivers to move to five-day when a slot opens.
 - Anyone on a **five-day week is paid a minimum 39 hours**, per week with no
   averaging, whether or not they are scheduled that much.
 - Fewer contracted days pay that floor **pro rata** — four days pays four fifths.
-- **Casual staff**, such as on-demand private hire drivers, are paid only for
-  hours actually worked.
+- **Casual staff**, such as tour guides, are paid only for hours actually
+  worked.
 - The floor applies to **drivers only**.
 
 An under-filled line therefore costs real money that same week, which gives duty
@@ -1114,22 +1167,6 @@ On long-distance routes drivers swap with drivers from other depots to stay
 legal — an Inverness driver breaks at Perth while a Perth driver continues to
 Edinburgh.
 
-### Private hire drivers
-- Must be **professional or higher** to drive a private hire.
-- Paid **10% more than a regular driver** while on one.
-- **One driver completes the entire hire**, up to five days. On a multi-day hire
-  the driver is paid to stay away in accommodation, and the cost is passed to the
-  customer.
-- They work on the **EU work rota**, which covers long distance and private hire
-  only, so the hours regime follows the rota rather than being worked out per
-  duty.
-- **EU drivers' hours always apply**, whatever the distance. Rest stops must be
-  built into the route where it would exceed driving time; the game warns and
-  suggests where one is needed.
-- Some private hire drivers are **part time and do private hires only**, hired
-  from a **separate pool** to regular drivers. They are called on per job, but
-  need a minimum amount of work to stay with the company.
-
 ### Overtime and loans
 - **Overtime** at any local depot, paid at a **flat 20% above the normal
   wage**, the same rate for every role, set by the game rather than by the
@@ -1137,7 +1174,7 @@ Edinburgh.
   mile on the shortest route from the home depot. Minimum one shift.
 
   Overtime is the short-term pressure valve — it covers a new route before staff
-  are hired, or a shift left open by a driver away on private hire. It is
+  are hired, or a shift left open by a driver away on a multi-day tour. It is
   deliberately not viable as a long-term substitute for hiring, being limited by
   **legal hours** and by a **per-driver willingness limit**: some drivers will
   take far more of it than others, and none will take it indefinitely.
@@ -1538,9 +1575,9 @@ already understands the company, and taking one leaves a hole to backfill.
 
 They oversee everyone at the depot, with their competence lifting every role
 slightly, and handle **hiring and rota approval** — the player can always
-override. They also work out **who collects new vehicles and when**, price
-**private hires** and **tour bookings** (a more skilled manager secures a better
-price), and work out the timings and staffing for private hire routes.
+override. They also work out **who collects new vehicles and when**, price **tour
+bookings** (a more skilled manager secures a better price), and work out the
+timings and staffing for tour routes.
 
 ## 13. Marketing
 
@@ -1655,7 +1692,12 @@ across every charger on site, below.
 
 **Yutong through-charging** (confirmed 2026-11-01, restricted to
 **Outstations, Tiny and Small depots only** — a Main depot's buses can't
-use it): Yutong's electric models can be **plugged into each other**,
+use it). **Currently inert in-game** (T181, 2026-11-13): both Yutong
+electric models (E10/E12, the Yutong coach) have been fully removed from
+the catalogue — VEHICLE-SPECS.md §4 — so no vehicle exists that this
+mechanic can ever apply to. Kept here as documented real-world reference,
+not deleted, the same treatment as the dropped models themselves: Yutong's
+electric models can be **plugged into each other**,
 daisy-chaining up to
 **4 vehicles** off a single charger connection, sharing that one charger's
 power evenly between however many are chained in. The same dynamic
@@ -1782,11 +1824,11 @@ and covers every kind of depot capital infrastructure, not just energy.
   fast. This is a pure count, unaffected by the depot-wide grid throttling
   above (which only slows charging down, never blocks a bus from plugging
   in): **(floor chargers × 2) + (drop-down chargers × 1)**. At an
-  Outstation, Tiny or Small depot, Yutong through-charging (above) can
+  Outstation, Tiny or Small depot, Yutong through-charging (above) could
   push an individual floor charger's own occupancy up to 4 instead of 2,
-  but that depends on which vehicles are actually plugged in at the time,
-  so it's shown as a live bonus on top of this headline figure, not baked
-  into it.
+  depending on which vehicles were actually plugged in at the time — shown
+  as a live bonus on top of this headline figure, not baked into it. Currently
+  inert (see the note above): no in-game vehicle can trigger it any more.
 
 **Prices** (one-off, per unit, not monthly):
 

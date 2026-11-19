@@ -1,11 +1,15 @@
 // Main screen navigation (2026-11-01, live user request, worked out
 // together rather than guessed): a single bottom bar for switching
 // between the game's main screens, replacing the scattered individual
-// on-screen toggles each of these currently has. This is still the
-// visual shell only — icons, layout, single-select active state — not
-// yet wired to actually show/hide each screen (deliberately deferred,
-// confirmed "not yet" when asked directly), except the game clock
-// cluster on the left, which is fully live (game-clock-engine.ts).
+// on-screen toggles each of these currently has. Originally shipped as
+// the visual shell only (icons, layout, single-select active state),
+// deliberately deferred; wiring it up for real started 2026-11-08 (live
+// request: "get all menus working... instead of temporary ones") — this
+// file itself still only owns the icons/layout/active-state, same as
+// before; which screen actually shows for each section is main.ts's own
+// `onSelect` callback (fleet-screen.ts for Fleet, plain placeholders for
+// Calendar/Finance so far). The game clock cluster on the left is, and
+// always was, fully live (game-clock-engine.ts) regardless.
 //
 // The 9 sections and their shape were worked out together, not guessed:
 // - Map — the default view.
@@ -29,6 +33,7 @@
 //   financial screen exists.
 import { gameClockState, setPaused, setSpeedMultiplier } from "./game-clock-engine";
 import { gameDateTimeFromSeconds, formatGameDate, formatGameTime, SPEED_MULTIPLIERS, type SpeedMultiplier } from "./game-clock.mts";
+import { anyMenuOpen, setMenuOpen } from "./menu-visibility";
 
 export type BottomBarSection = "map" | "fleet" | "depots" | "duties" | "fares" | "routes" | "timetables" | "calendar" | "finance";
 
@@ -122,7 +127,9 @@ function buildClockCluster(): HTMLElement {
   // position replacing the old "centred inside the bar via top:50%"
   // trick, and a z-index above every panel this game currently has.
   cluster.style.position = "fixed";
-  cluster.style.left = "16px";
+  // Bottom-right (2026-11-08, live request) — was bottom-left; moved to
+  // leave the left-hand route list's own corner clear.
+  cluster.style.right = "16px";
   cluster.style.bottom = "0";
   cluster.style.height = `${BAR_HEIGHT_PX}px`;
   cluster.style.zIndex = "5";
@@ -159,6 +166,12 @@ function buildClockCluster(): HTMLElement {
   cluster.append(pauseButton, speedRow, dateTimeCol);
 
   function render(): void {
+    // Hidden whenever any floating panel/screen is open (menu-visibility.ts)
+    // — live request, 2026-11-08: "the time controls shouldn't be open when
+    // any menus are open." Checked every frame rather than only on
+    // open/close events, since it's cheap and there's no single choke point
+    // every panel's open/close already passes through.
+    cluster.style.display = anyMenuOpen() ? "none" : "";
     pauseButton.innerHTML = gameClockState.isPaused ? PLAY_ICON : PAUSE_ICON;
     pauseButton.title = gameClockState.isPaused ? "Resume" : "Pause";
     for (const [speed, btn] of speedButtons) btn.classList.toggle("is-active", speed === gameClockState.speedMultiplier);
@@ -200,6 +213,7 @@ export function mountBottomBar(onSelect?: (section: BottomBarSection) => void): 
       if (entry.section === active) return;
       active = entry.section;
       for (const [s, b] of buttons) b.classList.toggle("is-active", s === active);
+      setMenuOpen("bottom-bar-screen", active !== "map");
       onSelect?.(active);
     });
     buttons.set(entry.section, btn);

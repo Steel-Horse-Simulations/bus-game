@@ -57,7 +57,18 @@ export function computeRouteOrientation(
     throw new Error("a route needs at least two points to have an orientation");
   }
 
-  if (isCircular(points)) {
+  // The shoelace/winding rule only applies to a route with no terminus loop
+  // at all (a plain sightseeing-style closed tour, no outboundEndIndex given)
+  // — a terminus-loop route also has points[0] === points[last] (it returns
+  // to its own start), but its direction is already well-defined by the
+  // outbound leg's own two ends (points[0] and the terminus), same as any
+  // other route. Checking circularity first here used to override that for
+  // every terminus-loop route, reading each variation's own incidental
+  // detour shape instead of the station it's actually anchored on — two
+  // variations of the same route could disagree on direction depending on
+  // which way their own particular detour happened to wind (2026-11-12 live
+  // bug report, route 56).
+  if (outboundEndIndex === undefined && isCircular(points)) {
     return signedArea(points) >= 0 ? "inbound" : "outbound";
   }
 

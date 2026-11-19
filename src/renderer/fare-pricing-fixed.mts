@@ -59,10 +59,45 @@ export const AIRPORT_EXPRESS_RETURN_GBP_PENCE = 850;
 // figure exists to adopt.
 export const AIRPORT_EXPRESS_FAMILY_RETURN_GBP_PENCE = 2200;
 
-// "A base fee plus a price per mile" — shared by Country and Island,
-// confirmed the same figures for both (DESIGN.md §9 "Zone types").
+// "A base fee plus a price per mile" — used for Island (DESIGN.md §9
+// "Zone types": no real zone-count precedent for Island) and as the
+// fallback for a Country leg that touches no drawn fare zone at all, where
+// no zone count is available to look up. Country itself, when zones ARE
+// drawn, uses the real zone-count table below instead — see
+// quoteSingleFareGBPPence in fare-journey.mts for which case applies.
 export function countryOrIslandSingleFareGBPPence(miles: number): number {
   return COUNTRY_OR_ISLAND_BASE_GBP_PENCE + Math.round(COUNTRY_OR_ISLAND_PER_MILE_GBP_PENCE * miles);
+}
+
+// --- Country Single/Night, by real zone count (T175 follow-up, confirmed
+// 2026-11-12 directly from reference/Fares & Tickets - Lothian Countrry.pdf
+// — real Lothian Country fares are zone-count-based, not distance-based;
+// the distance formula above was a since-superseded approximation for
+// Country specifically). The City zone (A and/or B together) always
+// counts as exactly one unit toward the total — DESIGN.md's own "or 2
+// zones if A/B" note, already implemented by CITY_SINGLE_GBP_PENCE being
+// unaffected by this — so these functions are only ever called with the
+// zone count AFTER that collapse has already happened (see
+// fare-journey.mts's countZonesForLeg). ---
+
+// Real table: 1 zone (or 2 if A/B) £2.40, 2-3 zones £3.40, 4 £4.40,
+// 5 £5.40, 6 £6.40. Beyond 6 (not in the real table): continues the same
+// +£1.00-per-zone step already visible from zone 3 onward — an
+// extrapolation, not a measurement, confirmed as the right one to make.
+export function countryZoneCountSingleFareGBPPence(zoneCount: number): number {
+  if (zoneCount <= 1) return 240;
+  if (zoneCount <= 3) return 340;
+  return 240 + 100 * (zoneCount - 2);
+}
+
+// Real table: 1 zone (or 2 if A/B) £3.50, 2-3 zones £5.50, 4-6 zones
+// £8.50 flat (coarser than the Day table — no per-zone step within that
+// band to extrapolate), so 7+ zones simply continues at the same flat
+// £8.50 rather than inventing an increment the real data doesn't show.
+export function countryZoneCountNightSingleFareGBPPence(zoneCount: number): number {
+  if (zoneCount <= 1) return 350;
+  if (zoneCount <= 3) return 550;
+  return 850;
 }
 
 // --- Return (unchanged from the pre-rework model — DESIGN.md's own

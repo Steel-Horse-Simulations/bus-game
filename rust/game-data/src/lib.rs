@@ -86,6 +86,24 @@ pub struct Edge {
     pub psv_yes: bool,
     pub bus_yes: bool,
     pub maxspeed_mph: Option<u16>,
+    /// Parsed `maxweight` tag, tonnes — a real legal weight limit (e.g. a
+    /// weak bridge). `None` means "no known limit," never a default/0.0 —
+    /// mirrors `maxspeed_mph`'s own "missing tag, not inferred" treatment,
+    /// unlike `width_m`'s inferred-fallback chain. No versioning gate on
+    /// this struct (plain bincode derive), so every consumer rebuilds
+    /// together.
+    pub maxweight_tonnes: Option<f32>,
+    /// Parsed `maxheight` tag, metres — a real legal height limit (e.g. a
+    /// low bridge or tunnel). Same "no tag = no known limit" rule.
+    pub maxheight_metres: Option<f32>,
+    /// Parsed `maxlength` tag, metres — a real legal length limit. Same
+    /// "no tag = no known limit" rule.
+    pub maxlength_metres: Option<f32>,
+    /// Parsed `maxwidth` tag, metres — a real legal (posted) width
+    /// restriction, distinct from `width_m` (the road's own physical/
+    /// inferred width used for rendering). Same "no tag = no known limit"
+    /// rule.
+    pub maxwidth_metres: Option<f32>,
     /// Shape points between `from` and `to` (exclusive of both endpoints)
     /// live in `RoadGraph::geometry_points`, at
     /// `[geometry_start, geometry_start + geometry_len)` — a flat shared
@@ -374,6 +392,111 @@ pub fn decode_coastline(bytes: &[u8]) -> CoastlineData {
         .0
 }
 
+/// The "land use and POI demand points" artefact (`landuse.bin`, CLAUDE.md
+/// data pipeline step 3) — moved here 2026-11-15 from `pipeline::landuse`
+/// (which now re-exports these same names) so `game-wasm` can decode the
+/// real data too, the same split `CoastlineData` above already uses.
+/// `pipeline::landuse` still owns the actual OSM tag classification
+/// (`classify_zone_tags`/`classify_poi_tags`) — only the data SHAPE moved,
+/// not the extraction logic. This pass only classifies and extracts raw
+/// geometry; DESIGN.md §2's own "Demand" section ("Generated from OSM land
+/// use...") is deliberately not given a precise weighting formula there,
+/// so real demand-weight figures are computed client-side
+/// (`src/renderer/landuse-demand.mts`) from this raw classified data,
+/// not baked in at pipeline time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum DemandCategory {
+    Housing,
+    Retail,
+    Schools,
+    Workplaces,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct LandUseZone {
+    pub osm_id: i64,
+    pub category: DemandCategory,
+    pub centroid_lon_e7: i32,
+    pub centroid_lat_e7: i32,
+    pub name: Option<String>,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct Poi {
+    pub osm_id: i64,
+    pub category: DemandCategory,
+    pub lon_e7: i32,
+    pub lat_e7: i32,
+    pub name: Option<String>,
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct LandUseData {
+    pub zones: Vec<LandUseZone>,
+    pub pois: Vec<Poi>,
+}
+
+pub fn encode_landuse(data: &LandUseData) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode land use data")
+}
+
+pub fn decode_landuse(bytes: &[u8]) -> LandUseData {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode land use data")
+        .0
+}
+
+/// The real Scotland political border (T190, 2026-11-14) — genuinely
+/// separate from the extract boundary `boundary.rs` already uses
+/// (`extract-boundary.poly`/`RoadGraph` clipping), which is deliberately
+/// extended south into England (the hand-drawn Carlisle/Berwick corridor,
+/// confirmed by reading that file's own doc comment) and so would wrongly
+/// pass Carlisle/Berwick/Newcastle for a genuine "is this really in
+/// Scotland" check. This artefact is built from Geofabrik's own
+/// `scotland.poly` region boundary file (the real political border,
+/// `data/scotland-boundary.poly`) instead — one or more outer rings, same
+/// `i32` lon_e7/lat_e7 fixed-point convention as every other artefact
+/// here, no serde. Consumed by `game-wasm`'s `point_in_scotland` for the
+/// National Express Scottish route-terminus restriction
+/// (livery-seed-data.mts).
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct ScotlandBoundary {
+    pub rings: Vec<Vec<(i32, i32)>>,
+}
+
+pub fn encode_scotland_boundary(data: &ScotlandBoundary) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode scotland boundary")
+}
+
+pub fn decode_scotland_boundary(bytes: &[u8]) -> ScotlandBoundary {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode scotland boundary")
+        .0
+}
+
+/// The real Wales political border (2026-11-15) — exact structural mirror
+/// of `ScotlandBoundary` above, built from Geofabrik's own `wales.poly`
+/// region boundary file (`data/wales-boundary.poly`) instead of
+/// `scotland.poly`. Added at the user's own direct instruction: "National
+/// Express Welsh... should follow all the same rules as the Scottish
+/// livery except Wales instead of Scotland." Consumed by `game-wasm`'s
+/// `point_in_wales` for the National Express Welsh route-terminus
+/// restriction (livery-seed-data.mts).
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct WalesBoundary {
+    pub rings: Vec<Vec<(i32, i32)>>,
+}
+
+pub fn encode_wales_boundary(data: &WalesBoundary) -> Vec<u8> {
+    bincode::encode_to_vec(data, bincode::config::standard()).expect("encode wales boundary")
+}
+
+pub fn decode_wales_boundary(bytes: &[u8]) -> WalesBoundary {
+    bincode::decode_from_slice(bytes, bincode::config::standard())
+        .expect("decode wales boundary")
+        .0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +508,29 @@ mod tests {
             assert!(mph > 0 && mph <= 70, "speed out of a sane UK road range: {mph}");
         }
         assert_eq!(HIGHWAY_CLASS_DEFAULT_SPEED_MPH[0], 70, "motorway is the fastest class");
+    }
+
+    #[test]
+    fn scotland_boundary_round_trips_through_encode_decode() {
+        let data = ScotlandBoundary {
+            rings: vec![vec![(-31_883_000, 559_533_000), (-10_000_000, 600_000_000), (-20_000_000, 580_000_000)], vec![(0, 0), (1, 1), (2, 2)]],
+        };
+        let bytes = encode_scotland_boundary(&data);
+        let decoded = decode_scotland_boundary(&bytes);
+        assert_eq!(decoded.rings.len(), 2);
+        assert_eq!(decoded.rings[0], data.rings[0]);
+        assert_eq!(decoded.rings[1], data.rings[1]);
+    }
+
+    #[test]
+    fn wales_boundary_round_trips_through_encode_decode() {
+        let data = WalesBoundary {
+            rings: vec![vec![(-32_000_000, 517_000_000), (-30_000_000, 520_000_000), (-31_000_000, 518_000_000)], vec![(0, 0), (1, 1), (2, 2)]],
+        };
+        let bytes = encode_wales_boundary(&data);
+        let decoded = decode_wales_boundary(&bytes);
+        assert_eq!(decoded.rings.len(), 2);
+        assert_eq!(decoded.rings[0], data.rings[0]);
+        assert_eq!(decoded.rings[1], data.rings[1]);
     }
 }

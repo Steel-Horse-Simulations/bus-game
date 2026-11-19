@@ -31,7 +31,15 @@ import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
 import { placeDealerState } from "./dealer-placement";
 import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+// Shown/hidden by the Fleet section of the bottom bar (main-screen-
+// navigation.ts), not its own floating toggle button any more (2026-11-08,
+// live request: "get all menus working... instead of temporary ones") —
+// except the "placing" flow above, which still opens the panel directly
+// once a new shop is placed on the map.
+export const repaintShopPanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 import { gameClockState } from "./game-clock-engine";
 import { gameDateTimeFromSeconds, formatGameDate, SECONDS_PER_DAY } from "./game-clock.mts";
 import { findVehicleModel } from "./vehicle-catalogue.mts";
@@ -44,6 +52,9 @@ import {
   applyDiscount,
   type BookingWindow,
 } from "./repaint-booking.mts";
+import { combinedAwayWindows } from "./workshop-booking.mts";
+import { REPOWER_CONCURRENT_CAPACITY, REPOWER_TURNAROUND_WORKING_DAYS } from "./repower-booking.mts";
+import { isIslandDepotGroup } from "./fare-journey.mts";
 
 function todayDayIndex(): number {
   return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
@@ -101,6 +112,14 @@ const REAL_REPAINT_SHOPS: RealRepaintShop[] = [
   { name: "Ferrymill Motors", lon: -4.205188, lat: 55.943438, concurrentCapacity: 7, turnaroundDays: 5 },
   { name: "Loughborough repaint/bodyshop", lon: -1.222997, lat: 52.778878, concurrentCapacity: 7, turnaroundDays: 5 },
   { name: "ACE Commercial Refinishers", lon: -2.650232, lat: 56.730237, concurrentCapacity: 2, turnaroundDays: 10 },
+  // T179's bundled-repaint-while-there bonus: a bus in for a re-power at
+  // Wrightbus's NewPower site can also get a full repaint done in the
+  // same visit (repower-booking-panel.ts), since the re-power's own
+  // 15-working-day stay comfortably covers a repaint that would normally
+  // take 5 elsewhere on its own — this row exists so that bundled
+  // booking has a real repaintShopId to point at. Same real Bicester
+  // location as the matching dealer pin (dealer-reference-pins.ts).
+  { name: "Wrightbus NewPower (Bicester)", lon: -1.1822564, lat: 51.9035125, concurrentCapacity: REPOWER_CONCURRENT_CAPACITY.wrightbus, turnaroundDays: REPOWER_TURNAROUND_WORKING_DAYS },
 ];
 
 export async function seedRealRepaintShops(): Promise<void> {
@@ -138,21 +157,13 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     },
   });
 
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Repaint shops";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "1150px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
-
   const panel = document.createElement("div");
   panel.className = "panel";
-  panel.style.position = "absolute";
-  panel.style.top = "8px";
-  panel.style.left = "330px";
-  panel.style.zIndex = "2";
+  panel.style.position = "fixed";
+  panel.style.top = "72px";
+  panel.style.left = "50%";
+  panel.style.transform = "translateX(-50%)";
+  panel.style.zIndex = "1000";
   panel.style.width = "340px";
   panel.style.maxHeight = "75vh";
   panel.style.overflowY = "auto";
@@ -186,6 +197,14 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
   // Booking a vehicle in — see the file header comment for scope.
   let vehicles: Vehicle[] = [];
   let bookings: RepaintBooking[] = [];
+  // Only needed for the "2 away at once" depot-group cap below, which
+  // re-power now counts toward too (T179) — never shown in this panel's
+  // own UI.
+  let repowerBookings: RepowerBooking[] = [];
+  // Only needed for the real island away-cap below (2026-11-19) — see
+  // previewBooking's own comment.
+  let allDepotsForIslandCheck: Depot[] = [];
+  let allZonesForIslandCheck: FareZone[] = [];
   let bookingVehicleId: number | null = null;
   let bookingType: RepaintType = "full";
   let bookingShopId: number | null = null;
@@ -204,6 +223,9 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     refreshEntrancesLayer();
     vehicles = await window.vehicles.listAll();
     bookings = await window.repaintBookings.listAll();
+    repowerBookings = await window.repowerBookings.listAll();
+    allDepotsForIslandCheck = await window.depots.list();
+    allZonesForIslandCheck = await window.fareZones.listAll();
     if (bookingVehicleId === null && vehicles.length > 0) bookingVehicleId = vehicles[0].id;
     if (bookingShopId === null && shops.length > 0) bookingShopId = shops[0].id;
   }
@@ -236,11 +258,19 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     if (!shop) return null;
     const basePriceGBP = fullRepaintBasePriceGBP(vehicle.modelId);
     const shopBookings: BookingWindow[] = bookings.filter((b) => b.repaintShopId === shop.id).map((b) => ({ startDay: b.startGameDay, completionDay: b.completionGameDay }));
-    const vehicleDepotGroupId = new Map(vehicles.map((v) => [v.id, v.depotGroupId]));
-    const groupCapBookings: BookingWindow[] = bookings
-      .filter((b) => b.repaintType === "full" && vehicleDepotGroupId.get(b.vehicleId) === vehicle.depotGroupId)
-      .map((b) => ({ startDay: b.startGameDay, completionDay: b.completionGameDay }));
-    const bookingWindow = scheduleRepaintBooking(today, shop.turnaroundDays, shopBookings, shop.concurrentCapacity, groupCapBookings, 2);
+    // "2 away at once" per depot group — shared with re-power (T179),
+    // since a bus away for either reason occupies the same real slot.
+    // Tightened to 1 for an island depot group (2026-11-19, live
+    // request: "On Islands when a vehicle is away for re-painting or
+    // re-powering then only 1 can be away") — real `isIslandDepotGroup`
+    // check (fare-journey.mts), same real depot-location-against-real-
+    // fare-zones machinery already used for the Airlink 100/Lothian XLB
+    // fallback and the stop-upgrade work.
+    const fullRepaintAwayBookings = bookings.filter((b) => b.repaintType === "full").map((b) => ({ vehicleId: b.vehicleId, startGameDay: b.startGameDay, completionGameDay: b.completionGameDay }));
+    const repowerAwayBookings = repowerBookings.map((b) => ({ vehicleId: b.vehicleId, startGameDay: b.startGameDay, completionGameDay: b.completionGameDay }));
+    const groupCapBookings = combinedAwayWindows(vehicles, fullRepaintAwayBookings, repowerAwayBookings, vehicle.depotGroupId);
+    const groupAwayCap = isIslandDepotGroup(vehicle.depotGroupId, allDepotsForIslandCheck, allZonesForIslandCheck) ? 1 : 2;
+    const bookingWindow = scheduleRepaintBooking(today, shop.turnaroundDays, shopBookings, shop.concurrentCapacity, groupCapBookings, groupAwayCap);
     return { basePriceGBP, discountPercent, finalPriceGBP: applyDiscount(basePriceGBP, discountPercent), window: bookingWindow };
   }
 
@@ -673,7 +703,6 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     pendingLngLat = e.lngLat;
     errorMessage = "";
     panel.style.display = "flex";
-    toggle.classList.add("is-active");
     render();
   });
 
@@ -692,16 +721,13 @@ export async function mountRepaintShops(map: maplibregl.Map, router: Router): Pr
     });
   });
 
-  let panelOpen = false;
-  toggle.addEventListener("click", async () => {
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) {
-      await reload();
-      render();
-    }
-  });
+  repaintShopPanelState.open = () => {
+    panel.style.display = "flex";
+    void reload().then(() => render());
+  };
+  repaintShopPanelState.close = () => {
+    panel.style.display = "none";
+  };
 
   await reload();
 }

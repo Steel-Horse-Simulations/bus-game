@@ -4,6 +4,9 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
+mod journey_planner;
+pub use journey_planner::JourneyPlanner;
+
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
@@ -516,6 +519,97 @@ fn offset_point_perpendicular(
 // caveat as the junction delay constants above, worth revisiting once a
 // placed stop is checked against a real kerb-to-centreline distance.
 const KERB_OFFSET_M: f64 = 4.5;
+
+/// Nearest-edge search shared by `snap_to_any_road` and
+/// `nearest_road_edge_info` — same "scan every edge, not just bus-legal
+/// ones" convention as `place_stop` (a fare-zone boundary point, like a
+/// depot entrance, may have snapped to a private/restricted road exactly
+/// like the ones `nearest_node`'s bus-legal-only filter excludes). Unlike
+/// `place_stop`, this doesn't need oneway/bus-legal — just the real
+/// distance (so callers can apply their own cutoff), the foot point, the
+/// enclosing segment's own two endpoints (for `signed_side_of_segment`/
+/// `offset_point_perpendicular`), and that edge's real `width_m`.
+/// Returns `None` only if the graph has no edges at all (never true
+/// against real pipeline data).
+///
+/// **Must use `edge_grid_all` (the same ring-expanding spatial grid
+/// `nearest_node_any_road` already searches), never a plain scan over
+/// every edge.** A real live bug, 2026-11-14: this used to be a free
+/// function taking `&RoadGraph` and looping `for edge in &graph.edges`
+/// unconditionally — fine for `snap_to_any_road`, called once per click,
+/// but T196 started calling it once per fare-zone boundary POINT (every
+/// point now gets offered to `nearest_road_edge_info`, not just ones
+/// flagged road-snapped), and a real zone can easily have several hundred
+/// points. At whole-UK-graph scale (~11.5M edges) that's several hundred
+/// full linear scans of the entire national road network in one save —
+/// confirmed as the exact cause of a live "frozen for a few minutes"
+/// report, not guessed. Ring-expanding the grid the same way
+/// `nearest_node_any_road` does turns each individual call back into an
+/// O(nearby cells) lookup regardless of how many times it's called.
+// `HighwayClass`'s own numeric index (`rust/pipeline/src/road_graph.rs`
+// — the enum's plain declaration-order discriminant, `self as usize`,
+// which is exactly what `graph_build.rs` stores as this field; LOWER
+// means more major: 0 Motorway ... 14 Track). User request, 2026-11-15,
+// anticipating a real problem before it fully showed up, then refined
+// with a real measured example: "the type of road that Main Road is
+// should be the smallest type of road the zone boundary snaps to" —
+// checked directly against the real road graph at the coordinates the
+// user gave for their own real Main Street (57.285616, -5.714840):
+// class 8, Tertiary. So Tertiary and anything more major (0-8) counts as
+// "a road" for the fare-zone push check; TertiaryLink and everything
+// smaller (9 upward — Unclassified, Residential, LivingStreet, Service,
+// Track) does not. This also directly covers the originally-reported
+// problem (a driveway/access lane — Service, 13 — nudging a boundary
+// point that was otherwise correctly on its own real landuse edge), as a
+// consequence of the same single threshold rather than a separate
+// special case for it.
+const MAX_ROAD_CLASS_FOR_FARE_ZONE_PUSH: u8 = 8; // Tertiary
+
+fn nearest_edge_with_width(router: &Router, p_lon_e7: i32, p_lat_e7: i32, exclude_minor_classes: bool) -> Option<(f64, i32, i32, i32, i32, i32, i32, f32)> {
+    let mut best_dist = f64::INFINITY;
+    // distance, foot point, segment a, segment b, this edge's real width_m.
+    let mut best: Option<(f64, i32, i32, i32, i32, i32, i32, f32)> = None;
+    let (center_x, center_y) = nearest_node_grid_key(p_lon_e7, p_lat_e7);
+    let mut seen_edges: HashSet<u32> = HashSet::new();
+
+    for ring in 0..=200i32 {
+        for cx in (center_x - ring)..=(center_x + ring) {
+            for cy in (center_y - ring)..=(center_y + ring) {
+                if ring > 0 && cx != center_x - ring && cx != center_x + ring && cy != center_y - ring && cy != center_y + ring {
+                    continue;
+                }
+                let Some(edge_idxs) = router.edge_grid_all.get(&(cx, cy)) else {
+                    continue;
+                };
+                for &edge_idx in edge_idxs {
+                    if !seen_edges.insert(edge_idx) {
+                        continue;
+                    }
+                    let edge = &router.graph.edges[edge_idx as usize];
+                    if exclude_minor_classes && edge.class > MAX_ROAD_CLASS_FOR_FARE_ZONE_PUSH {
+                        continue;
+                    }
+                    let from = &router.graph.nodes[edge.from as usize];
+                    let to = &router.graph.nodes[edge.to as usize];
+                    let mut prev = (from.lon_e7, from.lat_e7);
+                    for &next in router.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
+                        let (d, foot_lon_e7, foot_lat_e7) = point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
+                        if d < best_dist {
+                            best_dist = d;
+                            best = Some((d, foot_lon_e7, foot_lat_e7, prev.0, prev.1, next.0, next.1, edge.width_m));
+                        }
+                        prev = next;
+                    }
+                }
+            }
+        }
+        if best.is_some() && (ring as f64) * (NEAREST_NODE_GRID_CELL_E7 as f64 * 1e-7).to_radians() * 6_371_000.0 > best_dist {
+            break;
+        }
+    }
+
+    best
+}
 
 // `nearest_node`'s own needs_outgoing/needs_incoming branches: below this
 // distance from a candidate endpoint, the snap point is close enough to
@@ -1316,23 +1410,14 @@ impl Router {
         let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
         let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
 
-        let mut best_dist = f64::INFINITY;
-        let mut best: Option<(i32, i32)> = None;
-
-        for edge in &self.graph.edges {
-            let from = &self.graph.nodes[edge.from as usize];
-            let to = &self.graph.nodes[edge.to as usize];
-            let mut prev = (from.lon_e7, from.lat_e7);
-            for &next in self.graph.edge_geometry(edge).iter().chain(std::iter::once(&(to.lon_e7, to.lat_e7))) {
-                let (d, foot_lon_e7, foot_lat_e7) =
-                    point_to_segment_closest(p_lon_e7, p_lat_e7, prev.0, prev.1, next.0, next.1);
-                if d < best_dist {
-                    best_dist = d;
-                    best = Some((foot_lon_e7, foot_lat_e7));
-                }
-                prev = next;
-            }
-        }
+        // false: a depot's own access road is very often exactly a
+        // Service-class way (see this function's own doc comment above —
+        // excluding it here would reintroduce the "won't snap to the
+        // correct road" bug that justified this function's own every-
+        // class search in the first place).
+        let Some((dist_m, foot_lon_e7, foot_lat_e7, _, _, _, _, _)) = nearest_edge_with_width(self, p_lon_e7, p_lat_e7, false) else {
+            return Vec::new();
+        };
 
         // Max-distance cutoff (2026-11-01, real bug found and fixed —
         // this function previously had none at all, so a click anywhere,
@@ -1345,14 +1430,60 @@ impl Router {
         // against a real access road in practice) while clearly excluding
         // "snap across a sea loch/firth to a distant road."
         const MAX_SNAP_DISTANCE_M: f64 = 500.0;
-        if best_dist > MAX_SNAP_DISTANCE_M {
+        if dist_m > MAX_SNAP_DISTANCE_M {
             return Vec::new();
         }
 
-        let Some((foot_lon_e7, foot_lat_e7)) = best else {
+        vec![foot_lon_e7 as f64 * 1e-7, foot_lat_e7 as f64 * 1e-7]
+    }
+
+    /// Replaces the old `offset_point_away_from` (removed 2026-11-14): that
+    /// function translated a road-side point a FIXED perpendicular
+    /// distance from the road, with no knowledge of the zone boundary's
+    /// own shape at that point — fine for a boundary running roughly
+    /// *along* a road, but for one merely *passing near* a road on its
+    /// way somewhere else (e.g. a straight line in from a residential
+    /// area), the translation ignored the line's own direction entirely,
+    /// producing a sharp, unrelated kink where the line should have
+    /// stayed straight. Direct user diagnosis: "if a line is coming from
+    /// a point not on a road, move the point on the line along the
+    /// pre-existing line... I think the weird kinks are moving the point
+    /// away from the road at an exact [perpendicular] angle, not along
+    /// the line that it already exists." Fixing that needs the ring's own
+    /// neighbouring points, which only `fare-zone-road-pushout.mts` has —
+    /// so this now only returns the raw geometric facts (nearest edge's
+    /// own two endpoints and real width, and the real distance so the
+    /// caller can apply its own cutoff) and leaves the actual "how to
+    /// move it" decision, including the line-direction-aware math, to
+    /// that TypeScript side. Returns `[dist_m, a_lon, a_lat, b_lon,
+    /// b_lat, width_m]`, or an empty array if the graph has no edges at
+    /// all (never true against real pipeline data).
+    ///
+    /// Excludes anything smaller than Tertiary (`MAX_ROAD_CLASS_FOR_
+    /// FARE_ZONE_PUSH`) — user request, 2026-11-15, Main Street itself
+    /// measured as the real example: a residential street, service lane
+    /// or track isn't "a road" in the sense a fare-zone boundary needs to
+    /// clear, and counting one anyway is exactly what nudged a boundary
+    /// point that was otherwise correctly on its own real landuse edge,
+    /// confirmed live during that same session's zone-boundary
+    /// investigation.
+    pub fn nearest_road_edge_info(&self, lon: f64, lat: f64) -> Vec<f64> {
+        let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
+        let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
+
+        let Some((dist_m, _foot_lon_e7, _foot_lat_e7, a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7, width_m)) =
+            nearest_edge_with_width(self, p_lon_e7, p_lat_e7, true)
+        else {
             return Vec::new();
         };
-        vec![foot_lon_e7 as f64 * 1e-7, foot_lat_e7 as f64 * 1e-7]
+        vec![
+            dist_m,
+            a_lon_e7 as f64 * 1e-7,
+            a_lat_e7 as f64 * 1e-7,
+            b_lon_e7 as f64 * 1e-7,
+            b_lat_e7 as f64 * 1e-7,
+            width_m as f64,
+        ]
     }
 
     /// A path along connected road geometry between two points, over
@@ -1625,6 +1756,67 @@ impl Router {
     /// between stops (DESIGN.md §7).
     pub fn last_route_time_seconds(&self) -> f64 {
         *self.last_route_time_seconds.borrow()
+    }
+
+    /// Total real distance (metres) of the most recent `find_route` call —
+    /// the sum of `length_m` over every edge in `last_route_edges()`.
+    /// Mirrors `last_route_time_seconds` exactly, same cached data. Added
+    /// for Phase 4's Country/Island per-mile fare quoting (OPEN-ITEMS.md
+    /// T175), which needs a real routed distance and had no getter to read
+    /// one from before this.
+    pub fn last_route_distance_m(&self) -> f64 {
+        self.last_edges.borrow().iter().map(|&idx| self.graph.edges[idx as usize].length_m as f64).sum()
+    }
+
+    /// Most restrictive (lowest) `maxweight` tag found on any edge of the
+    /// most recent `find_route`/`find_route_through` call, in tonnes —
+    /// Q18's hard vehicle-eligibility check (OPEN-ITEMS.md). Unlike
+    /// `last_route_distance_m`'s `.sum()`, this is a `.fold`/`min`: an edge
+    /// with no `maxweight` tag (`None`) contributes nothing at all via
+    /// `filter_map` (a missing tag must never become a false 0.0 minimum —
+    /// it means "no known limit here," not "limit of zero"). Returns
+    /// `f64::INFINITY` — not a real OSM figure — when no edge on the route
+    /// carries the tag at all; the TS side checks this with
+    /// `Number.isFinite(...)`.
+    pub fn last_route_min_maxweight_tonnes(&self) -> f64 {
+        self.last_edges
+            .borrow()
+            .iter()
+            .filter_map(|&idx| self.graph.edges[idx as usize].maxweight_tonnes)
+            .fold(f64::INFINITY, |acc, v| acc.min(v as f64))
+    }
+
+    /// Most restrictive (lowest) `maxheight` tag along the most recent
+    /// route, in metres. Same shape/sentinel as
+    /// `last_route_min_maxweight_tonnes`.
+    pub fn last_route_min_maxheight_m(&self) -> f64 {
+        self.last_edges
+            .borrow()
+            .iter()
+            .filter_map(|&idx| self.graph.edges[idx as usize].maxheight_metres)
+            .fold(f64::INFINITY, |acc, v| acc.min(v as f64))
+    }
+
+    /// Most restrictive (lowest) `maxlength` tag along the most recent
+    /// route, in metres. Same shape/sentinel as
+    /// `last_route_min_maxweight_tonnes`.
+    pub fn last_route_min_maxlength_m(&self) -> f64 {
+        self.last_edges
+            .borrow()
+            .iter()
+            .filter_map(|&idx| self.graph.edges[idx as usize].maxlength_metres)
+            .fold(f64::INFINITY, |acc, v| acc.min(v as f64))
+    }
+
+    /// Most restrictive (lowest) `maxwidth` tag along the most recent
+    /// route, in metres. Same shape/sentinel as
+    /// `last_route_min_maxweight_tonnes`.
+    pub fn last_route_min_maxwidth_m(&self) -> f64 {
+        self.last_edges
+            .borrow()
+            .iter()
+            .filter_map(|&idx| self.graph.edges[idx as usize].maxwidth_metres)
+            .fold(f64::INFINITY, |acc, v| acc.min(v as f64))
     }
 
     /// Fastest path by travel time (DESIGN.md §6) between two points,
@@ -2573,6 +2765,103 @@ pub fn decode_coastline(bytes: &[u8]) -> js_sys::Array {
     out
 }
 
+/// Decodes the real "land use and POI demand points" artefact
+/// (`landuse.bin`) for the renderer, same shape convention as
+/// `decode_coastline` above — plain-degree `lon`/`lat` (not e7), a
+/// `category` string matching `game_data::DemandCategory`'s own variant
+/// names exactly, and an optional `name`. This pass only decodes the
+/// real, already-classified pipeline data; it computes no demand
+/// weights itself (DESIGN.md §2's own "Demand" section gives no precise
+/// weighting formula, so that lives client-side in
+/// `src/renderer/landuse-demand.mts`, not baked in here).
+#[wasm_bindgen]
+pub fn decode_landuse(bytes: &[u8]) -> js_sys::Array {
+    fn category_name(c: game_data::DemandCategory) -> &'static str {
+        match c {
+            game_data::DemandCategory::Housing => "Housing",
+            game_data::DemandCategory::Retail => "Retail",
+            game_data::DemandCategory::Schools => "Schools",
+            game_data::DemandCategory::Workplaces => "Workplaces",
+        }
+    }
+    let data = game_data::decode_landuse(bytes);
+    let out = js_sys::Array::new();
+    for zone in &data.zones {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"kind".into(), &"zone".into()).unwrap();
+        js_sys::Reflect::set(&obj, &"category".into(), &category_name(zone.category).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lon".into(), &(zone.centroid_lon_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lat".into(), &(zone.centroid_lat_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(zone.osm_id as f64).into()).unwrap();
+        if let Some(name) = &zone.name {
+            js_sys::Reflect::set(&obj, &"name".into(), &name.as_str().into()).unwrap();
+        }
+        out.push(&obj);
+    }
+    for poi in &data.pois {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"kind".into(), &"poi".into()).unwrap();
+        js_sys::Reflect::set(&obj, &"category".into(), &category_name(poi.category).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"osmId".into(), &(poi.osm_id as f64).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lon".into(), &(poi.lon_e7 as f64 * 1e-7).into()).unwrap();
+        js_sys::Reflect::set(&obj, &"lat".into(), &(poi.lat_e7 as f64 * 1e-7).into()).unwrap();
+        if let Some(name) = &poi.name {
+            js_sys::Reflect::set(&obj, &"name".into(), &name.as_str().into()).unwrap();
+        }
+        out.push(&obj);
+    }
+    out
+}
+
+/// Ray-casting point-in-polygon test against a single ring, in real
+/// lon/lat degrees — ported directly from the pipeline's own
+/// `boundary.rs::point_in_ring` (same algorithm, just reading the decoded
+/// `(i32, i32)` e7 rings this WASM side gets instead of pipeline-time
+/// `Ring`s), since `game-wasm` can't depend on the `pipeline` crate.
+fn point_in_ring_e7(lon: f64, lat: f64, ring: &[(i32, i32)]) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (ring[i].0 as f64 * 1e-7, ring[i].1 as f64 * 1e-7);
+        let (xj, yj) = (ring[j].0 as f64 * 1e-7, ring[j].1 as f64 * 1e-7);
+        if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Whether (lon, lat) falls inside the real Scotland boundary (T190,
+/// 2026-11-14) — `bytes` is the raw, already-fetched
+/// `scotland_boundary.bin` content (`scotland-boundary.mts` keeps it in
+/// module state and passes it on every call, rather than this function
+/// re-fetching it itself). Stateless/reparse-every-call, deliberately not
+/// the heavier `Router`-style persistent-state pattern: this is only
+/// ever called a handful of times per Configure-screen-open (once per
+/// route termini pair), not per-frame, so the repeated decode cost is a
+/// non-issue. Genuinely separate from `RoadGraph`'s own extract-boundary
+/// clip — see `game_data::ScotlandBoundary`'s own doc comment for why a
+/// second, real political-border artefact exists at all.
+#[wasm_bindgen]
+pub fn point_in_scotland(bytes: &[u8], lon: f64, lat: f64) -> bool {
+    let boundary = game_data::decode_scotland_boundary(bytes);
+    boundary.rings.iter().any(|ring| point_in_ring_e7(lon, lat, ring))
+}
+
+/// Whether (lon, lat) falls inside the real Wales boundary (2026-11-15)
+/// — exact structural mirror of `point_in_scotland` above, backing the
+/// National Express Welsh route-terminus restriction
+/// (livery-seed-data.mts) per the user's own direct instruction: "should
+/// follow all the same rules as the Scottish livery except Wales
+/// instead of Scotland."
+#[wasm_bindgen]
+pub fn point_in_wales(bytes: &[u8], lon: f64, lat: f64) -> bool {
+    let boundary = game_data::decode_wales_boundary(bytes);
+    boundary.rings.iter().any(|ring| point_in_ring_e7(lon, lat, ring))
+}
+
 /// Decodes `settlements.bin` into a plain JS array of `{lon, lat, name,
 /// rank, population, osmId}` objects — `rank` is `"city"`, `"town"`,
 /// `"village"` or `"hamlet"` (in that order of significance). Consumed by
@@ -2701,8 +2990,37 @@ mod tests {
             psv_yes: false,
             bus_yes: false,
             maxspeed_mph: None,
+            maxweight_tonnes: None,
+            maxheight_metres: None,
+            maxlength_metres: None,
+            maxwidth_metres: None,
             geometry_start: 0,
             geometry_len: 0,
+        }
+    }
+
+    /// Variant of `edge()` with the OSM maxweight/maxheight/maxlength/
+    /// maxwidth restriction fields set explicitly — used only by the
+    /// min-along-route getter tests below; every other test uses plain
+    /// `edge()` (all four `None`, i.e. "no restriction tagged").
+    #[allow(clippy::too_many_arguments)]
+    fn edge_with_limits(
+        from: u32,
+        to: u32,
+        osm_way_id: i64,
+        class: u8,
+        length_m: f32,
+        maxweight_tonnes: Option<f32>,
+        maxheight_metres: Option<f32>,
+        maxlength_metres: Option<f32>,
+        maxwidth_metres: Option<f32>,
+    ) -> Edge {
+        Edge {
+            maxweight_tonnes,
+            maxheight_metres,
+            maxlength_metres,
+            maxwidth_metres,
+            ..edge(from, to, osm_way_id, class, length_m)
         }
     }
 
@@ -2784,6 +3102,123 @@ mod tests {
         assert!(
             (time_s - expected_s).abs() < 0.01,
             "expected ~{expected_s}s for the 500m motorway leg, got {time_s}s"
+        );
+        assert!(
+            (router.last_route_distance_m() - 500.0).abs() < 0.01,
+            "expected the 500m motorway edge's own length, got {}",
+            router.last_route_distance_m()
+        );
+    }
+
+    /// `last_route_distance_m` must sum real `length_m` over every edge of
+    /// a multi-hop route, not just report the last edge or the straight-
+    /// line distance — a 3-edge chain with deliberately uneven lengths
+    /// (100m + 250m + 50m = 400m) catches either mistake.
+    #[test]
+    fn last_route_distance_m_sums_every_edge_of_a_multi_hop_route() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 500_000),
+            graph_node(3, 0, 1_000_000),
+            graph_node(4, 0, 1_500_000),
+        ];
+        let edges = vec![
+            edge(0, 1, 1, 11, 100.0),
+            edge(1, 2, 2, 11, 250.0),
+            edge(2, 3, 3, 11, 50.0),
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.15);
+        assert!(!coords.is_empty(), "expected a route to be found");
+        assert!(
+            (router.last_route_distance_m() - 400.0).abs() < 0.01,
+            "expected 100+250+50=400m summed across all 3 edges, got {}",
+            router.last_route_distance_m()
+        );
+    }
+
+    /// The 4 min-along-route getters (§B, Q18) must ignore edges with no tag
+    /// at all (`filter_map`, never a false 0.0 minimum) and report the
+    /// single lowest real figure among the edges that do carry one. A
+    /// 3-edge chain where edge 1 has no `maxweight` tag, edge 0 is tagged
+    /// 7.5t and edge 2 is tagged 3.5t (lower, i.e. more restrictive) proves
+    /// both: the untagged edge doesn't win as "0", and the correct (lowest)
+    /// real tagged value wins over a higher one.
+    #[test]
+    fn last_route_min_maxweight_tonnes_ignores_untagged_edges_and_finds_the_true_minimum() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 500_000),
+            graph_node(3, 0, 1_000_000),
+            graph_node(4, 0, 1_500_000),
+        ];
+        let edges = vec![
+            edge_with_limits(0, 1, 1, 11, 100.0, Some(7.5), None, None, None),
+            edge_with_limits(1, 2, 2, 11, 250.0, None, None, None, None),
+            edge_with_limits(2, 3, 3, 11, 50.0, Some(3.5), None, None, None),
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.15);
+        assert!(!coords.is_empty(), "expected a route to be found");
+        assert!(
+            (router.last_route_min_maxweight_tonnes() - 3.5).abs() < 0.001,
+            "expected the lower of the two tagged values (3.5t), got {}",
+            router.last_route_min_maxweight_tonnes()
+        );
+    }
+
+    /// `f64::INFINITY` is the "no restriction found" sentinel, never a real
+    /// OSM figure — a route with no `maxweight`-tagged edge at all must
+    /// report it, so the TS side's `Number.isFinite(...)` check works.
+    #[test]
+    fn last_route_min_maxweight_tonnes_is_infinity_when_no_edge_is_tagged() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 500_000)];
+        let edges = vec![edge(0, 1, 1, 11, 100.0)];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.05);
+        assert!(!coords.is_empty(), "expected a route to be found");
+        assert!(
+            router.last_route_min_maxweight_tonnes().is_infinite(),
+            "no edge carries a maxweight tag, so the sentinel (Infinity, not a real figure) must be returned"
+        );
+    }
+
+    /// The other 3 getters (`maxheight`/`maxlength`/`maxwidth`) mirror
+    /// `maxweight`'s own shape exactly — one test covering all 3 together,
+    /// each finding its own independent minimum across the same 2-edge
+    /// route.
+    #[test]
+    fn last_route_min_maxheight_maxlength_maxwidth_m_each_find_their_own_minimum() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 500_000), graph_node(3, 0, 1_000_000)];
+        let edges = vec![
+            edge_with_limits(0, 1, 1, 11, 100.0, None, Some(4.2), Some(12.0), Some(2.5)),
+            edge_with_limits(1, 2, 2, 11, 100.0, None, Some(3.7), Some(18.0), Some(2.2)),
+        ];
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let coords = router.find_route(0.0, 0.0, 0.0, 0.1);
+        assert!(!coords.is_empty(), "expected a route to be found");
+        assert!(
+            (router.last_route_min_maxheight_m() - 3.7).abs() < 0.001,
+            "lowest maxheight (3.7m) expected, got {}",
+            router.last_route_min_maxheight_m()
+        );
+        assert!(
+            (router.last_route_min_maxlength_m() - 12.0).abs() < 0.001,
+            "lowest maxlength (12.0m) expected, got {}",
+            router.last_route_min_maxlength_m()
+        );
+        assert!(
+            (router.last_route_min_maxwidth_m() - 2.2).abs() < 0.001,
+            "lowest maxwidth (2.2m) expected, got {}",
+            router.last_route_min_maxwidth_m()
         );
     }
 
@@ -3302,6 +3737,60 @@ mod tests {
         );
     }
 
+    /// Real-world-scale guard, 2026-11-15, written specifically because
+    /// the last time `find_route_through` was wired into
+    /// `vehicle-simulation.ts` it caused the packaged app to hang on
+    /// boot, never root-caused, reverted the same day (OPEN-ITEMS.md
+    /// T82/T84). This session already found two real bugs this exact
+    /// shape elsewhere — a function fine against a small synthetic
+    /// graph but catastrophic against the real ~11.5M-edge whole-UK
+    /// graph (T187: an O(rounds × n²) blowup with no spatial index;
+    /// T197: a full edge-array scan that was fine once per click but
+    /// froze the game once called per boundary point). This test builds
+    /// a long chain (2,000 nodes/edges — not whole-UK scale, but enough
+    /// to expose any cost that scales with GRAPH size rather than
+    /// ROUTE length) and a route through 200 of its own points (a
+    /// realistically long real route), asserting the whole call
+    /// completes in well under a second. `find_route_through` calls
+    /// `dijkstra` exactly once per leg — the same number of times
+    /// `find_route` already does per route when called once per leg —
+    /// so there's no reason for it to cost asymptotically more; this
+    /// confirms that directly rather than trusting the code-reading
+    /// alone, which is exactly what skipped the real WASM-specific
+    /// verification last time.
+    #[test]
+    fn find_route_through_stays_fast_on_a_long_chain_with_many_interior_points() {
+        const CHAIN_LEN: usize = 2000;
+        let mut nodes = Vec::with_capacity(CHAIN_LEN);
+        for i in 0..CHAIN_LEN {
+            nodes.push(graph_node(i as i64 + 1, 0, i as i32 * 1_000));
+        }
+        let mut edges = Vec::with_capacity(CHAIN_LEN - 1);
+        for i in 0..CHAIN_LEN - 1 {
+            edges.push(edge(i as u32, i as u32 + 1, 900 + i as i64, 11, 100.0));
+        }
+        let bytes = game_data::encode(&RoadGraph { nodes, edges, restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let mut stops: Vec<f64> = Vec::new();
+        for i in 0..200 {
+            let lat_e7 = (i * (CHAIN_LEN / 200)) as i32 * 1_000;
+            stops.push(0.0);
+            stops.push(lat_e7 as f64 * 1e-7);
+        }
+
+        let started = std::time::Instant::now();
+        let coords = router.find_route_through(stops);
+        let elapsed = started.elapsed();
+
+        assert!(!coords.is_empty(), "a route through 200 real points on a 2,000-node chain should be found");
+        assert!(
+            elapsed.as_secs_f64() < 1.0,
+            "expected well under 1 second for a 200-point route on a 2,000-node graph, took {:?} — a cost that scales with graph size rather than route length would show up here",
+            elapsed
+        );
+    }
+
     // --- junction_delay_s (pure function) ---
 
     #[test]
@@ -3569,6 +4058,161 @@ mod tests {
         let result = router.place_stop(0.0005, 0.05);
         assert_eq!(result.len(), 3, "an access-restricted road should still be a valid placement target, not skipped");
         assert_eq!(result[2], 0.0, "an access-restricted road with no psv/bus override should be flagged as not bus-legal");
+    }
+
+    // --- nearest_road_edge_info (fare-zone road-snapped boundary push-out, DESIGN.md §9) ---
+    // Replaces the old offset_point_away_from (removed 2026-11-14): see
+    // this function's own doc comment for why the push itself moved to
+    // TypeScript, where the ring's neighbouring points are available.
+
+    /// The basic real-data contract: a point near a known road gets back
+    /// that road's own two endpoints, its real width, and the real
+    /// distance to it.
+    #[test]
+    fn nearest_road_edge_info_returns_the_real_edge_s_own_facts() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)]; // node 1 due north of node 0
+        let road = edge(0, 1, 900, 8, 100.0); // Tertiary, TwoWay, width_m 5.5 (edge()'s own default)
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert_eq!(result.len(), 6, "expected [dist_m, a_lon, a_lat, b_lon, b_lat, width_m]");
+        assert!(result[0] < 0.05, "the point sits exactly on the centreline, so distance should be ~0, got {}", result[0]);
+        assert!((result[5] - 5.5).abs() < 1e-6, "expected the edge's own real width_m (5.5), got {}", result[5]);
+    }
+
+    /// A wider road's own real `width_m` must actually come through, not
+    /// a placeholder constant.
+    #[test]
+    fn nearest_road_edge_info_uses_the_road_s_own_real_width() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let mut road = edge(0, 1, 900, 8, 100.0); // Tertiary
+        road.width_m = 12.0;
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert!((result[5] - 12.0).abs() < 1e-6, "expected this road's own real width_m (12.0), got {}", result[5]);
+    }
+
+    /// No road edge at all in the graph (shouldn't happen in practice for
+    /// a point that was itself just road-snapped moments earlier, but the
+    /// fallback must still be safe) — returns an empty array rather than
+    /// panicking.
+    #[test]
+    fn nearest_road_edge_info_returns_empty_when_no_road_edge_exists() {
+        let bytes = game_data::encode(&RoadGraph { nodes: vec![], edges: vec![], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(1.5, 2.5);
+        assert!(result.is_empty(), "expected an empty array when no road edge is found, got {:?}", result);
+    }
+
+    /// `nearest_edge_with_width`'s own grid rewrite (2026-11-14, see its
+    /// doc comment — the earlier plain full-scan version froze the game
+    /// for minutes once it started running once per boundary point
+    /// instead of once per click): confirms the ring-expanding grid
+    /// search still finds the genuinely nearest edge, not just whichever
+    /// one its own ring happens to reach first, when a second edge sits
+    /// far away in a completely different part of the graph (a different,
+    /// distant grid cell).
+    #[test]
+    fn nearest_road_edge_info_picks_the_genuinely_nearest_edge_when_another_sits_far_away() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000),
+            graph_node(3, 10_000_000, 10_000_000),
+            graph_node(4, 10_000_000, 11_000_000),
+        ];
+        let near_road = edge(0, 1, 900, 8, 100.0); // Tertiary, the real target, width_m 5.5
+        let mut far_road = edge(2, 3, 901, 8, 100.0); // Tertiary
+        far_road.width_m = 99.0; // deliberately distinct, so picking this by mistake is obvious
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![near_road, far_road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert!((result[5] - 5.5).abs() < 1e-6, "expected the near road's own width_m (5.5), proving the near edge (not the far 99m-wide one) was picked, got {}", result[5]);
+    }
+
+    /// User request, 2026-11-15, anticipating a real problem: a driveway
+    /// or access lane (`Service` class, 13) right next to the point must
+    /// be ignored entirely for this fare-zone-specific lookup — a real,
+    /// further-away genuine road is found instead, proving this isn't
+    /// just "picks whichever is closer" but a real class exclusion.
+    #[test]
+    fn nearest_road_edge_info_ignores_a_service_road_right_next_to_the_point() {
+        let nodes = vec![
+            graph_node(1, 0, 0),
+            graph_node(2, 0, 1_000_000), // a Service road directly under the query point
+            graph_node(3, 500_000, 0),
+            graph_node(4, 500_000, 1_000_000), // a genuine Residential road, ~5.5km east — well within the grid search's own range, but clearly not the driveway
+        ];
+        let driveway = edge(0, 1, 900, 13, 100.0); // Service
+        let real_road = edge(2, 3, 901, 8, 100.0); // Tertiary
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![driveway, real_road], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05); // sits exactly on the driveway's own centreline
+        assert!(!result.is_empty(), "expected the farther genuine road to still be found, not an empty result");
+        assert!(result[0] > 1000.0, "expected a real distance of several km to the farther road, proving the driveway right under the point was skipped, got {}", result[0]);
+    }
+
+    /// The mirror case: a `Track` class (14) edge is excluded the same way.
+    #[test]
+    fn nearest_road_edge_info_ignores_a_track_right_next_to_the_point() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let track = edge(0, 1, 900, 14, 100.0); // Track
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![track], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert!(result.is_empty(), "a lone Track-class edge must be excluded entirely, expected an empty result, got {:?}", result);
+    }
+
+    /// The real threshold the user specified directly, measured against
+    /// their own real Main Street: Tertiary and anything more major
+    /// counts, Residential (and everything smaller) does not — not just
+    /// Service/Track. A plain ordinary residential street is far more
+    /// common than a driveway, so this is worth its own explicit test,
+    /// not just an inference from the Service/Track cases above.
+    #[test]
+    fn nearest_road_edge_info_ignores_a_residential_road() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let residential = edge(0, 1, 900, 11, 100.0); // Residential
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![residential], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert!(result.is_empty(), "a lone Residential-class edge must be excluded, expected an empty result, got {:?}", result);
+    }
+
+    /// The exact threshold boundary: Tertiary (8) itself must still
+    /// count — this isn't "everything below Secondary," it's specifically
+    /// "Tertiary and more major," matching Main Street's own real class.
+    #[test]
+    fn nearest_road_edge_info_still_includes_a_tertiary_road() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let tertiary = edge(0, 1, 900, 8, 100.0); // Tertiary
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![tertiary], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.nearest_road_edge_info(0.0, 0.05);
+        assert!(!result.is_empty(), "a Tertiary-class edge (Main Street's own real class) must still be found");
+    }
+
+    /// Confirms the exclusion is specific to `nearest_road_edge_info` —
+    /// `snap_to_any_road` must still find a Service road (depot access
+    /// roads are very often exactly this class; see that function's own
+    /// doc comment).
+    #[test]
+    fn snap_to_any_road_still_finds_a_service_road() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
+        let driveway = edge(0, 1, 900, 13, 100.0); // Service
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![driveway], restrictions: vec![], geometry_points: vec![] });
+        let router = Router::new(&bytes, vec![]);
+
+        let result = router.snap_to_any_road(0.0001, 0.05);
+        assert!(!result.is_empty(), "snap_to_any_road must still snap onto a Service-class road, unlike nearest_road_edge_info");
     }
 
     /// A real user request against stop groups: "each stop needs to know
@@ -3869,5 +4513,74 @@ mod tests {
             "A* must find the exact same optimal cost as plain Dijkstra: plain={plain_cost}, a_star={a_star_cost}"
         );
         assert_eq!(plain_steps, a_star_steps, "A* must find the exact same route as plain Dijkstra, not just the same cost");
+    }
+
+    /// T190 (2026-11-14) — proves `point_in_scotland` is checking against
+    /// the real, genuinely separate Scotland political border
+    /// (`scotland_boundary.bin`, built from Geofabrik's own real
+    /// `scotland.poly` region file), not the existing extract boundary
+    /// (`extract-boundary.poly`/`boundary.rs`), which is deliberately
+    /// extended south into England and classifies Carlisle,
+    /// Berwick-upon-Tweed and Newcastle as "inside" (see that file's own
+    /// `boundary_classifies_reference_towns_correctly` test, which
+    /// expects `true` for all three). This test is the one that actually
+    /// demonstrates the two boundaries disagree: Edinburgh/Glasgow true
+    /// on both, but Carlisle/Newcastle/Berwick true there and FALSE here.
+    /// Not `#[ignore]`d — unlike `road_graph.bin` above, the real
+    /// `scotland_boundary.bin` artefact is tiny (~1.3KB) and always
+    /// present in dev `pipeline-data/` once built.
+    #[test]
+    fn point_in_scotland_matches_the_real_political_border_not_the_extended_extract_boundary() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../pipeline-data/scotland_boundary.bin");
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+
+        let cases: &[(&str, f64, f64, bool)] = &[
+            ("Edinburgh", -3.1883, 55.9533, true),
+            ("Glasgow", -4.2518, 55.8642, true),
+            ("Carlisle", -2.9382, 54.8951, false),
+            ("Berwick-upon-Tweed", -1.9994, 55.7710, false),
+            ("Newcastle upon Tyne", -1.6178, 54.9783, false),
+        ];
+        let mut failures = Vec::new();
+        for &(name, lon, lat, expected) in cases {
+            let actual = point_in_scotland(&bytes, lon, lat);
+            if actual != expected {
+                failures.push(format!("{name}: expected inside_scotland={expected}, got {actual}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// 2026-11-15 — exact mirror of
+    /// `point_in_scotland_matches_the_real_political_border_not_the_extended_extract_boundary`
+    /// above, for the new Wales boundary (added for National Express
+    /// Welsh, per the user's own direct instruction: "should follow all
+    /// the same rules as the Scottish livery except Wales instead of
+    /// Scotland"). Cardiff/Swansea are real Welsh cities; Bristol,
+    /// Hereford and Shrewsbury are real English towns/cities near the
+    /// Wales border, confirmed outside it. Not `#[ignore]`d — same
+    /// reasoning as the Scotland test, the real `wales_boundary.bin`
+    /// artefact is tiny and always present in dev `pipeline-data/` once
+    /// built.
+    #[test]
+    fn point_in_wales_matches_the_real_political_border() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../pipeline-data/wales_boundary.bin");
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+
+        let cases: &[(&str, f64, f64, bool)] = &[
+            ("Cardiff", -3.1791, 51.4816, true),
+            ("Swansea", -3.9436, 51.6214, true),
+            ("Bristol", -2.5879, 51.4545, false),
+            ("Hereford", -2.7160, 52.0567, false),
+            ("Shrewsbury", -2.7527, 52.7069, false),
+        ];
+        let mut failures = Vec::new();
+        for &(name, lon, lat, expected) in cases {
+            let actual = point_in_wales(&bytes, lon, lat);
+            if actual != expected {
+                failures.push(format!("{name}: expected inside_wales={expected}, got {actual}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

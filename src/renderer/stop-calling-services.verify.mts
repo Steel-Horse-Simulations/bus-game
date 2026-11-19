@@ -3,6 +3,7 @@
 // services.verify.mts` — same pattern as route-timetable.verify.mts. Pure
 // functions, no DOM/IPC dependency.
 import { computeStopCallingServices, formatClockMinutes } from "./stop-calling-services.mts";
+import { MONDAY_FRIDAY_MASK, SUNDAY_MASK } from "./route-timetable.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -26,6 +27,7 @@ function route(
     colour: "#000000",
     name: null,
     pickupDropoffOverrides,
+    timingPointIndexes: [],
     parentRouteId: null,
     variationLetter: null,
     composedFromRouteIds: [],
@@ -35,13 +37,14 @@ function route(
     isMinorVariation: false,
     assignedLiveryId: null,
     useBrandedColour: false,
+    vehicleRestrictions: { baseType: null, powerType: null, axleCount: null, liveryId: null },
   };
 }
 
 function timetable(
   id: number,
   routeId: number,
-  dayType: DayType,
+  weekdayMask: number,
   startMinutes: number,
   endMinutes: number,
   intervalMinutes: number,
@@ -50,21 +53,29 @@ function timetable(
   return {
     id,
     routeId,
-    dayType,
+    weekdayMask,
     direction: "both",
     timeBands: [{ startMinutes, endMinutes, intervalMinutes }],
     timingPoints: [],
     arrivalOffsetsSeconds: departureOffsetsSeconds,
     departureOffsetsSeconds,
+    // Same as the plain pair — these fixtures aren't testing peak-vs-
+    // standard selection itself (route-timetable.verify.mts covers that
+    // directly), so every assertion here is unaffected by which variant
+    // gets picked for a given generated departure.
+    arrivalOffsetsSecondsPeak: departureOffsetsSeconds,
+    departureOffsetsSecondsPeak: departureOffsetsSeconds,
     excludedDepartureMinutes: [],
     customDepartureMinutes: [],
+    mirrorSourceTimetableId: null,
+    mirrorOffsetMinutes: null,
   };
 }
 
 // A route that doesn't call at this stop at all is excluded entirely.
 {
   const routes = [route(1, "10", [{ kind: "stop", osmId: 111 }, { kind: "stop", osmId: 222 }])];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 600, 30, [0, 300])];
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 600, 30, [0, 300])];
   const result = computeStopCallingServices(999, routes, timetables);
   assert(result.length === 0, "a route with no matching point is excluded");
 }
@@ -81,7 +92,7 @@ function timetable(
       [{ pointIndex: 1, value: "skip" }],
     ),
   ];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 480, 30, [0, 300, 600])];
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 480, 30, [0, 300, 600])];
   const resultSkipped = computeStopCallingServices(222, routes, timetables);
   assert(resultSkipped.length === 0, "the skipped stop shows no calling service for this route at all");
   const resultOther = computeStopCallingServices(111, routes, timetables);
@@ -91,10 +102,10 @@ function timetable(
 // A plain single-point stop on a single day type: three departures.
 {
   const routes = [route(1, "10", [{ kind: "stop", osmId: 111 }, { kind: "stop", osmId: 222 }])];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 540, 30, [0, 300])];
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 540, 30, [0, 300])];
   const result = computeStopCallingServices(111, routes, timetables);
   assert(result.length === 1, "one route/day-type combination found");
-  assert(result[0].routeNumber === "10" && result[0].dayType === "monday_friday", "route/day-type identified correctly");
+  assert(result[0].routeNumber === "10" && result[0].weekdayMask === MONDAY_FRIDAY_MASK, "route/day-type identified correctly");
   assert(
     JSON.stringify(result[0].departureClockMinutes) === JSON.stringify([480, 510, 540]),
     `expected [480,510,540], got ${JSON.stringify(result[0].departureClockMinutes)}`,
@@ -105,7 +116,7 @@ function timetable(
 // departure offset, not point 0's.
 {
   const routes = [route(1, "10", [{ kind: "stop", osmId: 111 }, { kind: "stop", osmId: 222 }])];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 480, 30, [0, 300])]; // +5 min at point 1
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 480, 30, [0, 300])]; // +5 min at point 1
   const result = computeStopCallingServices(222, routes, timetables);
   assert(
     JSON.stringify(result[0].departureClockMinutes) === JSON.stringify([485]),
@@ -123,7 +134,7 @@ function timetable(
       { kind: "stop", osmId: 111 },
     ]),
   ];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 480, 60, [0, 300, 600])];
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 480, 60, [0, 300, 600])];
   const result = computeStopCallingServices(111, routes, timetables);
   assert(result.length === 1, "both passes merge into a single route/day-type entry, not two");
   assert(
@@ -139,14 +150,14 @@ function timetable(
     route(1, "10", [{ kind: "stop", osmId: 111 }]),
   ];
   const timetables = [
-    timetable(1, 1, "sunday", 480, 480, 30, [0]),
-    timetable(2, 1, "monday_friday", 480, 480, 30, [0]),
-    timetable(3, 2, "monday_friday", 480, 480, 30, [0]),
+    timetable(1, 1, SUNDAY_MASK, 480, 480, 30, [0]),
+    timetable(2, 1, MONDAY_FRIDAY_MASK, 480, 480, 30, [0]),
+    timetable(3, 2, MONDAY_FRIDAY_MASK, 480, 480, 30, [0]),
   ];
   const result = computeStopCallingServices(111, routes, timetables);
-  const order = result.map((r) => `${r.routeNumber}/${r.dayType}`);
+  const order = result.map((r) => `${r.routeNumber}/${r.weekdayMask}`);
   assert(
-    JSON.stringify(order) === JSON.stringify(["9/monday_friday", "10/monday_friday", "10/sunday"]),
+    JSON.stringify(order) === JSON.stringify([`9/${MONDAY_FRIDAY_MASK}`, `10/${MONDAY_FRIDAY_MASK}`, `10/${SUNDAY_MASK}`]),
     `expected numeric route order with day-types grouped per route, got ${JSON.stringify(order)}`,
   );
 }
@@ -154,7 +165,7 @@ function timetable(
 // A degenerate zero/negative interval is skipped rather than looping forever.
 {
   const routes = [route(1, "10", [{ kind: "stop", osmId: 111 }])];
-  const timetables = [timetable(1, 1, "monday_friday", 480, 600, 0, [0])];
+  const timetables = [timetable(1, 1, MONDAY_FRIDAY_MASK, 480, 600, 0, [0])];
   const result = computeStopCallingServices(111, routes, timetables);
   assert(result.length === 0, "a zero interval produces no departures rather than hanging");
 }

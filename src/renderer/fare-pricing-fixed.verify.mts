@@ -13,6 +13,8 @@ import {
   returnFareGBPPence,
   cityNightSingleFareGBPPence,
   countryOrIslandNightSingleFareGBPPence,
+  countryZoneCountSingleFareGBPPence,
+  countryZoneCountNightSingleFareGBPPence,
   childFareGBPPence,
   networkFareGBPPence,
   tierCapFigures,
@@ -43,6 +45,45 @@ assert(TOWN_SINGLE_GBP_PENCE === 200, "Town single is the confirmed flat £2.00"
 
 assert(AIRPORT_EXPRESS_SINGLE_GBP_PENCE === 600 && AIRPORT_EXPRESS_RETURN_GBP_PENCE === 850, "Airport Express Single/Return are the real Lothian Airlink figures (£6.00/£8.50)");
 assert(AIRPORT_EXPRESS_FAMILY_RETURN_GBP_PENCE === 2200, "Airport Express Family Return is the real Airlink figure (£22.00)");
+
+// --- Country Single/Night by real zone count (confirmed 2026-11-12
+// against reference/Fares & Tickets - Lothian Countrry.pdf) ---
+const REAL_ZONE_COUNT_SINGLE_GBP_PENCE: [number, number][] = [
+  [1, 240],
+  [2, 340],
+  [3, 340],
+  [4, 440],
+  [5, 540],
+  [6, 640],
+];
+for (const [zoneCount, expectedPence] of REAL_ZONE_COUNT_SINGLE_GBP_PENCE) {
+  assert(
+    countryZoneCountSingleFareGBPPence(zoneCount) === expectedPence,
+    `Country Single at ${zoneCount} zone(s) should be the real £${(expectedPence / 100).toFixed(2)}, got ${countryZoneCountSingleFareGBPPence(zoneCount)}p`,
+  );
+}
+// Beyond the real table: continues the same +£1.00-per-zone step already
+// visible from zone 3 onward.
+assert(countryZoneCountSingleFareGBPPence(7) === 740, "7 zones should continue the real +£1.00-per-zone step to £7.40");
+assert(countryZoneCountSingleFareGBPPence(8) === 840, "8 zones should continue the real +£1.00-per-zone step to £8.40");
+
+const REAL_ZONE_COUNT_NIGHT_GBP_PENCE: [number, number][] = [
+  [1, 350],
+  [2, 550],
+  [3, 550],
+  [4, 850],
+  [5, 850],
+  [6, 850],
+];
+for (const [zoneCount, expectedPence] of REAL_ZONE_COUNT_NIGHT_GBP_PENCE) {
+  assert(
+    countryZoneCountNightSingleFareGBPPence(zoneCount) === expectedPence,
+    `Country Night Single at ${zoneCount} zone(s) should be the real £${(expectedPence / 100).toFixed(2)}, got ${countryZoneCountNightSingleFareGBPPence(zoneCount)}p`,
+  );
+}
+// Night's own top band is already flat (4-6 all £8.50), with no per-zone
+// step to extrapolate — 7+ simply continues at the same flat figure.
+assert(countryZoneCountNightSingleFareGBPPence(7) === 850, "7 zones at night should stay at the flat £8.50 top band, not scale up");
 
 // --- Return (sanity check, unchanged formula) ---
 assert(returnFareGBPPence(240) === 385, "1.6x £2.40 (£3.84) rounds UP to the nearest 5p (£3.85), not down to £3.80");

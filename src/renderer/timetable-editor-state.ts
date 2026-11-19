@@ -4,11 +4,11 @@
 // (which owns which day type is selected and persists the result) — same
 // shared-mutable-object pattern already used elsewhere (stopsPanelState,
 // routeDrawState) rather than either module importing the other.
-import type { DayType, TimingPoint } from "./route-timetable.mts";
+import type { TimingPoint } from "./route-timetable.mts";
 
 export const timetableEditorState: {
   // Null outside timetable mode, or before the first day type has loaded.
-  dayType: DayType | null;
+  weekdayMask: number | null;
   // The selected day type's current in-memory timing points —
   // route-panel.ts's stop list reads and mutates this array directly;
   // route-timetable-panel.ts reads it back on Save, and replaces it
@@ -23,7 +23,7 @@ export const timetableEditorState: {
   // hint stays in sync without the stop list needing to know it exists.
   onTimingPointsEdited: (() => void) | null;
 } = {
-  dayType: null,
+  weekdayMask: null,
   timingPoints: [],
   onDayTypeChanged: null,
   onTimingPointsEdited: null,

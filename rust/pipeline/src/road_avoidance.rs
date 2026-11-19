@@ -219,6 +219,10 @@ mod tests {
             psv_yes: false,
             bus_yes: false,
             maxspeed_mph: None,
+            maxweight_tonnes: None,
+            maxheight_metres: None,
+            maxlength_metres: None,
+            maxwidth_metres: None,
             geometry_start: 0,
             geometry_len: 0,
         }

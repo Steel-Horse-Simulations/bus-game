@@ -6,6 +6,8 @@ import {
   composeVariation,
   resolveRoutePoints,
   findDependentRouteIds,
+  effectiveRouteColour,
+  resolveFamilyDisplayColours,
   type CombinePoint,
   type ComposableRoute,
 } from "./route-combine-variations.mts";
@@ -274,6 +276,96 @@ function minorVariation(id: number, points: CombinePoint[], parentRouteId: numbe
   const plainMajorVariation = route(3, [], 1, []); // a child of 1, but not minor and not composed
   const deps = findDependentRouteIds(1, [trunk, minor, plainMajorVariation]);
   assert(JSON.stringify(deps) === JSON.stringify([2]), `only the minor variation should depend on its parent, got ${JSON.stringify(deps)}`);
+}
+
+// effectiveRouteColour (2026-11-08, live bug report: "minor variations
+// should follow the main route colour"): an ordinary route or major
+// variation just shows its own stored colour.
+function colouredRoute(id: number, colour: string, parentRouteId: number | null, isMinorVariation = false): ComposableRoute & { isMinorVariation?: boolean } {
+  return { id, points: [], parentRouteId, composedFromRouteIds: [], colour, isMinorVariation };
+}
+{
+  const plain = colouredRoute(1, "#ff0000", null);
+  assert(effectiveRouteColour(plain, [plain]) === "#ff0000", "an ordinary route's effective colour is its own stored colour");
+}
+
+// A minor variation's own stored colour is ignored — it always resolves to
+// its parent's current colour, live.
+{
+  const parent = colouredRoute(1, "#ff0000", null);
+  const minor = colouredRoute(2, "#00ff00", 1, true);
+  assert(effectiveRouteColour(minor, [parent, minor]) === "#ff0000", "a minor variation's effective colour follows its parent's, ignoring its own stored colour");
+}
+
+// Live: changing the parent's colour changes what the minor variation
+// resolves to, with nothing re-saved on the variation itself.
+{
+  const parentOld = colouredRoute(1, "#ff0000", null);
+  const minor = colouredRoute(2, "#00ff00", 1, true);
+  assert(effectiveRouteColour(minor, [parentOld, minor]) === "#ff0000", "sanity: resolves against the old parent colour first");
+  const parentNew = colouredRoute(1, "#0000ff", null);
+  assert(effectiveRouteColour(minor, [parentNew, minor]) === "#0000ff", "a minor variation picks up the parent's new colour live");
+}
+
+// Recurses through a chain of minor variations (a minor variation of a
+// minor variation), resolving all the way to the top of the chain.
+{
+  const grandparent = colouredRoute(1, "#ff0000", null);
+  const parent = colouredRoute(2, "#00ff00", 1, true);
+  const child = colouredRoute(3, "#0000ff", 2, true);
+  assert(effectiveRouteColour(child, [grandparent, parent, child]) === "#ff0000", "a chain of minor variations resolves all the way to the top");
+}
+
+// Falls back to its own stored colour if the parent no longer exists,
+// same "last known-good" treatment as resolveRoutePoints.
+{
+  const orphanMinor = colouredRoute(9, "#abcdef", 999, true);
+  assert(effectiveRouteColour(orphanMinor, [orphanMinor]) === "#abcdef", "a minor variation with a deleted parent falls back to its own stored colour");
+}
+
+// resolveFamilyDisplayColours (2026-11-08, live request: "if variations
+// are the same colour each one should be given a unique colour in the
+// timetable editor"): no collision at all — everyone just keeps their own
+// real colour.
+{
+  const a = colouredRoute(1, "#ff0000", null);
+  const b = colouredRoute(2, "#00ff00", null);
+  const display = resolveFamilyDisplayColours([a, b], [a, b]);
+  assert(display.get(1) === "#ff0000" && display.get(2) === "#00ff00", "no colour collision: every member keeps its own real colour");
+}
+
+// Two members sharing the same colour get reassigned distinct colours,
+// neither equal to the original shared one, and distinct from each other.
+{
+  const a = colouredRoute(1, "#ff0000", null);
+  const b = colouredRoute(2, "#ff0000", null);
+  const display = resolveFamilyDisplayColours([a, b], [a, b]);
+  const colourA = display.get(1)!;
+  const colourB = display.get(2)!;
+  assert(colourA !== "#ff0000" && colourB !== "#ff0000", "a colliding pair is reassigned away from the shared colour");
+  assert(colourA !== colourB, "a colliding pair gets two DIFFERENT reassigned colours, not the same one twice");
+}
+
+// A minor variation's nominal colour (via effectiveRouteColour, resolved
+// through its parent) is what collision detection actually compares — not
+// its own ignored stored colour — since that's the realistic case that
+// motivated this (every minor variation now follows its parent's colour
+// live).
+{
+  const parent = colouredRoute(1, "#3b82f6", null);
+  const minor = colouredRoute(2, "#3b82f6", 1, true); // same colour as parent, AND a minor variation
+  const display = resolveFamilyDisplayColours([parent, minor], [parent, minor]);
+  assert(display.get(1) !== display.get(2), "a parent and its colour-following minor variation are still treated as a real collision");
+}
+
+// A member not involved in any collision is untouched even when OTHER
+// members in the same family do collide.
+{
+  const a = colouredRoute(1, "#ff0000", null);
+  const b = colouredRoute(2, "#ff0000", null);
+  const c = colouredRoute(3, "#00ff00", null);
+  const display = resolveFamilyDisplayColours([a, b, c], [a, b, c]);
+  assert(display.get(3) === "#00ff00", "a non-colliding third member keeps its own real colour untouched");
 }
 
 console.log("\nAll route-combine-variations checks passed.");

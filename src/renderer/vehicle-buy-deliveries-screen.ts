@@ -7,7 +7,20 @@
 // finalises it the same way. Transfers between depots are similarly
 // immediate rather than "vehicle unusable in transit", for the same
 // reason (no driver/duty system to hang a real transit delay on).
-import { findVehicleModel } from "./vehicle-catalogue.mts";
+import { findVehicleModel, repowerTargetsFor, type PowerType } from "./vehicle-catalogue.mts";
+import { gameClockState } from "./game-clock-engine";
+import { SECONDS_PER_DAY } from "./game-clock.mts";
+import { combinedAwayWindows } from "./workshop-booking.mts";
+import { isIslandDepotGroup } from "./fare-journey.mts";
+import {
+  repowerUnlocked,
+  repowerEligibleByAgeOrCondition,
+  repowerEligibleByOwnership,
+  repowerManufacturerFor,
+  REPOWER_CONCURRENT_CAPACITY,
+  scheduleRepowerBooking,
+  repowerBasePriceGBP,
+} from "./repower-booking.mts";
 
 function formatGBP(amount: number): string {
   return `£${Math.round(amount).toLocaleString("en-GB")}`;
@@ -17,6 +30,11 @@ interface DeliveriesScreenContext {
   depotGroups: DepotGroup[];
   depots: Depot[];
   ownedVehicles: Vehicle[];
+  dealers: Dealer[];
+  repaintBookings: RepaintBooking[];
+  repowerBookings: RepowerBooking[];
+  // Only needed for the real island away-cap below (2026-11-19).
+  fareZones: FareZone[];
   onChanged: () => void;
 }
 
@@ -120,6 +138,9 @@ export function renderDeliveriesScreen(container: HTMLElement, orders: VehicleOr
   }
 
   const allDepots = ctx.depots.map((d) => ({ depot: d, group: ctx.depotGroups.find((g) => g.id === d.depotGroupId) }));
+  const today = Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
+  const unlocked = repowerUnlocked(gameClockState.accumulatedGameSeconds);
+  const repowerSiteByManufacturer = new Map(ctx.dealers.filter((d) => d.isRepowerSite).map((d) => [d.manufacturer, d]));
 
   for (const vehicle of ctx.ownedVehicles) {
     const model = findVehicleModel(vehicle.modelId);
@@ -147,6 +168,36 @@ export function renderDeliveriesScreen(container: HTMLElement, orders: VehicleOr
     }
     row.appendChild(select);
 
+    // T179: "also re-power" alongside a transfer — a diversion via the
+    // vehicle's own manufacturer's one re-power site, same eligibility
+    // gate and pricing repower-booking-panel.ts uses on its own, just
+    // reached from the transfer flow instead of booked standalone.
+    let repowerCheckbox: HTMLInputElement | null = null;
+    const targets = model && unlocked ? repowerTargetsFor(model, vehicle.lengthM) : [];
+    const repowerDealer = targets.length > 0 ? repowerSiteByManufacturer.get(repowerManufacturerFor(vehicle.modelId)) : undefined;
+    // Ownership restriction, 2026-11-19 ("Re-powering can't be done on
+    // leased buses, only fully owned buses") — this screen's own
+    // separate re-power eligibility check (the main repower-booking-
+    // panel.ts flow already has its own, via findEligibleVehicles) was
+    // missing it; a real gap, not just a follow-up to that one.
+    const repowerEligible =
+      vehicle.powerType === "diesel" &&
+      repowerDealer !== undefined &&
+      repowerEligibleByAgeOrCondition(vehicle.boughtGameDay, today, vehicle.condition) &&
+      repowerEligibleByOwnership(vehicle.paymentMethod);
+    if (repowerEligible) {
+      const toPowerType: PowerType = targets[0];
+      repowerCheckbox = document.createElement("input");
+      repowerCheckbox.type = "checkbox";
+      repowerCheckbox.title = `Also re-power to ${toPowerType} at ${repowerDealer!.name}`;
+      row.appendChild(repowerCheckbox);
+      const repowerLabel = document.createElement("span");
+      repowerLabel.style.fontSize = "12px";
+      repowerLabel.style.color = "var(--text-muted)";
+      repowerLabel.textContent = `also re-power (${toPowerType})`;
+      row.appendChild(repowerLabel);
+    }
+
     const transferButton = document.createElement("button");
     transferButton.className = "btn";
     transferButton.textContent = "Transfer";
@@ -157,6 +208,25 @@ export function renderDeliveriesScreen(container: HTMLElement, orders: VehicleOr
       transferButton.disabled = true;
       try {
         await window.vehicles.transfer(vehicle.id, newDepotId);
+        if (repowerCheckbox?.checked && repowerDealer) {
+          const toPowerType: PowerType = targets[0];
+          const basePriceGBP = model ? repowerBasePriceGBP(model, vehicle.lengthM, toPowerType) : null;
+          if (basePriceGBP !== null) {
+            const fullRepaintAway = ctx.repaintBookings.filter((b) => b.repaintType === "full").map((b) => ({ vehicleId: b.vehicleId, startGameDay: b.startGameDay, completionGameDay: b.completionGameDay }));
+            const repowerAway = ctx.repowerBookings.map((b) => ({ vehicleId: b.vehicleId, startGameDay: b.startGameDay, completionGameDay: b.completionGameDay }));
+            const newDepotGroupId = allDepots.find((d) => d.depot.id === newDepotId)?.group?.id ?? vehicle.depotGroupId;
+            const groupCapBookings = combinedAwayWindows(ctx.ownedVehicles, fullRepaintAway, repowerAway, newDepotGroupId);
+            const dealerBookings = ctx.repowerBookings.filter((b) => b.dealerId === repowerDealer.id).map((b) => ({ startDay: b.startGameDay, completionDay: b.completionGameDay }));
+            const siteCapacity = REPOWER_CONCURRENT_CAPACITY[repowerDealer.manufacturer];
+            // Island away-cap, 2026-11-19 — see repaint-shop-panel.ts's
+            // own identical comment. Checked against the NEW depot group
+            // (newDepotGroupId, just above), since a transfer moves the
+            // vehicle there before the re-power booking is made.
+            const groupAwayCap = isIslandDepotGroup(newDepotGroupId, ctx.depots, ctx.fareZones) ? 1 : 2;
+            const bookingWindow = scheduleRepowerBooking(today, dealerBookings, siteCapacity, groupCapBookings, groupAwayCap);
+            await window.repowerBookings.create(vehicle.id, repowerDealer.id, toPowerType as "electric" | "hydrogen", basePriceGBP, today, bookingWindow.startDay, bookingWindow.completionDay);
+          }
+        }
         ctx.onChanged();
       } finally {
         transferButton.disabled = false;

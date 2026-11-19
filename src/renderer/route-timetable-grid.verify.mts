@@ -9,6 +9,7 @@ import {
   computeOffsetsForDirection,
   type MergedGridMember,
 } from "./route-timetable-grid.mts";
+import { MONDAY_FRIDAY_MASK } from "./route-timetable.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -31,6 +32,7 @@ function route(
     colour: "#000000",
     name: null,
     pickupDropoffOverrides,
+    timingPointIndexes: [],
     parentRouteId: null,
     variationLetter: null,
     composedFromRouteIds: [],
@@ -40,6 +42,7 @@ function route(
     isMinorVariation: false,
     assignedLiveryId: null,
     useBrandedColour: false,
+    vehicleRestrictions: { baseType: null, powerType: null, axleCount: null, liveryId: null },
   };
 }
 
@@ -54,14 +57,22 @@ function timetable(
   return {
     id: 1,
     routeId: 1,
-    dayType: "monday_friday",
+    weekdayMask: MONDAY_FRIDAY_MASK,
     direction: "both",
     timeBands: [{ startMinutes, endMinutes, intervalMinutes }],
     timingPoints: [],
     arrivalOffsetsSeconds: departureOffsetsSeconds,
     departureOffsetsSeconds,
+    // Peak offsets default to the exact same arrays as the plain pair —
+    // these fixtures aren't testing peak-vs-standard selection itself
+    // (that's covered directly in route-timetable.verify.mts), so every
+    // existing assertion here is unaffected by which variant gets picked.
+    arrivalOffsetsSecondsPeak: departureOffsetsSeconds,
+    departureOffsetsSecondsPeak: departureOffsetsSeconds,
     excludedDepartureMinutes,
     customDepartureMinutes,
+    mirrorSourceTimetableId: null,
+    mirrorOffsetMinutes: null,
   };
 }
 
@@ -257,7 +268,7 @@ function timetable(
   // own computation — not an error, not silently misapplied to the wrong
   // point.
   const outboundIgnoringInboundTimingPoint = computeOffsetsForDirection(r, "outbound", legTimesSeconds, [
-    { pointIndex: 5, legMinutes: 99, dwellMinutes: 0 },
+    { pointIndex: 5, standardPaddingMinutes: 99, peakPaddingMinutes: null, dwellMinutes: 0 },
   ]);
   assert(
     JSON.stringify(outboundIgnoringInboundTimingPoint.arrivalOffsetsSeconds) === JSON.stringify(outbound.arrivalOffsetsSeconds),
@@ -338,6 +349,24 @@ function timetable(
   assert(
     JSON.stringify(merged) === JSON.stringify([99, 1, 2, 3]),
     `expected 99 (no anchor yet) placed at the very start, got ${JSON.stringify(merged)}`,
+  );
+}
+
+// A shorter sequence's leading unmatched stop(s), when a LATER stop in
+// that same sequence DOES match the base sequence, land right before
+// that real match instead of at the very front of the whole list —
+// 2026-11-14 live bug ("why is Lonmore at the top in the wrong place?"):
+// a branch route's own junction stop, not literally present anywhere in
+// the longer merged corridor, used to jump ahead of the entire list
+// instead of sitting next to the real junction it actually attaches at.
+{
+  const { merged } = mergeStopSequences([
+    [1, 2, 3, 4, 5], // the longer "base" sequence (the full corridor)
+    [99, 3], // a branch's own stop (99) with no match, followed by a real shared stop (3)
+  ]);
+  assert(
+    JSON.stringify(merged) === JSON.stringify([1, 2, 99, 3, 4, 5]),
+    `expected 99 anchored next to its own later match (3), not dumped at the front, got ${JSON.stringify(merged)}`,
   );
 }
 
@@ -460,14 +489,18 @@ function timetable(
   const tt: RouteTimetable = {
     id: 1,
     routeId: 1,
-    dayType: "monday_friday",
+    weekdayMask: MONDAY_FRIDAY_MASK,
     direction: "both",
     timeBands: [{ startMinutes: 480, endMinutes: 480, intervalMinutes: 30 }],
     timingPoints: [],
     arrivalOffsetsSeconds: [0, 600, 900], // stop 2 arrives at +10 min
     departureOffsetsSeconds: [0, 900, 900], // stop 2 departs at +15 min (5-min dwell)
+    arrivalOffsetsSecondsPeak: [0, 600, 900],
+    departureOffsetsSecondsPeak: [0, 900, 900],
     excludedDepartureMinutes: [],
     customDepartureMinutes: [],
+    mirrorSourceTimetableId: null,
+    mirrorOffsetMinutes: null,
   };
   const grid = buildRouteTimetableGrid(r, tt);
   assert(grid.rows.length === 4, `the dwelling stop becomes 2 rows, the other two stay 1 each — expected 4 total rows, got ${grid.rows.length}`);

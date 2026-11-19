@@ -1,6 +1,6 @@
 // Manual verification script for fleet-numbering.mts, run directly with
 // `node --experimental-strip-types src/renderer/fleet-numbering.verify.mts`.
-import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate, broadClassForModel } from "./fleet-numbering.mts";
+import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate, broadClassForModel, repowerFleetNumber } from "./fleet-numbering.mts";
 import { VEHICLE_MODELS } from "./vehicle-catalogue.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -28,7 +28,7 @@ assert(fleetCategoryDigit("adl-enviro400-xlb", 13.4) === 5, "the XLB at 13.4m is
 assert(fleetCategoryDigit("volvo-9700", 12.4) === 6, "9700 at 12.4m is digit 6 (coach twin-axle)");
 assert(fleetCategoryDigit("volvo-9700", 13.1) === 7, "9700 at 13.1m is digit 7 (coach tri-axle)");
 assert(fleetCategoryDigit("volvo-9700dd", 13) === 7, "9700DD at 13m is digit 7 too — double-deck coaches share the single-deck coach's tri-axle digit");
-assert(fleetCategoryDigit("adl-enviro400-opentop-diesel", 10.9) === 4, "the open-top Enviro400 is still digit 4, despite its own category label never saying 'double-decker'");
+assert(fleetCategoryDigit("wrightbus-streetdeck-opentop", 10.6) === 4, "the open-top StreetDeck is still digit 4, despite its own category label never saying 'double-decker'");
 
 // --- power suffix ---
 assert(powerTypeSuffix("diesel") === "", "diesel gets no suffix");
@@ -57,5 +57,11 @@ assert(/^[A-Z]{3} \d{4}$/.test(niPlate), `a Belfast-area depot gets a distinct N
 assert(/^SA26 [A-Z]{3}$/.test(generatePlate(-4.2518, 55.8642, new Date("2026-05-01"), fixedRng)), "a March-August 2026 buy gets age identifier 26");
 assert(/^SA76 [A-Z]{3}$/.test(generatePlate(-4.2518, 55.8642, new Date("2026-10-18"), fixedRng)), "a September-February buy gets age identifier +50 (76 for Oct 2026)");
 assert(/^SA76 [A-Z]{3}$/.test(generatePlate(-4.2518, 55.8642, new Date("2027-01-01"), fixedRng)), "a January 2027 buy is still in the Sept 2026-Feb 2027 period, same age identifier (76) as the September date above");
+
+// --- re-power fleet number suffix (T179, OPEN-ITEMS.md) ---
+assert(repowerFleetNumber("8003", "electric") === "8003re", 'a plain diesel number re-powered to electric gets "re", not just "e" — distinct from a new-build electric');
+assert(repowerFleetNumber("9301", "hydrogen") === "9301rh", 'a plain diesel number re-powered to hydrogen gets "rh"');
+assert(repowerFleetNumber("8003e", "hydrogen") === "8003rh", "a vehicle already carrying a new-build suffix has it stripped before the re-power suffix is added");
+assert(repowerFleetNumber("8003re", "hydrogen") === "8003rh", "re-powering an already-repowered vehicle again is idempotent on the digits, not accumulating suffixes (never '8003rere' etc.)");
 
 console.log("\nAll fleet-numbering checks passed.");

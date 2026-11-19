@@ -149,7 +149,7 @@ T108**, confirmed directly:
 - **The ticket book only covers buses/coaches belonging to the Fort
   William depot group** — it's issued in that one business's own name,
   not a company-wide rate any depot group's vehicles can draw on.
-  **Private hire work pays the normal casual cash fare** (£23/£35,
+  **Tour work pays the normal casual cash fare** (£23/£35,
   not the book rate) even when it's the Fort William depot group's own
   vehicle making the crossing — the book is for the depot group's own
   scheduled service, not every use of its buses.
@@ -241,8 +241,8 @@ A stop on the far kerb is a different stop (§4), so the planner must handle
 someone crossing the road to travel back.
 
 ### Demand
-Generated from OSM land use. Varies through the day — commuter peaks, school
-runs, quiet evenings and nights. Responds to fares through a single global price
+Generated from OSM land use. Varies through the day — commuter peaks, quiet
+evenings and nights. Responds to fares through a single global price
 sensitivity, and to awareness (§10).
 
 ---
@@ -367,29 +367,58 @@ respecting real-world constraints) — informational only for now, same
 "store/surface the data now, wire up the behaviour once the mechanism
 exists" precedent as Connection stop and Long stop.
 
-**Ownership and cost.** Stops are owned by the local council. The player pays a
-monthly fee per stop plus a fee per route serving it. Variations count as one
-service; an express counts as a separate service. The per-route fee is flat but
-reduced for infrequent routes. Pricing depends on location — a city stop costs
-more than a village one, and the same location-based pricing applies to depots,
-outstations and bus stations.
+**Ownership and cost — redesigned 2026-11-16, superseding the section this
+replaces.** Stops stay owned by the local council and are **free to serve** —
+no monthly fee per stop, no per-route fee, no buying a stop at all. The
+player's own question that triggered this: "if I never own the stops I
+think we need to re think this." Real UK practice backs the change too —
+no council actually charges operators a recurring fee for routine stop
+use (confirmed directly; the only real per-stop charges found are one-off
+temporary-suspension fees billed to utility/works contractors, not
+day-to-day operators). Pricing-by-location for depots/outstations/bus
+stations is unaffected — this change is about ordinary council STOPS
+specifically, not every kind of property.
 
-**Free stops.** A pole-and-flag stop in a low-demand place costs nothing to
-serve. Both conditions must hold — the stop must be pole and flag, and demand
-must be low. A fee appears only if the **council** upgrades the stop; the player
-cannot downgrade a stop to escape the fee, because the council decides what a
-stop is. This keeps thin country routes viable, which the contract system relies
-on.
+**Stop upgrades, now council-triggered rather than bought:** shelter,
+seating and lighting each install themselves automatically once a stop's
+own busy-hour bus/boarding counts cross a real threshold — the same real
+metric the E-ink/LED stop-display mechanic below already uses (busiest
+real hour, not a daily total). The player can pay to have one installed
+early instead of waiting: `cost = install price × (1 − current usage ÷
+threshold)` — free right at the threshold, the full price at zero usage,
+linear between. The real thresholds/costs are flagged estimates (real
+data was too thin to source them, unlike leasing/stand-rental elsewhere
+in this game), scaled off the real E-ink/LED figures just below:
+seating ≥20 busy-hour boardings or ≥3 buses (£300, no ongoing cost);
+lighting ≥30/≥4 (£900, £10/month); shelter ≥40/≥6, the same real tier as
+the LED display's own threshold (£3,500, £25/month).
 
-A stop can be **bought** for a one-off price plus a smaller ongoing monthly fee,
-which allows the player to add upgrades.
+**Route advertising is NOT part of this mechanic** — it's always bought by
+the player, never council-triggered, since (unlike the three upgrades
+above) it only ever benefits the one company paying for it: £20/month
+plus a real £500 one-off setup fee, live 14 days after ordering (the same
+real fitting-delay figure §16 already uses). A stop served by a real
+long-distance route can instead advertise generically for that operator
+(e.g. "National Express," "Citylink") rather than one specific route
+number — the more sensible real-world choice when several numbered
+services from the same company call there. A contract tied to a major
+transport hub (an airport, or a railway station such as Glasgow Central)
+comes with its own bundled, permanently and freely advertised terminus
+stop as a term of the contract itself — see `UK-EXPANSION.md`/
+`OPEN-ITEMS.md` for the full real worked examples (Airlink 100, Express
+500, AIR, 398) — exactly one stop per contract, its own real terminus,
+not bought separately and not subject to the £20/month model above.
 
-**Stop upgrades:** shelter, seating, lighting, and route advertising (which
-raises awareness — §10). The old generic "real-time departure screen" upgrade
-is gone, replaced entirely by the two real display types in `OPERATIONS.md`
-§16 (E-ink and LED stop displays, assigned automatically by a stop's own
-busy-hour bus and boarding counts, not bought freely like the other
-upgrades here).
+**Airport stops are the one remaining real exception to "stops are never
+bought."** Airport infrastructure genuinely belongs to a private company
+in reality (confirmed: UK airports grant bus/coach bay access through a
+competitive tender/concession agreement, not free public-highway access
+the way an ordinary street stop works) — the player can buy an airport
+stop outright and lock it to whichever of their own routes they choose.
+The old generic "real-time departure screen" upgrade is gone, replaced
+entirely by the two real display types in `OPERATIONS.md` §16 (E-ink and
+LED stop displays, assigned automatically by a stop's own busy-hour bus
+and boarding counts, not bought freely like the other upgrades here).
 
 ### Station, airport and park-and-ride stop linking
 Railway stations, airports and park-and-ride sites get stops linked to
@@ -675,8 +704,8 @@ divergent section with the normal route-building tool, then chooses the
 **first shared stop** where it rejoins — if it rejoins at all; some variations
 just end differently.
 
-**A different start, resolved 2026-11-05** (Skye's own real case: some
-services start at the High School, not the Square) — the mirror image of
+**A different start, resolved 2026-11-05** (a real case: some variations of
+the same service start from a different stop entirely) — the mirror image of
 "some variations just end differently" above, now possible on the start
 end too. The player begins the variation from a **blank draft rather than
 a clone of the parent**, draws their own lead-in from the new start stop,
@@ -985,7 +1014,6 @@ Prefixes say what a working is before you read the number:
 | *(none)* | Council contract, from 201 |
 | *(none)* | Long distance, from 900 |
 | **X** | Express |
-| **S** | School |
 | **T** | Sightseeing tour, then the city letter — TE1, TG1, TS1 |
 | **C** | Cruise |
 | **RA** | Railair (station-to-airport express, UK-EXPANSION.md §9a) |
@@ -995,13 +1023,6 @@ Prefixes say what a working is before you read the number:
 RA1, RA2 and so on count up across the **whole company**, not per depot
 group or council area — there is no separate underlying number a Railair
 route "decorates." Full spec in UK-EXPANSION.md §9a.
-
-**School numbering.** S plus digits. Where a school run follows another route for
-most of its length it takes that route's number — route 13 becomes S13 — and where
-that route is three characters (237, X37) the first is replaced, giving S37. Where
-two would collide the second takes the next free number. A school route with no
-parent numbers from its own sequence at S1. S numbers are unique **per council
-area**, and a run crossing two is numbered by **where the school is**.
 
 **Tour routes** — the multi-day product, not sightseeing — are **named rather than
 numbered**.
@@ -1091,16 +1112,16 @@ journey.
 - **Day types** — separate timetables per day of the week, each reusable across
   several days (Monday–Friday, Saturday, Sunday being the common case).
   **Underlying data model (2026-09-28, schema v19→v20):** a day type is a
-  weekday bitmask (any combination, not just the 3 common presets) crossed
-  with a term-time facet (any / term-time only / school holidays only) —
-  real Skye timetable data (UK-EXPANSION.md §13) needs both: 608's
-  Tuesday/Thursday footnote, 607's own separate Friday-differs pattern, and
-  Portree High School/Portree Square's school-day split. **No UI lets a
-  player actually create a custom weekday+term-time pattern yet** — this
-  increment only made the schema capable of storing one; every existing
-  call site still only ever uses the original 3 presets. Building the
-  actual picker (how a player sets "Tuesdays and Thursdays only," or
-  "term-time only") is a separate, later increment.
+  weekday bitmask — any combination, not just Mon-Fri/Sat/Sun — which the
+  player can now set freely and directly (2026-11-07, the custom day-type
+  picker; real Skye patterns like 608's Tuesday/Thursday footnote and 607's
+  own separate Friday-differs pattern were exactly the kind of case this
+  was built for). The schema also carries a term-time facet (any /
+  term-time only / holiday only) alongside the weekday bitmask, left
+  dormant and hardcoded to 'any' — it was originally added for Skye's own
+  real school-day timetable splits, which the game no longer models
+  (school contracts and the school-day/holiday split dropped, 2026-11-08);
+  nothing currently needs a second facet, so there's no picker for it.
 - **Event services** sit **on top of** the normal timetable rather than
   replacing it, so an event day runs the normal service plus the event workings.
   This means services need a calendar as well as day types.
@@ -1145,8 +1166,7 @@ journey.
     English route too — it's the service's own base that decides, not
     which roads it happens to run on).
   - All five of the above are **optional for the player to build a
-    dedicated festive timetable for** instead of the default — same
-    "optional day type" pattern as the school holiday timetable (§9).
+    dedicated festive timetable for** instead of the default.
   - **Christmas Day itself runs no service at all anywhere in the UK**,
     with one exception: **Greater London and Greater Manchester run a
     reduced Sunday-level service, starting 9:00am** (confirmed 2026-11-06,
@@ -1300,6 +1320,34 @@ Lothian's. Each zone is typed **city**, **country**, **island** or
 **town**. The **depot group** is the unit of ticket validity and of fare
 capping.
 
+**Boundary points at a road's side push out to the far kerb (2026-11-14,
+redesigned same day).** A boundary point doesn't sit on a road's
+centreline: it's pushed out to the road's own real far kerb (half its
+real, inferred width) **plus a further fixed 15m margin**, away from the
+zone's own interior, so the zone's edge includes the whole road rather
+than cutting it in half. This applies **unconditionally**, even where
+the road is a border shared with another, already-drawn zone — confirmed
+directly by the user: pushing out only on the "outside" edge would leave
+two sides of the same road in different zones, which is wrong, so there
+is no "outside edge vs. shared border" detection at all. A road shared by
+two zones therefore ends up with each zone's own boundary pushed clear of
+it on its own side — a real, deliberate overlap or gap along that road,
+not a bug to be "fixed" into one clean shared line.
+
+Whether a point gets pushed is decided purely by its own real distance to
+the nearest road at save time, not by remembering how it was drawn — an
+earlier version tracked "was this point snapped to a road while drawing"
+by hand through every snap branch, and that bookkeeping kept drifting out
+of sync with reality. The rule now, confirmed directly by the user ("can
+it just be it is always 15m away from a road whether it is snapped or
+not," then "only from the side of a road though"): any point genuinely at
+a road's side pushes out, however it got there; a point that merely has
+some unrelated road somewhere in the distance — a coastline point with an
+inland coast road nearby, for instance — is correctly left exactly where
+it is. Every other snap type (coastline, landuse/area-cluster,
+zone-to-zone, freehand) is unaffected unless it happens to land at a
+road's own side.
+
 ### Zone types
 
 - **City** — every city has up to **two** City zones, an inner **Zone A**
@@ -1311,7 +1359,12 @@ capping.
   happens once a journey leaves the city is fully covered by the existing
   "City-only vs Country buses" rule below (a route counts as Country the
   moment it leaves A/B at all) — confirmed directly, no separate mechanism
-  needed.
+  needed. **Confirmed 2026-11-12/13**: the "up to two" cap is lifted — a
+  depot group can draw any number of nested City/Country bands, and every
+  zone's own letter (A, B, C...) is computed automatically from its real
+  nesting/distance from the City centre, not assigned by the player; see
+  the Country/Island bullet below for how this interacts with the real
+  zone-count Single fare.
 - **Country** (i.e. anywhere beyond the city) and **Island** — **no
   longer banded by zone count.** Both now price Singles the same way
   Long-distance routes already do: a **base fee plus a price per mile**,
@@ -1320,14 +1373,33 @@ capping.
   **Confirmed 2026-11-01, measured not guessed: £2.00 base + 20p/mile**,
   the same figures for both Country and Island (see "Single fares" below
   for the real Portree–Armadale distance check this was grounded against).
+  **Correction, 2026-11-12/13**: this "no longer banded by zone count"
+  decision is superseded for **Country specifically** — real Lothian
+  Country Singles are genuinely zone-count-based, not distance-based
+  (confirmed directly from `reference/Fares & Tickets - Lothian
+  Countrry.pdf`, already in the repo, read directly rather than
+  approximated): **1 zone (or 2 if A/B) £2.40, 2–3 zones £3.40, 4 zones
+  £4.40, 5 zones £5.40, 6 zones £6.40** — a flat **+£1.00 per zone** step
+  from zone 3 onward, extrapolated the same way beyond 6 zones (not in
+  the real table). The real Night Single table is coarser: **1 zone (or 2
+  if A/B) £3.50, 2–3 zones £5.50, 4–6 zones £8.50 flat** (open-ended at
+  7+). The distance (base+per-mile) formula above now only applies to
+  **Island** (no real zone-count precedent exists for it) and to a
+  Country leg that happens to touch no drawn fare zone at all. Each fare
+  zone now gets an automatic nesting **letter** computed from its distance
+  from the City zone's own centre (inner band = A, next band out = B, and
+  so on — one continuous sequence across City and Country together,
+  covering a zone drawn as several pieces flanking the centre rather than
+  a single ring too); crossing between City A and City B never adds to
+  the zone count, matching the real "or 2 zones if A/B" rule exactly.
   Geometrically, Island stays exclusive with
   City/Country (an Island zone can never share land with a City or
   Country zone) — a depot group can still have an Island zone alongside
   City/Country zones elsewhere on its map; the exclusion is purely
-  geometric, not a depot-group-wide restriction. Both Country and Island
-  keep their own Dayrider (Day ticket), priced as its own flat figure (see
-  "Single fares" and "Capping" below), not per-mile — a day ticket
-  inherently doesn't scale with distance.
+  geometric, not a depot-group-wide restriction. Island keeps its own
+  Dayrider (Day ticket), priced as its own flat figure (see "Single
+  fares" and "Capping" below), not per-mile — a day ticket inherently
+  doesn't scale with distance.
 - **Town** — declares exactly one Country or Island zone as its parent,
   never a City one, and must at least **partially overlap** it (relaxed
   2026-11-01 — a live user report, with a real example, showed a town can
@@ -1436,8 +1508,9 @@ areas. The 7.5% only applies to commercial mainland-hub routes
 | Case | Pricing |
 |---|---|
 | Within a city (zone A, zone B, or crossing between them) | Flat **£2.40**, fixed in code |
-| On a bus that leaves the city zones at all ("Country" — see "City-only vs Country buses" below) | **£2.00 base + 20p/mile**, fixed in code (confirmed 2026-11-01) |
-| Within an island zone | **£2.00 base + 20p/mile**, same as Country (confirmed 2026-11-01 — base lowered from an earlier-proposed £2.40 to £2.00 specifically "to match better with towns") |
+| On a bus that leaves the city zones at all ("Country" — see "City-only vs Country buses" below), where fare zones are actually drawn | **Real zone-count table** (corrected 2026-11-12/13, see "Zone types" above): 1 zone (or 2 if A/B) £2.40, 2–3 zones £3.40, 4 £4.40, 5 £5.40, 6 £6.40, +£1.00/zone beyond |
+| A Country leg touching no drawn fare zone at all | **£2.00 base + 20p/mile**, fixed in code (confirmed 2026-11-01) — the distance formula's remaining real use, now that zoned Country legs use the real zone-count table above |
+| Within an island zone | **£2.00 base + 20p/mile** (confirmed 2026-11-01 — base lowered from an earlier-proposed £2.40 to £2.00 specifically "to match better with towns") — unaffected by the Country zone-count correction above; no real zone-count precedent exists for Island |
 | Within a town zone | Flat **£2**, fixed in code (no longer a percentage of the parent — see "Zone types" above) |
 | Long-distance routes | No zones — base fare plus price per mile, player-set (unchanged) |
 | Airport Express routes | Flat Single **£6.00** and flat Return **£8.50**, fixed in code (real Lothian Airlink figures) — not the standard 1.6x return multiplier below |
@@ -1470,6 +1543,17 @@ an approximation rather than an exact match (the same standard the main
 per-mile rate itself was held to, "within 2%," doesn't apply as tightly
 here since this is explicitly built from an approximation, not a direct
 measurement).
+
+**Correction, 2026-11-12/13**: now that Country Singles use the real
+zone-count table directly (see "Zone types" above) rather than a per-mile
+formula, Night Country Singles use the real zone-banded figures this
+paragraph already quoted above directly too, rather than the approximation
+built around them — **1 zone (or 2 if A/B) £3.50, 2–3 zones £5.50, 4–6
+zones £8.50 flat**, open-ended at 7+ zones (no real data past 6, and the
+band is already flat across 4–6 with no per-zone step to extrapolate).
+Island Night keeps the approximation formula above unchanged — it was
+always the fallback for the case with no real zone-count precedent, which
+is now Island specifically rather than Country/Island together.
 
 **Child fare — confirmed 2026-11-05, applies to every ticket family in
 this game, not just Ridacard**: exactly **50% of the Adult price, rounded
@@ -1746,7 +1830,7 @@ tickets are unaffected. The driver sells whichever ticket is actually
 cheapest for the journeys the customer will make, so a capped single isn't
 sold in preference to a cheaper option that already exists.
 
-**Excluded entirely:** sightseeing tours, private hires, Airlink 100, Express
+**Excluded entirely:** sightseeing tours, Airlink 100, Express
 500.
 
 **Government payments** arrive **monthly, with a one month delay** — a real
@@ -1815,44 +1899,6 @@ required where an SPT **subsidy** makes up a large proportion of the route's
 revenue; a light subsidy doesn't require it. A full SPT contract always
 requires it.
 
-### School contracts
-A separate type of council contract, **high schools only**, running **term time
-only**.
-
-- The council pre-determines the **route**, and specifies the **vehicle type and
-  minimum capacity** — low floor or coach, fitted with **seatbelts and foldable
-  school signs**, shown on a school run and folded away otherwise.
-- A school contract **never goes further than the nearest high school by road**.
-  Catchments overlap slightly where runs meet: about **350m in cities**, and
-  **proportionally in the country** — roughly 5% of the road distance to the
-  school, since a fixed 800m band is meaningless where the school is fifteen miles
-  away.
-- Penalties are **larger than other contracts** and the contract is lost after a
-  **tighter number of misses**, because a failed school run strands children.
-  Running below the minimum capacity is penalised.
-- **No livery requirement.**
-
-**Vehicles** are not a school type — any bus with seatbelts and signs qualifies,
-and spends the rest of the day on ordinary work. **Private hire vehicles can work
-school runs**, which gives them something to do between hires.
-
-**Drivers** are part time, paid only when on a school contract, and need the same
-licence and training as anyone else. They can work a service between the depot or
-local interchange and the school run, and **regular drivers can work school buses**
-where the timetable allows — the operations manager decides who does what. In the
-holidays school drivers can work normal duties, paid as casual.
-
-**Term dates** are simplified: roughly six weeks in summer, two at Christmas and
-two at Easter. In the holidays the school-run peak on ordinary routes goes quiet
-while the middle of the day gets busier as families travel, so the summer network
-is a different shape rather than a thinner one. A **holiday timetable** is optional
-— another day type the player can build if it's worth it.
-
-**Dual purpose.** Once a school route is running, the council can request it
-become open to regular fare-paying passengers as well as pupils. The school
-arrival time in the morning and departure time in the afternoon are both set by
-the council; the rest of the journey works like any dual-purpose service.
-
 ### Event contracts
 Large venues and cruise ports offer event-day contracts. Venues know roughly how
 many people will attend, so they mostly get the number of buses and the duration
@@ -1894,16 +1940,16 @@ automatically, not by the player.
 rather than always E. Cruise routes always keep the **C** prefix.
 
 ### Fixed real contracts
-A genuinely different contract type from council, school, event, cruise or
+A genuinely different contract type from council, event, cruise or
 lifeline (§10 below): the route, timetable — and for 398, the route number
 too — are **entirely fixed**. The player, or the contract itself, doesn't
 design any of it. Two instances exist so far (398 and Airlink 100, both
 below), each a one-off special case rather than a general reusable type —
 only worth generalising if a third ever comes along.
 
-- Offered alongside council, school, event, lifeline and cruise contracts
-  through a single **contracts menu** — one screen covering all five
-  contract types, not five separate screens.
+- Offered alongside council, event, lifeline and cruise contracts
+  through a single **contracts menu** — one screen covering all four
+  contract types, not four separate screens.
 - Same **warning-and-review** penalty pattern as other contracts: the
   contract cannot be lost outright, but is heavily fined for any condition
   not met.
@@ -2219,41 +2265,49 @@ General to every contract type, not specific to 398 or Airlink.
   at the end of that day rather than the old one.
 
 ### Private hire
-Enabled **per depot group**. A distinct revenue stream with no timetable at all —
-a job with a start, an end and a driver, rather than a service.
+Revived (T183, confirmed 2026-11-13) as a **fully commercial-team-run**
+mechanic, not the manual-booking version this section originally described —
+that version was removed outright a week earlier (T158: "there will be too
+much to do when playing," the player was expected to manage individual
+bookings). This replacement keeps the premium-revenue role private hire is
+meant to play in the economy (CLAUDE.md: margin comes from premium work, not
+an inflated scheduled network) while removing every piece of day-to-day
+management from the player.
 
-- **Vehicles**: coaches and Sprinter vans only, flagged **private hire only** so
-  they cannot work service or sightseeing runs. A vehicle can be switched back to
-  service work, but it costs time and money.
-- **Bookings arrive based on reputation and fleet size**, so private hire rewards
-  a well-run operation rather than carrying an early one. Declining a booking
-  costs nothing.
-- A customer books for a set number of people, never exceeding the capacity of
-  available vehicles. **The price is set on the vehicle's capacity, not the
-  number of customers.**
-- Profit sits in a range between two hidden values, tuned so the work is always
-  worth doing.
-- **One driver completes the entire hire.** Hires can run **up to five days**;
-  on a multi-day hire the driver is paid to stay away in accommodation, and that
-  cost is added to the customer's price.
-
-**Scheduling.** The customer gives the time they must **arrive** at the
-destination and the time they need to **leave** for home. The game works the
-timetable back from those two fixed points.
-
-**Multi-day hires** end each day at a hotel, and may run **up to two attraction
-trips a day** from it. A multi-day hire must always be **outside the operating
-area the contract starts in**.
-
-**Waiting.** When the bus drops off at a bus station — for an attraction or a
-rest break — it can **pay to wait there off a stand** if the station has parking.
-If it has none, the bus must drive somewhere else to park while the driver takes
-their break.
-
-Driver rules are in `OPERATIONS.md` §7. Note that private hire **always uses EU
-drivers' hours**, and rest stops must be built into the route where it would
-exceed the driver's driving time — the game warns and suggests where one is
-needed.
+- **The player's only decision is the purchase**: buy a coach (Volvo 9700 or
+  9700DD) or an EVM Cityline ("Sprinter"), and livery it **Lothian Coaches**.
+  Choosing that livery on an eligible vehicle **is** the "this is now a
+  private-hire vehicle" designation — there is no separate flag, booking
+  screen or duty to manage, the same "livery as role flag" pattern
+  Sightseeing and ScotRail already use.
+- **A driver is auto-hired** the moment the vehicle is collected — one real
+  roster entry (`OPERATIONS.md` §6), traceable back to its own vehicle, with
+  no wage cost wired up yet (the driver pay system itself is Phase 6, not
+  built — true of every driver in the game right now).
+- **Capped per depot group, per vehicle class** — coaches and Sprinters are
+  capped independently. Both caps are **flat placeholders for now**: the
+  coach cap stands in for real demand/land-use scoring (Phase 4, not built);
+  the Sprinter cap stands in for "scales with depot size" (no depot-size
+  concept exists in this codebase yet). Both are meant to be replaced once
+  those mechanics land, not treated as the real tuning. Reaching a cap
+  simply removes the Lothian Coaches livery from that depot group's own
+  picker for that class — the same "filtered out, not shown disabled" rule
+  every other livery lock already follows (Lothian Girraffe's own 1-vehicle
+  cap works the same way).
+- **Income is random, seasonal, and arrives as several bookings across the
+  month** rather than one lump sum, so the finance ledger reads like real
+  activity (different days, different times of day). A coach earns
+  **£4,500-£7,500/month** on average (confirmed), seasonally adjusted for UK
+  coach-hire demand (summer and Christmas peaks, a new-year trough). A
+  Sprinter earns proportionally less, reflecting its much smaller capacity.
+  Nothing about a specific trip, passenger or destination is simulated —
+  this is the same honest abstraction `OPERATIONS.md`'s own "re-power
+  booking" and "repaint booking" mechanics already use for work that isn't
+  worth modelling leg by leg.
+- Recorded against the **owning depot group's own finance ledger** (DESIGN.md
+  §10), under the "Private hire" category, so it shows up in that group's
+  own balance/transaction history exactly like any other real spend or
+  income.
 
 ### Tour routes
 A separate product from sightseeing: a **named** multi-day or full-day tour, set
@@ -2267,10 +2321,9 @@ up once and run whenever there is demand, which **marketing raises**.
   25%** at full skill. A **tour guide** adds a further percentage scaled by their
   skill. The player is told about bookings and can overrule, which sends the
   manager to rebook another day rather than losing the work.
-- Up to **five days**, using the same private-hire-flagged vehicles. Only **two
-  vehicles on a route at once**, and the second may not start until the first is
-  **50% complete**.
-- A tour is only accepted if it **doesn't affect a school run**.
+- Up to **five days**, drawn from the fleet's ordinary coaches and Sprinter
+  vans. Only **two vehicles on a route at once**, and the second may not start
+  until the first is **50% complete**.
 - Minimum hire of **10 hours**; anything under an 8-hour day attracts no bookings.
 - **EU drivers' hours**, with rest stops built into the itinerary.
 
@@ -2286,9 +2339,8 @@ complete the whole trip. Where a day ends within a few miles of a depot the vehi
 charges there overnight and the driver takes a lift to the hotel, having dropped
 the guide off with the customers.
 
-Tours run **more year-round than private hire**, with a rise in the school holidays
-when vehicle demand is higher — so the same coach does school runs in term time and
-tours in the holidays.
+Tours run **year-round**, with a rise over the summer and school holiday
+periods when general leisure demand is higher.
 
 ### Remote depots and lifeline contracts
 Scottish islands and the far Highlands don't work like the mainland — most
@@ -2436,8 +2488,8 @@ islands** — lost lifeline contracts are re-tendered instead (see above).
 ### Skipping time
 A **skip button** appears when no vehicle is on a duty, jumping to the next
 departure. It is most useful in the opening scenario with four buses on three
-village routes, and quietly disappears as the network grows. A private hire parked
-at a hotel overnight is not on duty; driving to the hotel is.
+village routes, and quietly disappears as the network grows. A tour vehicle
+parked at a hotel overnight is not on duty; driving to the hotel is.
 
 ### Customer ratings
 A rating page of its own, shown **company-wide and per depot group**, because the
@@ -2513,11 +2565,11 @@ set directly.
 
 The profit comes from **premium work, not from inflating the scheduled network**.
 Ordinary stopping services run on realistic, thin margins. What funds growth is
-council and event contracts, sightseeing, and private hire — with venue and
+council and event contracts and sightseeing — with venue and
 cruise contracts carrying most of the generosity so council rates stay credible.
 
 Passenger numbers and running costs are **not** tuned away from reality. Earlier
-drafts inflated both; that was dropped once sightseeing and private hire gave the
+drafts inflated both; that was dropped once sightseeing gave the
 economy somewhere better to get its margin from.
 
 Note what this implies: a plain commercial urban route with no contract or
@@ -2555,7 +2607,7 @@ Categories:
 | Fares — singles and returns, day and LATE, weekly, NETWORK, capping, concessionary reimbursement | Staff — drivers, engineering and stores, controllers and travel centre, overtime and loans, fleet elite payments |
 | Contracts — council and event | Vehicles — fuel and energy, maintenance, parts stock, leasing |
 | Sightseeing | Property — depot, stand rental, stop fees, station upkeep |
-| Private hire | Marketing |
+| | Marketing |
 | | Penalties and fines |
 
 **Long distance has its own section**, split by depot, rather than sitting in any

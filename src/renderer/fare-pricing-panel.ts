@@ -30,7 +30,7 @@
 // services" checkbox is gone entirely; routes drive it now.
 import { createDropdown } from "./dropdown";
 import { networkFareGBPPence, townFareGBPPence } from "./fare-pricing.mts";
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+import { setMenuOpen } from "./menu-visibility";
 
 function penceToPoundsString(pence: number | null): string {
   if (pence === null) return "";
@@ -126,21 +126,21 @@ export function missingFields(zones: FareZone[], routes: Route[], bands: Country
   return missing;
 }
 
-export async function mountFarePricingPanel(): Promise<void> {
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Fare pricing";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  // Confirmed live (2026-10-31) that 1400px overlapped "Place stop"
-  // (1379.9-1456px) — every other bottom toggle button's own real
-  // rendered position was measured first this time, not guessed; 1600px
-  // sits clear of "Hidden stops", the rightmost existing button, which
-  // ends at 1576px.
-  toggle.style.left = "1600px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
+// Shown/hidden by the Fares section of the bottom bar (fares-screen.ts),
+// not its own floating toggle button any more (T165 — same "get all menus
+// working" conversion T162 already did for Fleet's three sub-screens).
+// `onMissingFieldsChanged` lets fares-screen.ts's own tab button show the
+// red-border warning this panel's old standalone toggle button used to
+// carry directly (missingFields's own header comment below) — it's a
+// callback, not a plain boolean, since the real recompute only ever
+// happens from inside this module (reloadMissingIndicators).
+export const farePricingPanelState: {
+  open: (() => void) | null;
+  close: (() => void) | null;
+  onMissingFieldsChanged: ((anyMissing: boolean) => void) | null;
+} = { open: null, close: null, onMissingFieldsChanged: null };
 
+export async function mountFarePricingPanel(): Promise<void> {
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
@@ -197,7 +197,7 @@ export async function mountFarePricingPanel(): Promise<void> {
     );
     missingByGroup = new Map(entries);
     const anyMissing = [...missingByGroup.values()].some((m) => m.length > 0);
-    toggle.style.border = anyMissing ? "2px solid #ef4444" : "";
+    farePricingPanelState.onMissingFieldsChanged?.(anyMissing);
   }
 
   async function reloadConfig(): Promise<void> {
@@ -695,19 +695,21 @@ export async function mountFarePricingPanel(): Promise<void> {
     }
   }
 
-  let panelOpen = false;
-  toggle.addEventListener("click", async () => {
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) {
+  farePricingPanelState.open = () => {
+    panel.style.display = "flex";
+    setMenuOpen("fare-pricing-panel", true);
+    void (async () => {
       depotGroups = await window.depotGroups.list();
       if (selectedDepotGroupId === null) selectedDepotGroupId = depotGroups[0]?.id ?? null;
       await reloadMissingIndicators();
       await reloadConfig();
       render();
-    }
-  });
+    })();
+  };
+  farePricingPanelState.close = () => {
+    panel.style.display = "none";
+    setMenuOpen("fare-pricing-panel", false);
+  };
 
   // The red border needs to reflect reality even while the panel is
   // closed (so opening the game later still shows it), so it's computed

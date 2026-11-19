@@ -8,8 +8,6 @@
 import { Router } from "./wasm/game_wasm.js";
 import { createDropdown, type Dropdown } from "./dropdown";
 import {
-  DAY_TYPES,
-  type DayType,
   type TimeBand,
   validateTimeBands,
   DEFAULT_TIME_BANDS,
@@ -19,7 +17,18 @@ import {
   mergeCustomDepartures,
   validateNightWindow,
   validateNightFinishTime,
+  describeWeekdayMask,
+  validateWeekdayMask,
+  weekdayMasksOverlap,
+  WEEKDAY_BITS,
+  MONDAY_FRIDAY_MASK,
+  WEEKEND_MASK,
+  EVERY_DAY_MASK,
+  validateMirrorOffsetMinutes,
 } from "./route-timetable.mts";
+import { isIslandDepotGroup } from "./fare-journey.mts";
+import { minTopSpeedMphForRoute } from "./vehicle-catalogue.mts";
+import { LIVERY_SPECIFIC_ROUTE } from "./livery-seed-data.mts";
 import { timetableEditorState } from "./timetable-editor-state";
 import { stopsPanelState } from "./stops-layer";
 import {
@@ -28,9 +37,13 @@ import {
   sliceGridToPointRange,
   buildMergedFamilyGrid,
   computeOffsetsForDirection,
+  generateBaseDepartureMinutes,
+  makeTimetableReferenceResolver,
   type MergedGridMember,
 } from "./route-timetable-grid.mts";
 import { buildMergedGridTable } from "./merged-grid-table";
+import { resolveFamilyDisplayColours } from "./route-combine-variations.mts";
+import { pickContrastColorForHex } from "./icon-contrast";
 
 function stopLabel(point: RoutePoint): string {
   if (point.kind !== "stop" || point.osmId === undefined) return "Stop";
@@ -42,12 +55,6 @@ function stopLabel(point: RoutePoint): string {
 // point stays orange, since it's a "saved, but..." situation.
 const STATUS_COLOUR_WARNING = "#f97316";
 const STATUS_COLOUR_SUCCESS = "#22c55e";
-
-const DAY_TYPE_LABELS: Record<DayType, string> = {
-  monday_friday: "Monday-Friday",
-  saturday: "Saturday",
-  sunday: "Sunday",
-};
 
 function minutesToHHMM(minutes: number): string {
   const h = Math.floor(minutes / 60).toString().padStart(2, "0");
@@ -96,13 +103,32 @@ function normalizeTimeInput(input: HTMLInputElement): void {
 // indefinitely on boot — not yet root-caused; see `vehicle-simulation.ts`'s
 // own `buildLegs` for the fuller note and OPEN-ITEMS.md for the real fix to
 // retry, properly verified against the live packaged app first.
-function computeLegTimesSeconds(router: Router, points: readonly { lon: number; lat: number }[]): number[] {
+// Real max-speed floor, added 2026-11-19 ("Each vehicle should have a
+// max speed"): the router computes each leg's time from the real road
+// network's own speed limits alone, with no notion of what vehicle will
+// actually run it — a bus-only route's genuinely fastest achievable time
+// can still be faster than any real bus could physically go if a road's
+// own limit exceeds the vehicle category's cap (e.g. a 70mph dual
+// carriageway stretch, a 50mph-capped bus). `minTopSpeedMphForRoute`
+// (vehicle-catalogue.mts) resolves the real per-model cap for whichever
+// vehicle type is actually locked to this route (or the whole
+// catalogue's own slowest model, for an unrestricted route). Floored
+// per leg — `max(router's own real time, distance / that speed)` — right
+// where legTimesSeconds is computed, so computeOffsets's existing
+// feasibility check (route-timetable.mts) respects it automatically with
+// no separate feasibility logic needed.
+function computeLegTimesSeconds(router: Router, points: readonly { lon: number; lat: number }[], routeNumber: string): number[] {
+  const maxSpeedMph = minTopSpeedMphForRoute(routeNumber, LIVERY_SPECIFIC_ROUTE);
+  const maxSpeedMetresPerSecond = (maxSpeedMph * 1609.344) / 3600;
   const legs: number[] = [];
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
     router.find_route(a.lon, a.lat, b.lon, b.lat);
-    legs.push(router.last_route_time_seconds());
+    const realSeconds = router.last_route_time_seconds();
+    const distanceM = router.last_route_distance_m();
+    const speedFloorSeconds = distanceM / maxSpeedMetresPerSecond;
+    legs.push(Math.max(realSeconds, speedFloorSeconds));
   }
   return legs;
 }
@@ -178,15 +204,33 @@ export function createRouteTimetableEditor(
   void loadRouteFamily(route).then((family) => {
     if (family.length <= 1) return; // a lone route with no variations needs no tabs
     familyTabs.innerHTML = "";
+    // Live request, 2026-11-08: "if variations are the same colour each
+    // one should be given a unique colour in the timetable editor... [and]
+    // colours should always be shown around the button in the top and
+    // something different should show which is being edited." Every tab
+    // gets a coloured ring in its own DISPLAY colour (resolveFamilyDisplay
+    // Colours — a real stored colour where it's not ambiguous, a
+    // reassigned one where it collides with a sibling's, e.g. a minor
+    // variation that always follows its parent's colour); the one
+    // currently being edited is filled solid with that colour instead of
+    // just ringed, so it reads as a genuinely different state rather than
+    // just "slightly bolder."
+    const displayColours = resolveFamilyDisplayColours(family, family);
     for (const member of family) {
       const tab = document.createElement("button");
       tab.className = "btn btn-icon";
       tab.textContent = member.number;
+      const colour = displayColours.get(member.id) ?? member.colour;
+      tab.style.borderWidth = "2px";
+      tab.style.borderColor = colour;
       if (member.id === route.id) {
         tab.disabled = true;
         tab.style.fontWeight = "700";
-        tab.style.borderColor = member.colour;
+        tab.style.background = colour;
+        tab.style.color = pickContrastColorForHex(colour);
+        tab.title = "Currently being edited";
       } else {
+        tab.title = `Switch to ${member.number}`;
         tab.addEventListener("click", () => onSwitchRoute(member));
       }
       familyTabs.appendChild(tab);
@@ -241,29 +285,172 @@ export function createRouteTimetableEditor(
   // into the generated list (route-timetable.mts's mergeCustomDepartures),
   // deduplicated against it, not a second parallel timetable.
   let currentCustomMinutes = new Set<number>();
+  // Mirror mode (DESIGN.md §7, 2026-11-15 — "a button to set a timetable
+  // to have a service after a settable time after one arrives"): when
+  // set, this component's own departures come from the referenced
+  // service's own real arrivals instead of currentBands, which are
+  // simply ignored (not cleared — switching mirror mode back off
+  // restores whatever bands were already there). null/0 means "not
+  // mirroring", the default and by far the common case.
+  let currentMirrorSourceTimetableId: number | null = null;
+  let currentMirrorOffsetMinutes = 10;
+  // Every route+timetable in the whole game, for the mirror-source
+  // picker and for resolving a reference whenever it's actually used —
+  // a mirror can point at any route's own timetable, not just a family
+  // member's, so this is the full game-wide list, not scoped to `route`.
+  // Fetched once, below, and kept live-enough for this panel's own
+  // lifetime (reopening the panel re-fetches).
+  let allRoutesForMirror: readonly Route[] = [];
+  let allTimetablesForMirror: readonly RouteTimetable[] = [];
+  void (async () => {
+    [allRoutesForMirror, allTimetablesForMirror] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
+    renderMirrorUI();
+  })();
+  function resolveMirrorReference(timetableId: number) {
+    return makeTimetableReferenceResolver(allRoutesForMirror, allTimetablesForMirror)(timetableId);
+  }
+  // The single choke point every live generated-departures computation in
+  // this panel reads through (renderGeneratedDepartures, the "exclude
+  // shared times" button, the night-window check, the live family
+  // preview) — branches to the mirror resolution when mirror mode is on,
+  // otherwise behaves exactly as generateDepartureMinutesForBands(
+  // currentBands) always did. Kept as one function specifically so every
+  // one of those call sites picks up mirror mode uniformly, rather than
+  // needing the same branch copied at each of them.
+  function currentBaseDepartureMinutes(): number[] {
+    return generateBaseDepartureMinutes(
+      { mirrorSourceTimetableId: currentMirrorSourceTimetableId, mirrorOffsetMinutes: currentMirrorOffsetMinutes, weekdayMask: selectedWeekdayMask, timeBands: currentBands },
+      resolveMirrorReference,
+    );
+  }
   // "Show excluded services" (user request) — off by default (today's
   // only past behaviour: an excluded departure just isn't there), on
   // shows it anyway as a struck-through column in the grid preview below,
   // so an exclusion's real effect is visible rather than just inferred
   // from its absence.
   let showExcludedServices = false;
-  // Which leg of a terminus loop this component covers (DESIGN.md §6) —
-  // 'both' (the only option before this, and the only one a non-loop
-  // route ever gets) drives the whole route from one shared generator,
-  // exactly as before. A loop route can instead have an independent
-  // 'outbound'-only and/or 'inbound'-only component (user request: "set
-  // inbound and outbound times separately... useful if I am running from
-  // multiple depots" — two depots each crewing one leg are genuinely two
-  // separate operations). Only ever "outbound"/"inbound" for a route that
-  // actually IS a terminus loop; the direction dropdown below doesn't
-  // exist at all otherwise.
-  let currentDirection: RouteTimetableDirection = "both";
+  // Which leg of a terminus loop this component covers (DESIGN.md §6).
+  // 'both' is still the only value a non-loop route ever gets — one
+  // shared generator drives the whole route, exactly as before. A loop
+  // route always splits into independent 'outbound' and 'inbound'
+  // components instead (live user request, 2026-11-07: "remove both
+  // directions from the timetable and have just inbound and outbound" —
+  // the earlier "Both directions (shared)" choice let a loop route's two
+  // legs drift out of sync with whichever depot crews each one, so it's
+  // no longer offered for a new or edited component; the direction
+  // dropdown below doesn't exist at all for a non-loop route). A handful
+  // of real saves still have an old 'both' row sitting alongside a
+  // proper outbound/inbound pair for the same (route, day type) — left
+  // alone rather than migrated, since the schema's own precedence rule
+  // already prefers the leg-specific row and the 'both' one was already
+  // dead weight; it simply stops being reachable from this editor.
   const isTerminusLoop = route.terminusIndex !== null && route.startIndex !== null;
+  let currentDirection: RouteTimetableDirection = isTerminusLoop ? "outbound" : "both";
   const DIRECTION_LABELS: Record<RouteTimetableDirection, string> = {
     both: "Both directions (shared)",
     outbound: "Outbound only",
     inbound: "Inbound only",
   };
+  // Mirror mode's own UI (DESIGN.md §7, 2026-11-15): a checkbox that
+  // swaps the whole bands section out for a source-service picker plus an
+  // offset-minutes field — "instead of" the normal generator, per the
+  // user's own framing, so the two are mutually exclusive in the UI, not
+  // just in which one the data actually uses.
+  const mirrorToggleRow = document.createElement("div");
+  mirrorToggleRow.style.display = "flex";
+  mirrorToggleRow.style.alignItems = "center";
+  mirrorToggleRow.style.gap = "6px";
+  const mirrorToggle = document.createElement("input");
+  mirrorToggle.type = "checkbox";
+  mirrorToggle.id = "mirror-mode-toggle";
+  const mirrorToggleLabel = document.createElement("label");
+  mirrorToggleLabel.htmlFor = "mirror-mode-toggle";
+  mirrorToggleLabel.textContent = "Mirror another service's arrivals instead of a frequency generator";
+  mirrorToggleRow.append(mirrorToggle, mirrorToggleLabel);
+
+  const mirrorControls = document.createElement("div");
+  mirrorControls.style.display = "none";
+  mirrorControls.style.flexDirection = "column";
+  mirrorControls.style.gap = "6px";
+  mirrorControls.style.padding = "8px 0";
+  const mirrorSourceContainer = document.createElement("div");
+  const mirrorOffsetRow = document.createElement("div");
+  mirrorOffsetRow.style.display = "flex";
+  mirrorOffsetRow.style.alignItems = "center";
+  mirrorOffsetRow.style.gap = "6px";
+  const mirrorOffsetLabel = document.createElement("span");
+  mirrorOffsetLabel.textContent = "Minutes after it arrives:";
+  const mirrorOffsetInput = document.createElement("input");
+  mirrorOffsetInput.type = "number";
+  mirrorOffsetInput.min = "0";
+  mirrorOffsetInput.step = "1";
+  mirrorOffsetInput.className = "field";
+  mirrorOffsetInput.style.width = "80px";
+  mirrorOffsetInput.addEventListener("change", () => {
+    const value = Math.round(Number(mirrorOffsetInput.value));
+    const error = validateMirrorOffsetMinutes(value);
+    if (error) {
+      mirrorOffsetInput.value = String(currentMirrorOffsetMinutes);
+      return;
+    }
+    currentMirrorOffsetMinutes = value;
+    renderGeneratedDepartures();
+  });
+  mirrorOffsetRow.append(mirrorOffsetLabel, mirrorOffsetInput);
+  const mirrorWarning = document.createElement("div");
+  mirrorWarning.className = "label-muted";
+  mirrorWarning.style.color = STATUS_COLOUR_WARNING;
+  mirrorControls.append(mirrorSourceContainer, mirrorOffsetRow, mirrorWarning);
+
+  // Flat "route number — day type (direction)" picker across every
+  // timetable in the whole game (a mirror can reference any route, not
+  // just a family member's) — rebuilt whenever the game-wide lists are
+  // (re)fetched, since createDropdown has no way to swap its own option
+  // set after construction.
+  function renderMirrorUI(): void {
+    const optionLabels: string[] = [];
+    const optionIds: number[] = [];
+    for (const t of allTimetablesForMirror) {
+      // Excludes this route's own component being edited (can't mirror
+      // itself) and any timetable that's ITSELF already mirroring
+      // something (no mirror-of-a-mirror chains — see route_timetables'
+      // own SCHEMA comment in electron/db.mts for why).
+      if (t.mirrorSourceTimetableId != null) continue;
+      const r = allRoutesForMirror.find((rt) => rt.id === t.routeId);
+      if (!r) continue;
+      const directionSuffix = t.direction === "both" ? "" : ` (${t.direction})`;
+      optionLabels.push(`${r.number} — ${describeWeekdayMask(t.weekdayMask)}${directionSuffix}`);
+      optionIds.push(t.id);
+    }
+    const selectedIndex = optionIds.indexOf(currentMirrorSourceTimetableId ?? -1);
+    const dropdown = createDropdown(optionLabels.length > 0 ? optionLabels : ["No other timetables exist yet"], selectedIndex >= 0 ? optionLabels[selectedIndex] : optionLabels[0] ?? "", (value) => {
+      const i = optionLabels.indexOf(value);
+      currentMirrorSourceTimetableId = i >= 0 ? optionIds[i] : null;
+      renderGeneratedDepartures();
+    });
+    mirrorSourceContainer.replaceChildren(dropdown.el);
+    if (selectedIndex < 0 && currentMirrorSourceTimetableId != null) {
+      mirrorWarning.textContent = "The timetable this used to mirror no longer exists — pick another, or no departures will be generated.";
+    } else {
+      mirrorWarning.textContent = "";
+    }
+  }
+
+  mirrorToggle.addEventListener("change", () => {
+    if (mirrorToggle.checked) {
+      currentMirrorSourceTimetableId = currentMirrorSourceTimetableId ?? null;
+      mirrorControls.style.display = "flex";
+      bandsContainer.style.display = "none";
+      mirrorOffsetInput.value = String(currentMirrorOffsetMinutes);
+      renderMirrorUI();
+    } else {
+      currentMirrorSourceTimetableId = null;
+      mirrorControls.style.display = "none";
+      bandsContainer.style.display = "flex";
+    }
+    renderGeneratedDepartures();
+  });
+
   const bandsContainer = document.createElement("div");
   bandsContainer.style.display = "flex";
   bandsContainer.style.flexDirection = "column";
@@ -381,13 +568,10 @@ export function createRouteTimetableEditor(
 
   function renderGeneratedDepartures(): void {
     generatedDeparturesContainer.innerHTML = "";
-    let minutes: number[] = [];
-    try {
-      minutes = generateDepartureMinutesForBands(currentBands);
-    } catch {
-      // An invalid/empty band set — nothing to show until it validates,
-      // same as everywhere else this generator is used.
-    }
+    // currentBaseDepartureMinutes already handles an invalid/empty band
+    // set (or an unresolved mirror reference) by producing nothing,
+    // rather than throwing — same as everywhere else this is used.
+    const minutes: number[] = currentBaseDepartureMinutes();
     for (const minute of minutes) {
       const excluded = currentExcludedMinutes.has(minute);
       const chip = document.createElement("button");
@@ -551,12 +735,14 @@ export function createRouteTimetableEditor(
   addCustomRow.appendChild(addCustomInput);
   addCustomRow.appendChild(addCustomButton);
 
-  // Timing points are no longer set here — DESIGN.md §4/§7's redesign
-  // moved that to each stop's own little menu in the locked route list on
-  // the left (route-panel.ts), coordinated through timetableEditorState so
-  // this module still owns which day type is selected and still persists
-  // the result. This is just a live count, and a warning line for anything
-  // scheduled faster than the route can actually be driven.
+  // Timing points are set on the route (schema v56->v57, routes.
+  // timing_point_indexes), not here — each stop's own little menu in the
+  // locked route list on the left (route-panel.ts) flags/unflags one.
+  // This module still owns, and still persists, the TIMES at each of the
+  // route's own timing points for whichever day type is selected
+  // (timetableEditorState.timingPoints), coordinated with route-panel.ts
+  // through the same state object. This is just a live count of how many
+  // of the route's timing points already have a time for this day type.
   const timingPointsHint = document.createElement("div");
   timingPointsHint.className = "label-muted";
   timingPointsHint.style.padding = "0 12px";
@@ -568,11 +754,13 @@ export function createRouteTimetableEditor(
   timetableEditorState.onTimingPointsEdited = refreshTimingPointsHint;
 
   function refreshTimingPointsHint(): void {
-    const count = timetableEditorState.timingPoints.length;
-    timingPointsHint.textContent =
-      count === 0
-        ? "No timing points set — click a stop on the left to add one."
-        : `${count} timing point${count === 1 ? "" : "s"} set — click a stop on the left to edit.`;
+    const total = route.timingPointIndexes.length;
+    if (total === 0) {
+      timingPointsHint.textContent = "No timing points set on this route yet — click a stop on the left to flag one.";
+      return;
+    }
+    const timed = timetableEditorState.timingPoints.length;
+    timingPointsHint.textContent = `${timed} of ${total} timing point${total === 1 ? "" : "s"} timed for this day type — click a stop on the left to edit.`;
   }
 
   // Shows every family member's own timetable for whichever day type is
@@ -594,7 +782,7 @@ export function createRouteTimetableEditor(
   // keystroke. Timing points *do* still change (via the left-hand stop
   // list), so offsets are recomputed from this cache each time, not cached
   // themselves.
-  const legTimesSecondsCache = computeLegTimesSeconds(router, route.points);
+  const legTimesSecondsCache = computeLegTimesSeconds(router, route.points, route.number);
 
   // A real printed-timetable-shaped preview of this route's own current
   // (possibly unsaved) frequency fields — updates live as they're typed,
@@ -608,16 +796,25 @@ export function createRouteTimetableEditor(
   // begin with (a user report: a standalone route's panel looked like it
   // had "no timetable" once the bands/generator section ended, when what
   // was missing was this preview, not a real regression).
-  async function renderFamilySharedStops(dayType: DayType): Promise<void> {
+  async function renderFamilySharedStops(weekdayMask: number): Promise<void> {
     const family = await loadRouteFamily(route);
+    // Same collision-aware colours the family tabs above use (T164's
+    // resolveFamilyDisplayColours) — live bug report, 2026-11-08: "it's
+    // only showing 2 colours in the timetable even though I have 3
+    // variations" (e.g. two minor variations both following the same
+    // parent colour live, T164). The grid's own header-row swatch
+    // (buildMembersForLabel below) used to read each member's raw stored
+    // `colour` directly, so a real collision there silently showed fewer
+    // distinct colours than the tabs already correctly deduped.
+    const familyDisplayColours = resolveFamilyDisplayColours(family, family);
     familySection.innerHTML = "";
 
     const heading = document.createElement("div");
     heading.className = "label-muted";
     heading.textContent =
       family.length > 1
-        ? `Shared stops — ${DAY_TYPE_LABELS[dayType]} (this route's own row updates live as you edit, before saving)`
-        : `Timetable — ${DAY_TYPE_LABELS[dayType]} (updates live as you edit, before saving)`;
+        ? `Shared stops — ${describeWeekdayMask(weekdayMask)} (this route's own row updates live as you edit, before saving)`
+        : `Timetable — ${describeWeekdayMask(weekdayMask)} (updates live as you edit, before saving)`;
     familySection.appendChild(heading);
 
     const showExcludedLabel = document.createElement("label");
@@ -631,7 +828,7 @@ export function createRouteTimetableEditor(
     showExcludedCheckbox.checked = showExcludedServices;
     showExcludedCheckbox.addEventListener("change", () => {
       showExcludedServices = showExcludedCheckbox.checked;
-      void renderFamilySharedStops(dayType);
+      void renderFamilySharedStops(weekdayMask);
     });
     showExcludedLabel.appendChild(showExcludedCheckbox);
     showExcludedLabel.appendChild(document.createTextNode("Show excluded services"));
@@ -653,18 +850,30 @@ export function createRouteTimetableEditor(
           currentDirection,
           legTimesSecondsCache,
           timetableEditorState.timingPoints,
+          "standard",
+        );
+        const { arrivalOffsetsSeconds: arrivalOffsetsSecondsPeak, departureOffsetsSeconds: departureOffsetsSecondsPeak } = computeOffsetsForDirection(
+          route,
+          currentDirection,
+          legTimesSecondsCache,
+          timetableEditorState.timingPoints,
+          "peak",
         );
         liveTimetable = {
           id: -1,
           routeId: route.id,
-          dayType,
+          weekdayMask,
           direction: currentDirection,
           timeBands: currentBands.map((b) => ({ ...b })),
           timingPoints: timetableEditorState.timingPoints,
           arrivalOffsetsSeconds,
           departureOffsetsSeconds,
+          arrivalOffsetsSecondsPeak,
+          departureOffsetsSecondsPeak,
           excludedDepartureMinutes: [...currentExcludedMinutes],
           customDepartureMinutes: [...currentCustomMinutes],
+          mirrorSourceTimetableId: currentMirrorSourceTimetableId,
+          mirrorOffsetMinutes: currentMirrorSourceTimetableId != null ? currentMirrorOffsetMinutes : null,
         };
       } catch {
         // An in-progress edit that doesn't yet validate (e.g. a timing
@@ -703,31 +912,29 @@ export function createRouteTimetableEditor(
           for (const seg of routeDirectionRanges(member)) {
             const label = seg.label ?? (member.orientation === "outbound" ? "outbound" : "inbound");
             if (label !== routeLabel) continue;
+            // weekdayMasksOverlap, not exact equality (2026-11-14 live bug:
+            // "if I have a M-F timetable I can't see that when editing a
+            // M-S timetable it's the same") — a sibling's Mon-Fri-only
+            // component must still count as a real clash on the days it
+            // shares with whatever day type is currently being edited.
             const memberTimetable =
-              othersTimetables.find((t) => t.routeId === member.id && t.dayType === dayType && t.direction === label) ??
-              othersTimetables.find((t) => t.routeId === member.id && t.dayType === dayType && t.direction === "both");
+              othersTimetables.find((t) => t.routeId === member.id && weekdayMasksOverlap(t.weekdayMask, weekdayMask) && t.direction === label) ??
+              othersTimetables.find((t) => t.routeId === member.id && weekdayMasksOverlap(t.weekdayMask, weekdayMask) && t.direction === "both");
             if (!memberTimetable) continue;
-            let generated: number[] = [];
-            try {
-              generated = applyExcludedDepartures(
-                generateDepartureMinutesForBands(memberTimetable.timeBands),
-                memberTimetable.excludedDepartureMinutes,
-              );
-            } catch {
-              // An invalid/empty band set on a sibling contributes no
-              // departures to compare against, not an error here.
-            }
+            // generateBaseDepartureMinutes, not a raw band read — a
+            // sibling's own component can itself be mirroring something
+            // (2026-11-15), and an invalid/empty band set (or an
+            // unresolved mirror reference) already safely contributes no
+            // departures to compare against, not an error here.
+            const generated = applyExcludedDepartures(
+              generateBaseDepartureMinutes(memberTimetable, resolveMirrorReference),
+              memberTimetable.excludedDepartureMinutes,
+            );
             for (const m of mergeCustomDepartures(generated, memberTimetable.customDepartureMinutes)) siblingMinutes.add(m);
           }
         }
 
-        let myMinutes: number[] = [];
-        try {
-          myMinutes = generateDepartureMinutesForBands(currentBands);
-        } catch {
-          // Nothing generated yet — nothing to compare, same guard as
-          // everywhere else this generator is used.
-        }
+        const myMinutes: number[] = currentBaseDepartureMinutes();
         for (const m of mergeCustomDepartures(myMinutes, [...currentCustomMinutes])) {
           if (siblingMinutes.has(m)) currentExcludedMinutes.add(m);
         }
@@ -749,15 +956,25 @@ export function createRouteTimetableEditor(
           // component saved specifically for this leg over the route's
           // shared 'both' one, same precedence as the full-screen grid
           // (stops-layer.ts).
+          // weekdayMasksOverlap, not exact equality — same fix as the
+          // "exclude shared times" lookup above, so a sibling's shared
+          // row still appears when its own day type merely overlaps
+          // (rather than exactly matches) the one being viewed.
           const timetable =
             member.id === route.id && label === routeLabel
               ? liveTimetable
-              : allMembersTimetables.find((t) => t.routeId === member.id && t.dayType === dayType && t.direction === segLabel) ??
-                allMembersTimetables.find((t) => t.routeId === member.id && t.dayType === dayType && t.direction === "both");
+              : (allMembersTimetables.find((t) => t.routeId === member.id && weekdayMasksOverlap(t.weekdayMask, weekdayMask) && t.direction === segLabel) ??
+                allMembersTimetables.find((t) => t.routeId === member.id && weekdayMasksOverlap(t.weekdayMask, weekdayMask) && t.direction === "both"));
           if (!timetable) continue;
-          const fullGrid = buildRouteTimetableGrid(member, timetable, { includeExcluded: showExcludedServices });
+          const fullGrid = buildRouteTimetableGrid(member, timetable, { includeExcluded: showExcludedServices }, resolveMirrorReference);
           const slicedGrid = sliceGridToPointRange(fullGrid, seg.fromPointIndex, seg.toPointIndex);
-          members.push({ routeId: member.id, routeNumber: member.number, routeColour: member.colour, grid: slicedGrid, isMinorVariation: member.isMinorVariation });
+          members.push({
+            routeId: member.id,
+            routeNumber: member.number,
+            routeColour: familyDisplayColours.get(member.id) ?? member.colour,
+            grid: slicedGrid,
+            isMinorVariation: member.isMinorVariation,
+          });
         }
       }
       return members;
@@ -783,7 +1000,7 @@ export function createRouteTimetableEditor(
         for (const seg of routeDirectionRanges(route)) {
           const segLabel = seg.label ?? (route.orientation === "outbound" ? "outbound" : "inbound");
           if (segLabel !== label) continue;
-          const fullGrid = buildRouteTimetableGrid(route, liveTimetable, { includeExcluded: false });
+          const fullGrid = buildRouteTimetableGrid(route, liveTimetable, { includeExcluded: false }, resolveMirrorReference);
           const segGrid = sliceGridToPointRange(fullGrid, seg.fromPointIndex, seg.toPointIndex);
           const lastJourney = segGrid.journeys[segGrid.journeys.length - 1];
           if (lastJourney) {
@@ -864,16 +1081,23 @@ export function createRouteTimetableEditor(
   const refreshFamilyLive = () => {
     renderGeneratedDepartures();
     renderCustomDepartures();
-    const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value) ?? DAY_TYPES[0];
-    void renderFamilySharedStops(dayType);
+    void renderFamilySharedStops(selectedWeekdayMask);
   };
 
-  async function loadComponent(dayType: DayType, direction: RouteTimetableDirection): Promise<void> {
-    const existing = (await window.routeTimetables.listForRoute(route.id)).find(
-      (t) => t.dayType === dayType && t.direction === direction,
-    );
-    timetableEditorState.dayType = dayType;
+  // Every component for the route's CURRENT direction only (DESIGN.md §6:
+  // an independent outbound-only and inbound-only component for the same
+  // days are two different physical legs, not a real overlap) — refreshed
+  // by loadComponent and after save/delete, read by renderDayTypePillsUI
+  // and the "already taken" greying in the add-day-type picker below.
+  let currentDirectionComponents: RouteTimetable[] = [];
+
+  async function loadComponent(weekdayMask: number, direction: RouteTimetableDirection): Promise<void> {
+    const allForRoute = await window.routeTimetables.listForRoute(route.id);
+    currentDirectionComponents = allForRoute.filter((t) => t.direction === direction);
+    const existing = currentDirectionComponents.find((t) => t.weekdayMask === weekdayMask);
+    selectedWeekdayMask = weekdayMask;
     currentDirection = direction;
+    timetableEditorState.weekdayMask = weekdayMask;
     // A day type/direction with its own saved timetable loads its own
     // timing points (real persisted data); one with none yet keeps
     // whatever's currently in memory rather than wiping it — timing
@@ -886,11 +1110,14 @@ export function createRouteTimetableEditor(
     timetableEditorState.onDayTypeChanged?.();
     statusLine.style.color = STATUS_COLOUR_WARNING;
     const directionSuffix = direction === "both" ? "" : ` (${DIRECTION_LABELS[direction].toLowerCase()})`;
+    const label = describeWeekdayMask(weekdayMask);
     if (existing) {
       currentBands = existing.timeBands.map((b) => ({ ...b }));
       currentExcludedMinutes = new Set(existing.excludedDepartureMinutes);
       currentCustomMinutes = new Set(existing.customDepartureMinutes);
-      statusLine.textContent = `Existing ${DAY_TYPE_LABELS[dayType]}${directionSuffix} timetable loaded.`;
+      currentMirrorSourceTimetableId = existing.mirrorSourceTimetableId;
+      currentMirrorOffsetMinutes = existing.mirrorOffsetMinutes ?? 10;
+      statusLine.textContent = `Existing ${label}${directionSuffix} timetable loaded.`;
     } else {
       // A fresh component starts from the UK-typical default bands
       // (DESIGN.md §7: "defined globally as defaults, overridable per
@@ -898,22 +1125,210 @@ export function createRouteTimetableEditor(
       currentBands = DEFAULT_TIME_BANDS.map((b) => ({ ...b }));
       currentExcludedMinutes = new Set();
       currentCustomMinutes = new Set();
-      statusLine.textContent = `No ${DAY_TYPE_LABELS[dayType]}${directionSuffix} timetable yet — starting from the default time bands.`;
+      currentMirrorSourceTimetableId = null;
+      currentMirrorOffsetMinutes = 10;
+      statusLine.textContent = `No ${label}${directionSuffix} timetable yet — starting from the default time bands.`;
     }
+    mirrorToggle.checked = currentMirrorSourceTimetableId != null;
+    mirrorControls.style.display = mirrorToggle.checked ? "flex" : "none";
+    bandsContainer.style.display = mirrorToggle.checked ? "none" : "flex";
+    mirrorOffsetInput.value = String(currentMirrorOffsetMinutes);
+    renderMirrorUI();
     renderBandRows();
     renderGeneratedDepartures();
     renderCustomDepartures();
-    void renderFamilySharedStops(dayType);
+    renderDayTypePillsUI();
+    void renderFamilySharedStops(weekdayMask);
   }
 
-  const dayTypeDropdown: Dropdown = createDropdown(
-    DAY_TYPES.map((d) => DAY_TYPE_LABELS[d]),
-    DAY_TYPE_LABELS[DAY_TYPES[0]],
-    (label) => {
-      const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === label)!;
-      void loadComponent(dayType, currentDirection);
-    },
-  );
+  // Which weekday mask is currently loaded into the editor below — set by
+  // loadComponent, read by the save handler and the family-live preview.
+  // Starts on Mon-Fri purely as a sensible first guess before the initial
+  // loadComponent call (below) replaces it with whatever this route
+  // actually has, or keeps it if the route has nothing saved yet.
+  let selectedWeekdayMask = MONDAY_FRIDAY_MASK;
+
+  // One pill per existing day-type component for the current direction
+  // (DESIGN.md §7: any number of components, confirmed 2026-11-07), each
+  // clickable to load it for editing below, plus its own delete button.
+  // The currently-selected mask always shows — as a real pill if it's
+  // already saved, or a dashed "(new)" placeholder if it's an in-progress,
+  // not-yet-saved choice from the add-day-type picker.
+  const dayTypePills = document.createElement("div");
+  dayTypePills.style.display = "flex";
+  dayTypePills.style.flexWrap = "wrap";
+  dayTypePills.style.gap = "6px";
+  dayTypePills.style.alignItems = "center";
+
+  function renderDayTypePillsUI(): void {
+    dayTypePills.innerHTML = "";
+    const sorted = [...currentDirectionComponents].sort((a, b) => a.weekdayMask - b.weekdayMask);
+    for (const comp of sorted) {
+      const row = document.createElement("span");
+      row.style.display = "inline-flex";
+      row.style.alignItems = "center";
+      row.style.gap = "2px";
+
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = "btn btn-icon";
+      pill.classList.toggle("is-active", comp.weekdayMask === selectedWeekdayMask);
+      pill.textContent = describeWeekdayMask(comp.weekdayMask);
+      pill.addEventListener("click", () => void loadComponent(comp.weekdayMask, currentDirection));
+      row.appendChild(pill);
+
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "btn btn-icon btn-danger";
+      removeButton.textContent = "×";
+      removeButton.title = "Delete this day type";
+      removeButton.addEventListener("click", async () => {
+        await window.routeTimetables.delete(comp.id);
+        const remaining = currentDirectionComponents.filter((c) => c.id !== comp.id);
+        await loadComponent(remaining[0]?.weekdayMask ?? MONDAY_FRIDAY_MASK, currentDirection);
+      });
+      row.appendChild(removeButton);
+
+      dayTypePills.appendChild(row);
+    }
+    if (!sorted.some((c) => c.weekdayMask === selectedWeekdayMask)) {
+      const unsavedPill = document.createElement("span");
+      unsavedPill.className = "btn btn-icon is-active";
+      unsavedPill.style.borderStyle = "dashed";
+      unsavedPill.title = "Not saved yet — click \"Save timetable for this day type\" below to create it";
+      unsavedPill.textContent = `${describeWeekdayMask(selectedWeekdayMask)} (new)`;
+      dayTypePills.appendChild(unsavedPill);
+    }
+  }
+
+  // "+ Add day type" opens a 7-day toggle picker with Mon-Fri/Weekend/
+  // Every day presets (confirmed 2026-11-07: "7 day text which highlights
+  // when selected + quick-preset buttons") — a day already claimed by
+  // another component in this same direction is disabled rather than
+  // toggleable (confirmed: "Grey out/disable already-taken days"), and
+  // presets silently drop any of their own days that are already taken
+  // rather than offering an overlap the toggles themselves would refuse.
+  const addDayTypeButton = document.createElement("button");
+  addDayTypeButton.type = "button";
+  addDayTypeButton.className = "btn";
+  addDayTypeButton.textContent = "+ Add day type";
+
+  const addPickerContainer = document.createElement("div");
+  addPickerContainer.style.display = "none";
+  addPickerContainer.style.flexDirection = "column";
+  addPickerContainer.style.gap = "6px";
+  addPickerContainer.style.padding = "8px";
+  addPickerContainer.style.border = "1px solid var(--border)";
+  addPickerContainer.style.borderRadius = "4px";
+
+  const presetRow = document.createElement("div");
+  presetRow.style.display = "flex";
+  presetRow.style.gap = "4px";
+
+  const dayToggleRow = document.createElement("div");
+  dayToggleRow.style.display = "flex";
+  dayToggleRow.style.gap = "4px";
+
+  const DAY_PICKER_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+  const DAY_PICKER_BITS = [
+    WEEKDAY_BITS.monday,
+    WEEKDAY_BITS.tuesday,
+    WEEKDAY_BITS.wednesday,
+    WEEKDAY_BITS.thursday,
+    WEEKDAY_BITS.friday,
+    WEEKDAY_BITS.saturday,
+    WEEKDAY_BITS.sunday,
+  ];
+
+  let pendingMask = 0;
+  let takenMask = 0;
+
+  const confirmAddButton = document.createElement("button");
+  confirmAddButton.type = "button";
+  confirmAddButton.className = "btn";
+  confirmAddButton.textContent = "Add";
+
+  const cancelAddButton = document.createElement("button");
+  cancelAddButton.type = "button";
+  cancelAddButton.className = "btn";
+  cancelAddButton.textContent = "Cancel";
+
+  const dayToggleButtons = DAY_PICKER_LABELS.map((dayLabel, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-icon";
+    btn.textContent = dayLabel;
+    btn.addEventListener("click", () => {
+      pendingMask ^= DAY_PICKER_BITS[i];
+      renderPendingMaskUI();
+    });
+    dayToggleRow.appendChild(btn);
+    return btn;
+  });
+
+  function renderPendingMaskUI(): void {
+    DAY_PICKER_BITS.forEach((bit, i) => {
+      const btn = dayToggleButtons[i];
+      const takenByOther = (takenMask & bit) !== 0;
+      btn.disabled = takenByOther;
+      btn.style.opacity = takenByOther ? "0.35" : "1";
+      btn.classList.toggle("is-active", (pendingMask & bit) !== 0);
+    });
+    confirmAddButton.disabled = validateWeekdayMask(pendingMask) !== null;
+  }
+
+  for (const preset of [
+    { label: "Mon-Fri", mask: MONDAY_FRIDAY_MASK },
+    { label: "Weekend", mask: WEEKEND_MASK },
+    { label: "Every day", mask: EVERY_DAY_MASK },
+  ]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn";
+    btn.textContent = preset.label;
+    btn.addEventListener("click", () => {
+      pendingMask = preset.mask & ~takenMask;
+      renderPendingMaskUI();
+    });
+    presetRow.appendChild(btn);
+  }
+
+  function openAddPicker(): void {
+    pendingMask = 0;
+    takenMask = currentDirectionComponents
+      .filter((c) => c.weekdayMask !== selectedWeekdayMask)
+      .reduce((acc, c) => acc | c.weekdayMask, 0);
+    renderPendingMaskUI();
+    addPickerContainer.style.display = "flex";
+  }
+  function closeAddPicker(): void {
+    addPickerContainer.style.display = "none";
+  }
+  addDayTypeButton.addEventListener("click", openAddPicker);
+  cancelAddButton.addEventListener("click", closeAddPicker);
+  confirmAddButton.addEventListener("click", () => {
+    if (validateWeekdayMask(pendingMask) !== null) return;
+    closeAddPicker();
+    void loadComponent(pendingMask, currentDirection);
+  });
+
+  const addPickerButtonRow = document.createElement("div");
+  addPickerButtonRow.style.display = "flex";
+  addPickerButtonRow.style.gap = "4px";
+  addPickerButtonRow.appendChild(confirmAddButton);
+  addPickerButtonRow.appendChild(cancelAddButton);
+
+  addPickerContainer.appendChild(presetRow);
+  addPickerContainer.appendChild(dayToggleRow);
+  addPickerContainer.appendChild(addPickerButtonRow);
+
+  const dayTypeSection = document.createElement("div");
+  dayTypeSection.style.display = "flex";
+  dayTypeSection.style.flexDirection = "column";
+  dayTypeSection.style.gap = "6px";
+  dayTypeSection.appendChild(dayTypePills);
+  dayTypeSection.appendChild(addDayTypeButton);
+  dayTypeSection.appendChild(addPickerContainer);
 
   // Only a terminus-loop route ever gets this — a non-loop route has
   // nothing to split (DESIGN.md §6: outbound/inbound for one are already
@@ -921,13 +1336,13 @@ export function createRouteTimetableEditor(
   // 'both' component).
   const directionDropdown: Dropdown | null = isTerminusLoop
     ? createDropdown(
-        (["both", "outbound", "inbound"] as const).map((d) => DIRECTION_LABELS[d]),
-        DIRECTION_LABELS.both,
+        (["outbound", "inbound"] as const).map((d) => DIRECTION_LABELS[d]),
+        DIRECTION_LABELS.outbound,
         (label) => {
           const direction =
-            (Object.entries(DIRECTION_LABELS).find(([, l]) => l === label)?.[0] as RouteTimetableDirection) ?? "both";
-          const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value)!;
-          void loadComponent(dayType, direction);
+            (Object.entries(DIRECTION_LABELS).find(([, l]) => l === label)?.[0] as RouteTimetableDirection) ??
+            "outbound";
+          void loadComponent(selectedWeekdayMask, direction);
         },
       )
     : null;
@@ -936,7 +1351,6 @@ export function createRouteTimetableEditor(
     // Reset from green in case a previous save on this same component
     // succeeded cleanly and this attempt doesn't.
     statusLine.style.color = STATUS_COLOUR_WARNING;
-    const dayType = DAY_TYPES.find((d) => DAY_TYPE_LABELS[d] === dayTypeDropdown.value)!;
     const bandsError = validateTimeBands(currentBands);
     if (bandsError) {
       statusLine.textContent = bandsError;
@@ -959,7 +1373,7 @@ export function createRouteTimetableEditor(
     // that's computed.
     let allNightMinutes: number[] = [];
     if (route.routeType === "night") {
-      allNightMinutes = mergeCustomDepartures(generateDepartureMinutesForBands(currentBands), [...currentCustomMinutes]);
+      allNightMinutes = mergeCustomDepartures(currentBaseDepartureMinutes(), [...currentCustomMinutes]);
       const nightWindowError = validateNightWindow(allNightMinutes);
       if (nightWindowError) {
         statusLine.textContent = nightWindowError;
@@ -967,19 +1381,33 @@ export function createRouteTimetableEditor(
       }
     }
     const timingPoints = timetableEditorState.timingPoints;
-    const tpError = validateTimingPoints(route.points, timingPoints);
+    // Island restriction (2026-11-15, user: "It should be based on the
+    // fare zone type a depot is in") — checked here too, not just left to
+    // route-panel.ts's UI, so a bypassed client can't save invalid data;
+    // see fare-journey.mts's isIslandDepotGroup for the full reasoning.
+    const [islandDepots, islandZones] = await Promise.all([window.depots.list(), window.fareZones.listAll()]);
+    const isIslandRoute = isIslandDepotGroup(route.depotGroupId, islandDepots, islandZones);
+    const tpError = validateTimingPoints(route.points, timingPoints, isIslandRoute, route.timingPointIndexes);
     if (tpError) {
       statusLine.textContent = tpError;
       return;
     }
 
     statusLine.textContent = "Computing running times…";
-    const legTimesSeconds = computeLegTimesSeconds(router, route.points);
-    const { arrivalOffsetsSeconds, departureOffsetsSeconds, infeasibleTimingPoints } = computeOffsetsForDirection(
+    const legTimesSeconds = computeLegTimesSeconds(router, route.points, route.number);
+    const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsetsForDirection(
       route,
       currentDirection,
       legTimesSeconds,
       timingPoints,
+      "standard",
+    );
+    const { arrivalOffsetsSeconds: arrivalOffsetsSecondsPeak, departureOffsetsSeconds: departureOffsetsSecondsPeak } = computeOffsetsForDirection(
+      route,
+      currentDirection,
+      legTimesSeconds,
+      timingPoints,
+      "peak",
     );
     if (route.routeType === "night") {
       const runningTimeSeconds = Math.max(...arrivalOffsetsSeconds);
@@ -990,20 +1418,25 @@ export function createRouteTimetableEditor(
       }
     }
     // Dropped against the live generated list before saving — an
-    // exclusion for a minute these bands no longer generate is dead
-    // weight, not a real setting worth keeping around indefinitely.
-    const liveGeneratedMinutes = new Set(generateDepartureMinutesForBands(currentBands));
+    // exclusion for a minute these bands (or this mirror) no longer
+    // generate is dead weight, not a real setting worth keeping around
+    // indefinitely.
+    const liveGeneratedMinutes = new Set(currentBaseDepartureMinutes());
     const excludedDepartureMinutes = [...currentExcludedMinutes].filter((m) => liveGeneratedMinutes.has(m));
     await window.routeTimetables.upsert(
       route.id,
-      dayType,
+      selectedWeekdayMask,
       currentDirection,
       currentBands.map((b) => ({ ...b })),
       timingPoints,
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,
+      arrivalOffsetsSecondsPeak,
+      departureOffsetsSecondsPeak,
       excludedDepartureMinutes,
       [...currentCustomMinutes],
+      currentMirrorSourceTimetableId,
+      currentMirrorSourceTimetableId != null ? currentMirrorOffsetMinutes : null,
     );
     // Realistic running-time variation across the day comes from the
     // router's own junction delays (give-way, traffic lights) plus, later,
@@ -1018,24 +1451,24 @@ export function createRouteTimetableEditor(
     const legRange = currentDirection === "both" ? null : routeDirectionRanges(route).find((r) => r.label === currentDirection);
     const totalMinutesIndex = legRange ? legRange.toPointIndex : arrivalOffsetsSeconds.length - 1;
     const totalMinutes = Math.round(arrivalOffsetsSeconds[totalMinutesIndex] / 60);
-    if (infeasibleTimingPoints.length > 0) {
-      const details = infeasibleTimingPoints
-        .map(
-          (tp) =>
-            `${stopLabel(route.points[tp.pointIndex])} (published ${tp.publishedMinutes} min, fastest possible is ${tp.fastestMinutes} min — used ${tp.fastestMinutes} min instead)`,
-        )
-        .join("; ");
-      statusLine.style.color = STATUS_COLOUR_WARNING;
-      statusLine.textContent = `Saved, but ${details}. End-to-end running time: ${totalMinutes} min.`;
-    } else {
-      statusLine.style.color = STATUS_COLOUR_SUCCESS;
-      statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
-    }
-    void renderFamilySharedStops(dayType);
+    // No "infeasible, clamped" warning any more — padding can never be
+    // negative under the new model, so the published time can never fall
+    // below the real fastest achievable time in the first place.
+    statusLine.style.color = STATUS_COLOUR_SUCCESS;
+    statusLine.textContent = `Saved. End-to-end running time: ${totalMinutes} min.`;
+    // Refreshes the pill list too — a brand-new (previously "(new)",
+    // unsaved) mask is now a real saved component.
+    currentDirectionComponents = (await window.routeTimetables.listForRoute(route.id)).filter(
+      (t) => t.direction === currentDirection,
+    );
+    renderDayTypePillsUI();
+    void renderFamilySharedStops(selectedWeekdayMask);
   });
 
-  body.appendChild(dayTypeDropdown.el);
+  body.appendChild(dayTypeSection);
   if (directionDropdown) body.appendChild(directionDropdown.el);
+  body.appendChild(mirrorToggleRow);
+  body.appendChild(mirrorControls);
   body.appendChild(bandsContainer);
   body.appendChild(addBandButton);
   body.appendChild(generatedDeparturesLabel);
@@ -1049,7 +1482,17 @@ export function createRouteTimetableEditor(
   body.appendChild(statusLine);
   body.appendChild(familySection);
 
-  void loadComponent(DAY_TYPES[0], "both");
+  // Opens on whichever day type this route already has (the lowest mask,
+  // for a stable order), falling back to Mon-Fri as a sensible first guess
+  // for a route with nothing saved yet. A loop route opens on its
+  // outbound leg (currentDirection's own default, above); a non-loop
+  // route still opens on 'both', its only ever value.
+  void window.routeTimetables.listForRoute(route.id).then((existing) => {
+    const first = existing
+      .filter((t) => t.direction === currentDirection)
+      .sort((a, b) => a.weekdayMask - b.weekdayMask)[0];
+    void loadComponent(first?.weekdayMask ?? MONDAY_FRIDAY_MASK, currentDirection);
+  });
 
   return { el: panel };
 }

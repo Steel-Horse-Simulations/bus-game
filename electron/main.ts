@@ -33,8 +33,12 @@ import {
   refreshComposedRoutePoints,
   deleteRoute,
   setRoutePickupDropoffOverride,
+  setRouteTimingPoint,
   setRouteBranding,
-  type DayType,
+  setRouteColour,
+  setRouteOrientation,
+  setRouteVehicleRestrictions,
+  type VehicleRestrictions,
   type TimingPoint,
   type TimeBand,
   type RouteTimetableDirection,
@@ -43,6 +47,7 @@ import {
   listAllRouteTimetables,
   deleteRouteTimetable,
   createPlayerStop,
+  createDepotStop,
   listPlayerStops,
   deletePlayerStop,
   type DepotEntranceMode,
@@ -66,8 +71,11 @@ import {
   deleteDealerEntrance,
   deleteDealer,
   setDealerEntrancesComplete,
+  setDealerRepowerSite,
   createStopGroup,
   listStopGroupIds,
+  createPlayerBusStation,
+  listPlayerBusStationIds,
   type IconColour,
   type SupportIconKey,
   createLivery,
@@ -95,13 +103,36 @@ import {
   createRepaintBooking,
   deleteRepaintBooking,
   type RepaintType,
+  listAllStopUpgrades,
+  getStopUpgrade,
+  installStopUpgrade,
+  type StopUpgradeType,
+  createRouteAdvertisingBooking,
+  listAllRouteAdvertisingBookings,
+  listRouteAdvertisingBookingsForStop,
+  deleteRouteAdvertisingBooking,
+  listGeneratedRouteAdvertisingMonths,
+  recordRouteAdvertisingMonthsBilled,
+  type RouteAdvertisingMode,
+  listAllRepowerBookings,
+  createRepowerBooking,
+  collectRepowerBooking,
+  deleteRepowerBooking,
+  type RepowerPowerType,
   createDuty,
   deleteDuty,
   setDutyLocked,
   renameDuty,
+  setDutyDriver,
   addDutyPiece,
   removeDutyPiece,
   listDutiesForDepotGroup,
+  createDriver,
+  listDriversForDepotGroup,
+  renameDriver,
+  setDriverScore,
+  deleteDriver,
+  type DriverScore,
   listVehiclesForDepotGroup,
   listAllVehicles,
   deleteVehicle,
@@ -146,6 +177,10 @@ import {
   getCompanyBalanceGBPPence,
   recordFinanceTransaction,
   listFinanceTransactions,
+  listGeneratedPrivateHireMonths,
+  recordGeneratedPrivateHireMonths,
+  listGeneratedLeaseBillingMonths,
+  recordLeaseBillingMonths,
   type FareConfig,
   setCountryZoneBand,
   deleteCountryZoneBand,
@@ -313,6 +348,7 @@ function registerRouteHandlers(): void {
       segments: RouteSegment[],
       routeType: RouteType,
       isMinorVariation: boolean,
+      timingPointIndexes: number[],
     ) =>
       createRoute(
         save,
@@ -331,6 +367,7 @@ function registerRouteHandlers(): void {
         segments,
         routeType,
         isMinorVariation,
+        timingPointIndexes,
       ),
   );
   ipcMain.handle("routes:list", () => listRoutes(save));
@@ -357,6 +394,7 @@ function registerRouteHandlers(): void {
       segments: RouteSegment[],
       routeType: RouteType,
       isMinorVariation: boolean,
+      timingPointIndexes: number[],
     ) =>
       updateRoute(
         save,
@@ -376,6 +414,7 @@ function registerRouteHandlers(): void {
         segments,
         routeType,
         isMinorVariation,
+        timingPointIndexes,
       ),
   );
   ipcMain.handle("routes:refreshComposedPoints", (_e, id: number, points: RoutePoint[]) =>
@@ -387,8 +426,18 @@ function registerRouteHandlers(): void {
     (_e, routeId: number, pointIndex: number, value: "pickup_only" | "setdown_only" | "skip" | null) =>
       setRoutePickupDropoffOverride(save, routeId, pointIndex, value),
   );
+  ipcMain.handle("routes:setTimingPoint", (_e, routeId: number, pointIndex: number, isTimingPoint: boolean) =>
+    setRouteTimingPoint(save, routeId, pointIndex, isTimingPoint),
+  );
   ipcMain.handle("routes:setBranding", (_e, routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean) =>
     setRouteBranding(save, routeId, assignedLiveryId, useBrandedColour),
+  );
+  ipcMain.handle("routes:setColour", (_e, routeId: number, colour: string) => setRouteColour(save, routeId, colour));
+  ipcMain.handle("routes:setOrientation", (_e, routeId: number, orientation: "inbound" | "outbound") =>
+    setRouteOrientation(save, routeId, orientation),
+  );
+  ipcMain.handle("routes:setVehicleRestrictions", (_e, routeId: number, restrictions: VehicleRestrictions) =>
+    setRouteVehicleRestrictions(save, routeId, restrictions),
   );
 }
 
@@ -402,26 +451,34 @@ function registerRouteTimetableHandlers(): void {
     (
       _e,
       routeId: number,
-      dayType: DayType,
+      weekdayMask: number,
       direction: RouteTimetableDirection,
       timeBands: TimeBand[],
       timingPoints: TimingPoint[],
       arrivalOffsetsSeconds: number[],
       departureOffsetsSeconds: number[],
+      arrivalOffsetsSecondsPeak: number[],
+      departureOffsetsSecondsPeak: number[],
       excludedDepartureMinutes: number[],
       customDepartureMinutes: number[],
+      mirrorSourceTimetableId: number | null,
+      mirrorOffsetMinutes: number | null,
     ) =>
       upsertRouteTimetable(
         save,
         routeId,
-        dayType,
+        weekdayMask,
         direction,
         timeBands,
         timingPoints,
         arrivalOffsetsSeconds,
         departureOffsetsSeconds,
+        arrivalOffsetsSecondsPeak,
+        departureOffsetsSecondsPeak,
         excludedDepartureMinutes,
         customDepartureMinutes,
+        mirrorSourceTimetableId,
+        mirrorOffsetMinutes,
       ),
   );
   ipcMain.handle("routeTimetables:listForRoute", (_e, routeId: number) =>
@@ -439,6 +496,7 @@ function registerPlayerStopHandlers(): void {
   );
   ipcMain.handle("playerStops:list", () => listPlayerStops(save));
   ipcMain.handle("playerStops:delete", (_e, osmId: number) => deletePlayerStop(save, osmId));
+  ipcMain.handle("playerStops:createForDepot", (_e, depotId: number) => createDepotStop(save, depotId));
 }
 
 // Depots (OPERATIONS.md §2 "Placement and entrances") — just the placement
@@ -482,6 +540,7 @@ function registerDealerHandlers(): void {
   ipcMain.handle("dealers:deleteEntrance", (_e, id: number) => deleteDealerEntrance(save, id));
   ipcMain.handle("dealers:delete", (_e, id: number) => deleteDealer(save, id));
   ipcMain.handle("dealers:setEntrancesComplete", (_e, id: number, isComplete: boolean) => setDealerEntrancesComplete(save, id, isComplete));
+  ipcMain.handle("dealers:setRepowerSite", (_e, id: number, isRepowerSite: boolean) => setDealerRepowerSite(save, id, isRepowerSite));
 }
 
 // Stop groups (DESIGN.md §4) — player-created only, see stop_groups'
@@ -518,11 +577,11 @@ function registerDeadMileageHandlers(): void {
 // "duty_pieces" SCHEMA comments for why a piece stores only a (routeId,
 // departureMinutes) reference rather than the journey itself.
 function registerDutyHandlers(): void {
-  ipcMain.handle("duties:listForDepotGroup", (_e, depotGroupId: number, dayType: DayType) =>
-    listDutiesForDepotGroup(save, depotGroupId, dayType),
+  ipcMain.handle("duties:listForDepotGroup", (_e, depotGroupId: number, weekdayMask: number) =>
+    listDutiesForDepotGroup(save, depotGroupId, weekdayMask),
   );
-  ipcMain.handle("duties:create", (_e, depotGroupId: number, depotId: number, dayType: DayType) =>
-    createDuty(save, depotGroupId, depotId, dayType),
+  ipcMain.handle("duties:create", (_e, depotGroupId: number, depotId: number, weekdayMask: number) =>
+    createDuty(save, depotGroupId, depotId, weekdayMask),
   );
   ipcMain.handle("duties:delete", (_e, dutyId: number) => deleteDuty(save, dutyId));
   ipcMain.handle("duties:setLocked", (_e, dutyId: number, locked: boolean) => setDutyLocked(save, dutyId, locked));
@@ -531,6 +590,19 @@ function registerDutyHandlers(): void {
     addDutyPiece(save, dutyId, routeId, departureMinutes),
   );
   ipcMain.handle("duties:removePiece", (_e, pieceId: number) => removeDutyPiece(save, pieceId));
+  ipcMain.handle("duties:setDriver", (_e, dutyId: number, driverId: number | null) => setDutyDriver(save, dutyId, driverId));
+}
+
+// Drivers (OPERATIONS.md §6), schema v57->v58 — see db.mts's own "drivers"
+// SCHEMA comment for this increment's deliberate scope.
+function registerDriverHandlers(): void {
+  ipcMain.handle("drivers:listForDepotGroup", (_e, depotGroupId: number) => listDriversForDepotGroup(save, depotGroupId));
+  ipcMain.handle("drivers:create", (_e, depotGroupId: number, depotId: number, name: string, score: DriverScore) =>
+    createDriver(save, depotGroupId, depotId, name, score),
+  );
+  ipcMain.handle("drivers:rename", (_e, driverId: number, name: string) => renameDriver(save, driverId, name));
+  ipcMain.handle("drivers:setScore", (_e, driverId: number, score: DriverScore) => setDriverScore(save, driverId, score));
+  ipcMain.handle("drivers:delete", (_e, driverId: number) => deleteDriver(save, driverId));
 }
 
 function registerVehicleHandlers(): void {
@@ -628,6 +700,38 @@ function registerRepaintShopHandlers(): void {
   ipcMain.handle("repaintBookings:delete", (_e, id: number) => deleteRepaintBooking(save, id));
 }
 
+function registerStopUpgradeHandlers(): void {
+  ipcMain.handle("stopUpgrades:listAll", () => listAllStopUpgrades(save));
+  ipcMain.handle("stopUpgrades:get", (_e, stopOsmId: number) => getStopUpgrade(save, stopOsmId));
+  ipcMain.handle("stopUpgrades:install", (_e, stopOsmId: number, upgradeType: StopUpgradeType, gameDay: number) =>
+    installStopUpgrade(save, stopOsmId, upgradeType, gameDay),
+  );
+}
+
+function registerRouteAdvertisingHandlers(): void {
+  ipcMain.handle("routeAdvertising:listAll", () => listAllRouteAdvertisingBookings(save));
+  ipcMain.handle("routeAdvertising:listForStop", (_e, stopOsmId: number) => listRouteAdvertisingBookingsForStop(save, stopOsmId));
+  ipcMain.handle(
+    "routeAdvertising:create",
+    (_e, stopOsmId: number, depotGroupId: number, mode: RouteAdvertisingMode, routeId: number | null, operatorName: string | null, bookedGameDay: number, liveFromGameDay: number) =>
+      createRouteAdvertisingBooking(save, stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay),
+  );
+  ipcMain.handle("routeAdvertising:delete", (_e, id: number) => deleteRouteAdvertisingBooking(save, id));
+  ipcMain.handle("routeAdvertising:listGeneratedMonths", (_e, bookingId: number) => listGeneratedRouteAdvertisingMonths(save, bookingId));
+  ipcMain.handle("routeAdvertising:recordMonthsBilled", (_e, bookingId: number, monthKeys: string[]) => recordRouteAdvertisingMonthsBilled(save, bookingId, monthKeys));
+}
+
+function registerRepowerBookingHandlers(): void {
+  ipcMain.handle("repowerBookings:listAll", () => listAllRepowerBookings(save));
+  ipcMain.handle(
+    "repowerBookings:create",
+    (_e, vehicleId: number, dealerId: number, toPowerType: RepowerPowerType, finalPriceGBP: number, bookedGameDay: number, startGameDay: number, completionGameDay: number) =>
+      createRepowerBooking(save, vehicleId, dealerId, toPowerType, finalPriceGBP, bookedGameDay, startGameDay, completionGameDay),
+  );
+  ipcMain.handle("repowerBookings:collect", (_e, id: number) => collectRepowerBooking(save, id));
+  ipcMain.handle("repowerBookings:delete", (_e, id: number) => deleteRepowerBooking(save, id));
+}
+
 function registerLiveryHandlers(): void {
   ipcMain.handle("liveries:list", () => listLiveries(save));
   ipcMain.handle("liveries:create", (_e, name: string, primaryColour: string, secondaryColour: string) =>
@@ -717,9 +821,33 @@ function registerFinanceHandlers(): void {
   ipcMain.handle("finance:list", (_e, depotGroupId?: number) => listFinanceTransactions(save, depotGroupId));
 }
 
+// Private hire income tracking (T183 — private hire revival, Q20/OPEN-
+// ITEMS.md) — see private_hire_income_months' own SCHEMA comment in
+// db.mts. Plain storage only; all the real month math and booking
+// generation lives in the renderer's own private-hire-income.mts.
+function registerPrivateHireIncomeHandlers(): void {
+  ipcMain.handle("privateHireIncome:listGeneratedMonths", (_e, vehicleId: number) => listGeneratedPrivateHireMonths(save, vehicleId));
+  ipcMain.handle("privateHireIncome:markMonthsGenerated", (_e, vehicleId: number, monthKeys: string[]) =>
+    recordGeneratedPrivateHireMonths(save, vehicleId, monthKeys),
+  );
+}
+
+// Lease billing tracking (T185, follow-up to T184) — see
+// lease_billing_months' own SCHEMA comment in db.mts. Plain storage
+// only; all the real month math/charge calculation lives in the
+// renderer's own vehicle-lease-billing.mts.
+function registerLeaseBillingHandlers(): void {
+  ipcMain.handle("leaseBilling:listGeneratedMonths", (_e, vehicleId: number) => listGeneratedLeaseBillingMonths(save, vehicleId));
+  ipcMain.handle("leaseBilling:recordMonthsBilled", (_e, vehicleId: number, monthKeys: string[], flipToOutright: boolean) =>
+    recordLeaseBillingMonths(save, vehicleId, monthKeys, flipToOutright),
+  );
+}
+
 function registerStopGroupHandlers(): void {
   ipcMain.handle("stopGroups:create", () => createStopGroup(save));
   ipcMain.handle("stopGroups:list", () => listStopGroupIds(save));
+  ipcMain.handle("playerBusStations:create", () => createPlayerBusStation(save));
+  ipcMain.handle("playerBusStations:list", () => listPlayerBusStationIds(save));
 }
 
 // Checks GitHub Releases on launch and downloads in the background; the
@@ -814,8 +942,12 @@ app.whenReady().then(async () => {
   registerStopGroupHandlers();
   registerLiveryHandlers();
   registerRepaintShopHandlers();
+  registerRepowerBookingHandlers();
+  registerStopUpgradeHandlers();
+  registerRouteAdvertisingHandlers();
   registerDeadMileageHandlers();
   registerDutyHandlers();
+  registerDriverHandlers();
   registerVehicleHandlers();
   registerBasketAndOrderHandlers();
   registerFareZoneHandlers();
@@ -824,6 +956,8 @@ app.whenReady().then(async () => {
   registerGameClockHandlers();
   registerCompanyUpgradeHandlers();
   registerFinanceHandlers();
+  registerPrivateHireIncomeHandlers();
+  registerLeaseBillingHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

@@ -24,6 +24,9 @@ import {
   setLongDistanceSectionPoints,
   deleteLongDistanceSection,
   setRoutePickupDropoffOverride,
+  setRouteTimingPoint,
+  setRouteColour,
+  setRouteVehicleRestrictions,
   upsertRouteTimetable,
   listRouteTimetablesForRoute,
   listAllRouteTimetables,
@@ -31,6 +34,7 @@ import {
   createPlayerStop,
   listPlayerStops,
   deletePlayerStop,
+  createDepotStop,
   createDepot,
   listDepots,
   listDepotEntrances,
@@ -42,15 +46,24 @@ import {
   deleteDepot,
   createStopGroup,
   listStopGroupIds,
+  createPlayerBusStation,
+  listPlayerBusStationIds,
   createDuty,
   deleteDuty,
   setDutyLocked,
   renameDuty,
+  setDutyDriver,
+  createDriver,
+  listDriversForDepotGroup,
+  renameDriver,
+  setDriverScore,
+  deleteDriver,
   addDutyPiece,
   removeDutyPiece,
   listDutiesForDepotGroup,
   buyVehicle,
   listVehiclesForDepotGroup,
+  listAllVehicles,
   deleteVehicle,
   transferVehicle,
   createLivery,
@@ -69,6 +82,23 @@ import {
   recordFinanceTransaction,
   listFinanceTransactions,
   SCHEMA_VERSION,
+  MONDAY_FRIDAY_MASK,
+  SATURDAY_MASK,
+  SUNDAY_MASK,
+  createDealer,
+  listDealers,
+  setDealerRepowerSite,
+  createRepowerBooking,
+  listAllRepowerBookings,
+  collectRepowerBooking,
+  deleteRepowerBooking,
+  listAllStopUpgrades,
+  getStopUpgrade,
+  installStopUpgrade,
+  listGeneratedPrivateHireMonths,
+  recordGeneratedPrivateHireMonths,
+  listGeneratedLeaseBillingMonths,
+  recordLeaseBillingMonths,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -248,28 +278,120 @@ assert(
   "passing null clears an override",
 );
 
+assert(route.timingPointIndexes.length === 0, "a new route starts with no timing points");
+
+setRouteTimingPoint(db, route.id, 1, true);
+let afterTiming = listRoutes(db).find((r) => r.id === route.id)!;
+assert(JSON.stringify(afterTiming.timingPointIndexes) === JSON.stringify([1]), "setRouteTimingPoint flags a point");
+
+setRouteTimingPoint(db, route.id, 0, true);
+afterTiming = listRoutes(db).find((r) => r.id === route.id)!;
+assert(
+  JSON.stringify(afterTiming.timingPointIndexes) === JSON.stringify([0, 1]),
+  "a second flagged point adds rather than replaces, and the list stays sorted",
+);
+
+setRouteTimingPoint(db, route.id, 1, false);
+afterTiming = listRoutes(db).find((r) => r.id === route.id)!;
+assert(
+  JSON.stringify(afterTiming.timingPointIndexes) === JSON.stringify([0]),
+  "unflagging a point removes just that one",
+);
+
+setRouteTimingPoint(db, route.id, 0, false);
+
+// createRoute/updateRoute's own timingPointIndexes parameter (2026-11-07,
+// live request: "when making a route there is no way to set a timing
+// point" / "timing points should also be copied between variations") —
+// route-draw.ts's draft checkboxes land here directly on Save, rather
+// than only ever being reachable via the separate setRouteTimingPoint
+// path above (route-panel.ts's locked stop list, timetable-editing mode).
+const routeWithTiming = createRoute(
+  db,
+  g1.id,
+  "2",
+  [
+    { kind: "stop", osmId: 555, lon: -3.2, lat: 55.95 },
+    { kind: "stop", osmId: 666, lon: -3.19, lat: 55.96 },
+    { kind: "stop", osmId: 777, lon: -3.18, lat: 55.97 },
+  ],
+  "outbound",
+  null,
+  null,
+  "#3b82f6",
+  null,
+  null,
+  null,
+  [],
+  [],
+  [],
+  "ordinary",
+  false,
+  [1],
+);
+assert(
+  JSON.stringify(routeWithTiming.timingPointIndexes) === JSON.stringify([1]),
+  "createRoute accepts an initial timingPointIndexes list and round-trips it",
+);
+assert(
+  JSON.stringify(listRoutes(db).find((r) => r.id === routeWithTiming.id)?.timingPointIndexes) === JSON.stringify([1]),
+  "the new route's timing points round-trip through listRoutes too",
+);
+
+const updatedWithTiming = updateRoute(
+  db,
+  routeWithTiming.id,
+  g1.id,
+  "2",
+  routeWithTiming.points,
+  "outbound",
+  null,
+  null,
+  "#3b82f6",
+  null,
+  null,
+  null,
+  [],
+  [],
+  [],
+  "ordinary",
+  false,
+  [2],
+);
+assert(
+  JSON.stringify(updatedWithTiming.timingPointIndexes) === JSON.stringify([2]),
+  "updateRoute's own timingPointIndexes parameter replaces the old list rather than always resetting to empty",
+);
+
 // --- route timetables ---
 assert(listRouteTimetablesForRoute(db, route.id).length === 0, "a new route starts with no timetables");
 
 const tt = upsertRouteTimetable(
   db,
   route.id,
-  "monday_friday",
+  MONDAY_FRIDAY_MASK,
   "both",
   [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 30 }],
-  [{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }],
+  [{ pointIndex: 1, standardPaddingMinutes: 10, peakPaddingMinutes: 15, dwellMinutes: 1 }],
   [0, 500],
   [0, 560],
+  [0, 600],
+  [0, 660],
   [420],
   [605],
 );
 assert(
-  tt.dayType === "monday_friday" && tt.timeBands[0].startMinutes === 360,
+  tt.weekdayMask === MONDAY_FRIDAY_MASK && tt.timeBands[0].startMinutes === 360,
   "route timetable created with the right fields",
 );
 assert(
-  JSON.stringify(tt.timingPoints) === JSON.stringify([{ pointIndex: 1, legMinutes: 10, dwellSeconds: 60 }]),
+  JSON.stringify(tt.timingPoints) === JSON.stringify([{ pointIndex: 1, standardPaddingMinutes: 10, peakPaddingMinutes: 15, dwellMinutes: 1 }]),
   "timing points round-trip through JSON",
+);
+assert(
+  JSON.stringify(tt.arrivalOffsetsSecondsPeak) === JSON.stringify([0, 600]) &&
+    JSON.stringify(tt.departureOffsetsSecondsPeak) === JSON.stringify([0, 660]),
+  "peak offset arrays round-trip through JSON too",
 );
 assert(
   JSON.stringify(tt.arrivalOffsetsSeconds) === JSON.stringify([0, 500]) &&
@@ -289,15 +411,26 @@ assert(tt.direction === "both", "a plain upsert defaults to the 'both' direction
 let forRoute = listRouteTimetablesForRoute(db, route.id);
 assert(forRoute.length === 1, "the route now has exactly one timetable");
 
+// Unflagging a timing point on the route strips it from every existing
+// component's own "timing_points" too, not just the route's own list.
+setRouteTimingPoint(db, route.id, 1, false);
+forRoute = listRouteTimetablesForRoute(db, route.id);
+assert(
+  forRoute[0].timingPoints.length === 0,
+  "unflagging a route's timing point clears the matching entry out of an existing timetable component",
+);
+
 // Upserting the same (route, day type, direction) again replaces it rather
 // than adding a second row — there's only one component per that triple.
 const tt2 = upsertRouteTimetable(
   db,
   route.id,
-  "monday_friday",
+  MONDAY_FRIDAY_MASK,
   "both",
   [{ startMinutes: 400, endMinutes: 1200, intervalMinutes: 20 }],
   [],
+  [0, 300],
+  [0, 300],
   [0, 300],
   [0, 300],
   [],
@@ -313,10 +446,12 @@ assert(forRoute.length === 1 && forRoute[0].timeBands[0].startMinutes === 400, "
 const tt3 = upsertRouteTimetable(
   db,
   route.id,
-  "monday_friday",
+  MONDAY_FRIDAY_MASK,
   "outbound",
   [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 15 }],
   [],
+  [0, 100],
+  [0, 100],
   [0, 100],
   [0, 100],
   [],
@@ -332,10 +467,12 @@ assert(
 const tt3b = upsertRouteTimetable(
   db,
   route.id,
-  "monday_friday",
+  MONDAY_FRIDAY_MASK,
   "outbound",
   [{ startMinutes: 360, endMinutes: 1140, intervalMinutes: 30 }],
   [],
+  [0, 200],
+  [0, 200],
   [0, 200],
   [0, 200],
   [],
@@ -348,10 +485,12 @@ assert(listRouteTimetablesForRoute(db, route.id).length === 2, "still exactly tw
 upsertRouteTimetable(
   db,
   route.id,
-  "saturday",
+  SATURDAY_MASK,
   "both",
   [{ startMinutes: 500, endMinutes: 1100, intervalMinutes: 60 }],
   [],
+  [0, 400],
+  [0, 400],
   [0, 400],
   [0, 400],
   [],
@@ -422,16 +561,80 @@ assert(
 upsertRouteTimetable(
   db,
   route.id,
-  "sunday",
+  SUNDAY_MASK,
   "both",
   [{ startMinutes: 600, endMinutes: 900, intervalMinutes: 60 }],
   [],
+  [0, 200, 400],
+  [0, 200, 400],
   [0, 200, 400],
   [0, 200, 400],
   [],
   [],
 );
 assert(listRouteTimetablesForRoute(db, route.id).length === 1, "a new timetable can be built after the update");
+
+// setRouteColour (2026-11-08, live bug report: changing a route's colour
+// via the normal Edit flow — which goes through updateRoute above — was
+// wiping the route's timetable as an unwanted side effect). This dedicated
+// setter must change ONLY the colour, leaving the timetable just built
+// above untouched.
+setRouteColour(db, route.id, "#00ffff");
+const afterColour = listRoutes(db).find((r) => r.id === route.id)!;
+assert(afterColour.colour === "#00ffff", "setRouteColour changes the route's colour");
+assert(
+  listRouteTimetablesForRoute(db, route.id).length === 1,
+  "setRouteColour must NOT clear the route's existing timetable, unlike updateRoute",
+);
+assert(afterColour.name === "Gordon Street Express", "setRouteColour leaves every other field (e.g. name) untouched");
+
+// setRouteVehicleRestrictions (Q18/Q19, OPEN-ITEMS.md Q18+Q19 plan) — a
+// fresh route defaults to every axis null (unset), the dedicated setter
+// round-trips a real restriction on all 4 axes, and — same "dedicated
+// setter, never wipes the timetable" property as setRouteColour just
+// above — it must leave the timetable built earlier completely alone.
+assert(
+  afterColour.vehicleRestrictions.baseType === null &&
+    afterColour.vehicleRestrictions.powerType === null &&
+    afterColour.vehicleRestrictions.axleCount === null &&
+    afterColour.vehicleRestrictions.liveryId === null,
+  "a route with no restrictions set defaults to every axis null",
+);
+// No livery exists yet this early in the script (createLivery runs much
+// later), so liveryId is left null here — covered on a real livery id
+// separately below, once one exists.
+setRouteVehicleRestrictions(db, route.id, { baseType: "Minibus", powerType: "electric", axleCount: "twin-axle", liveryId: null });
+const afterRestrictions = listRoutes(db).find((r) => r.id === route.id)!;
+assert(afterRestrictions.vehicleRestrictions.baseType === "Minibus", "setRouteVehicleRestrictions round-trips baseType");
+assert(afterRestrictions.vehicleRestrictions.powerType === "electric", "setRouteVehicleRestrictions round-trips powerType");
+assert(afterRestrictions.vehicleRestrictions.axleCount === "twin-axle", "setRouteVehicleRestrictions round-trips axleCount");
+assert(afterRestrictions.vehicleRestrictions.liveryId === null, "setRouteVehicleRestrictions round-trips a null liveryId");
+assert(
+  listRouteTimetablesForRoute(db, route.id).length === 1,
+  "setRouteVehicleRestrictions must NOT clear the route's existing timetable",
+);
+assert(afterRestrictions.colour === "#00ffff", "setRouteVehicleRestrictions leaves every other field (e.g. colour) untouched");
+// updateRoute's own UPDATE never touches these 4 columns either — same
+// preservation as its existing branding fetch, verified directly here
+// rather than just inferred from reading the code.
+const afterAnotherUpdate = updateRoute(
+  db,
+  route.id,
+  afterRestrictions.depotGroupId,
+  afterRestrictions.number,
+  afterRestrictions.points,
+  afterRestrictions.orientation,
+  afterRestrictions.terminusIndex,
+  afterRestrictions.startIndex,
+  afterRestrictions.colour,
+  afterRestrictions.name,
+  afterRestrictions.parentRouteId,
+  afterRestrictions.variationLetter,
+);
+assert(
+  afterAnotherUpdate.vehicleRestrictions.baseType === "Minibus" && afterAnotherUpdate.vehicleRestrictions.powerType === "electric",
+  "updateRoute preserves existing vehicle restrictions, same as it already preserves branding",
+);
 
 // route.id is still a real parent (variation and relinked both point at
 // it) — deleting it must clear those children's links, not fail outright
@@ -554,10 +757,12 @@ const route2 = createRoute(
 upsertRouteTimetable(
   db,
   route2.id,
-  "sunday",
+  SUNDAY_MASK,
   "both",
   [{ startMinutes: 700, endMinutes: 1000, intervalMinutes: 45 }],
   [],
+  [0, 250],
+  [0, 250],
   [0, 250],
   [0, 250],
   [],
@@ -592,6 +797,14 @@ db = openSave(path);
 playerStops = listPlayerStops(db);
 assert(playerStops.length === 1 && playerStops[0].osmId === placedLegal.osmId, "a player stop survives close+reopen");
 
+// "staff" route type (schema v57->v58, live request 2026-11-08) — would
+// have thrown a CHECK constraint violation before the routes v57->v58
+// rebuild (route_type's old CHECK list didn't include it); confirms the
+// rebuild genuinely dropped that CHECK rather than just leaving it stale.
+const staffRoute = createRoute(db, g1.id, "S1", [], "outbound", null, null, "#000000", null, null, null, [], [], [], "staff");
+assert(staffRoute.routeType === "staff", "createRoute accepts the 'staff' route type and round-trips it");
+assert(listRoutes(db).find((r) => r.id === staffRoute.id)?.routeType === "staff", "'staff' round-trips through listRoutes too");
+
 // --- depots and entrances (OPERATIONS.md §2 "Placement and entrances") ---
 const { depot, entrances } = createDepot(db, g1.id, "Test Depot", -3.2, 55.95, [
   { lon: -3.199, lat: 55.951, mode: "both" },
@@ -619,9 +832,22 @@ assert(
 deleteDepotEntrance(db, thirdEntrance.id);
 assert(listDepotEntrances(db, depot.id).length === 2, "deleting one entrance leaves the others");
 
+// A depot's own staff-route stop (schema v57->v58).
+const depotStop = createDepotStop(db, depot.id);
+assert(depotStop.osmId < 0 && depotStop.depotId === depot.id, "createDepotStop makes a real player stop linked back to the depot");
+assert(depotStop.lon === depot.lon && depotStop.lat === depot.lat, "a depot's own stop sits at the depot's exact location, not kerb-snapped");
+assert(
+  listPlayerStops(db).find((s) => s.osmId === depotStop.osmId)?.depotId === depot.id,
+  "the depot link round-trips through listPlayerStops too",
+);
+
 deleteDepot(db, depot.id);
 assert(listDepots(db).length === 0, "deleting a depot removes it");
 assert(listDepotEntrances(db, depot.id).length === 0, "deleting a depot also deletes its own entrances (no FK cascade, so this must be explicit)");
+assert(
+  !listPlayerStops(db).some((s) => s.osmId === depotStop.osmId),
+  "deleting a depot also deletes its own staff-route stop, same no-FK-cascade treatment as its entrances",
+);
 
 const { depot: depot2 } = createDepot(db, g1.id, "Persisted Depot", -3.19, 55.94, [{ lon: -3.189, lat: 55.941, mode: "both" }]);
 db.close();
@@ -655,6 +881,29 @@ resetOverride(db, "stop", 5002, "group_id");
 groupMembers = listOverrides<number | null>(db, "stop", "group_id").filter((o) => o.value === sg1.id);
 assert(groupMembers.length === 1, "removing one stop from a group leaves the other");
 
+// --- player-created bus stations (live request, 2026-11-08: "group bus
+// stops into a bus station but without having to place one") — mirrors
+// stop_groups exactly: mints only an id, name/membership both go through
+// the existing override layer, already covered above for stop_group — this
+// checks the id-minting/listing half plus the "bus_station" entity_type
+// name override (not yet exercised by any earlier assertion in this file).
+const bs1 = createPlayerBusStation(db);
+const bs2 = createPlayerBusStation(db);
+assert(bs1.id !== bs2.id, "each player bus station gets a distinct id");
+let playerBusStationIds = listPlayerBusStationIds(db);
+assert(playerBusStationIds.includes(bs1.id) && playerBusStationIds.includes(bs2.id), "both player bus stations are listed");
+
+setOverride(db, "stop", 5003, "bus_station", -1_000_000_000 - bs1.id);
+setOverride(db, "bus_station", -1_000_000_000 - bs1.id, "name", "Union Street Bus Station");
+assert(
+  getOverride(db, "bus_station", -1_000_000_000 - bs1.id, "name") === "Union Street Bus Station",
+  "a player bus station's manually-set name round-trips through the override layer, same as a real OSM one's",
+);
+assert(
+  getOverride<number | null>(db, "stop", 5003, "bus_station") === -1_000_000_000 - bs1.id,
+  "a stop assigned to a player bus station round-trips through the same override field a real OSM station's assignment already uses",
+);
+
 db.close();
 db = openSave(path);
 stopGroupIds = listStopGroupIds(db);
@@ -663,6 +912,15 @@ assert(getOverride(db, "stop_group", sg1.id, "name") === "Princes Street eastbou
 assert(
   getOverride<number | null>(db, "stop", 5001, "group_id") === sg1.id,
   "stop group membership survives close+reopen",
+);
+playerBusStationIds = listPlayerBusStationIds(db);
+assert(
+  playerBusStationIds.includes(bs1.id) && playerBusStationIds.includes(bs2.id),
+  "player bus stations survive close+reopen",
+);
+assert(
+  getOverride(db, "bus_station", -1_000_000_000 - bs1.id, "name") === "Union Street Bus Station",
+  "a player bus station's name survives close+reopen",
 );
 db.close();
 
@@ -728,19 +986,679 @@ db.close();
   raw.close();
 
   const migrated = openSave(migrationPath);
-  const migratedTimetables = listRouteTimetablesForRoute(migrated, 1);
+  // Raw SQL, not listRouteTimetablesForRoute (2026-11-15): that helper
+  // always selects every CURRENT column, including mirror_source_
+  // timetable_id/mirror_offset_minutes (schema v64->v65) — correct for
+  // real play, where a save is always migrated one release behind, never
+  // 46 versions behind in one sitting. This fixture deliberately starts
+  // at v19 and jumps the rest of the way via the SAME "most branches set
+  // user_version straight to SCHEMA_VERSION rather than their own real
+  // next step" shortcut the v37 branch's own comment already documents
+  // as a known, accepted trade-off (correct for the realistic one-
+  // version-behind case, not for a save this far behind) — so
+  // route_timetables here never actually reaches its current v65 shape,
+  // same as it never has for this test. Fixed only for the one or two
+  // steps that matter for a specific live need (v63->v64->v65 here,
+  // v37->v38->v39 before it) rather than retrofitting all ~45 historical
+  // branches, which would need a complete historical-shape fixture for
+  // every table any of them touch (depot_entrances, vehicles, fare_zones
+  // and more — confirmed by hand, not guessed: tried exactly this and it
+  // cascades through a large, unrelated part of this file's own history).
+  // Reading only what THIS test actually cares about (day_type's own
+  // migration into weekday_mask) sidesteps that unrelated, pre-existing
+  // limitation rather than papering over it.
+  const migratedTimetables = migrated.prepare("SELECT weekday_mask, time_bands FROM route_timetables WHERE route_id = ?").all(1) as { weekday_mask: number; time_bands: string }[];
   assert(migratedTimetables.length === 3, "all 3 pre-migration timetable rows survive the v19->v20 migration");
-  const dayTypesAfterMigration = migratedTimetables.map((t) => t.dayType).sort();
+  const masksAfterMigration = migratedTimetables.map((t) => t.weekday_mask).sort((a, b) => a - b);
   assert(
-    JSON.stringify(dayTypesAfterMigration) === JSON.stringify(["monday_friday", "saturday", "sunday"]),
+    JSON.stringify(masksAfterMigration) === JSON.stringify([MONDAY_FRIDAY_MASK, SATURDAY_MASK, SUNDAY_MASK].sort((a, b) => a - b)),
     "each row's real day type is preserved through the weekday_mask/term_facet round-trip, not just migrated without throwing",
   );
   assert(
-    migratedTimetables.every((t) => t.timeBands[0].startMinutes === 360),
+    migratedTimetables.every((t) => (JSON.parse(t.time_bands) as { startMinutes: number }[])[0].startMinutes === 360),
     "other fields (time bands) survive the migration untouched",
   );
   migrated.close();
   unlinkSync(migrationPath);
+}
+
+// --- v58 -> v59 migration: dealers.manufacturer western_commercial -> evm,
+// plus the new is_repower_site and vehicles.bought_game_day columns (T179) ---
+{
+  const migrationPath58 = "./electron/.verify-migration-v58.sqlite";
+  if (existsSync(migrationPath58)) unlinkSync(migrationPath58);
+  const raw58 = new DatabaseSync(migrationPath58);
+  // Old (v58) shapes — dealers with no is_repower_site column and the old
+  // manufacturer CHECK set; vehicles with no bought_game_day column; routes
+  // with none of v59's vehicle_restriction_* columns (the exact shape the
+  // real v57->v58 routes_new rebuild above leaves it in). routes must be
+  // pre-created explicitly here, not left for openSave()'s own
+  // unconditional `db.exec(SCHEMA)` to create fresh the way every other
+  // table in this fixture is — a real bug found 2026-11-14 while fixing
+  // the same-session-stacking migration bug above: with that bug fixed,
+  // this fixture now actually walks through the v59 branch's own
+  // `ALTER TABLE routes ADD COLUMN vehicle_restriction_base_type ...`,
+  // which throws "duplicate column name" if routes was instead created
+  // fresh (already with those columns, via CREATE TABLE IF NOT EXISTS)
+  // rather than pre-existing in its true old shape — exactly backwards
+  // from dealers/vehicles below, which ARE pre-created in old shape
+  // specifically so their own later ALTERs have something real to apply
+  // against.
+  raw58.exec(`
+    CREATE TABLE routes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      number TEXT NOT NULL,
+      points TEXT NOT NULL,
+      orientation TEXT NOT NULL CHECK (orientation IN ('inbound', 'outbound')),
+      terminus_index INTEGER,
+      start_index INTEGER,
+      colour TEXT NOT NULL DEFAULT '#3b82f6',
+      name TEXT,
+      pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
+      timing_point_indexes TEXT NOT NULL DEFAULT '[]',
+      parent_route_id INTEGER REFERENCES routes(id),
+      variation_letter TEXT,
+      composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
+      hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
+      segments TEXT NOT NULL DEFAULT '[]',
+      route_type TEXT NOT NULL DEFAULT 'ordinary',
+      is_minor_variation INTEGER NOT NULL DEFAULT 0,
+      assigned_livery_id INTEGER REFERENCES liveries(id),
+      use_branded_colour INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  raw58.exec(`
+    CREATE TABLE dealers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'western_commercial', 'wrightbus', 'yutong')),
+      lon REAL NOT NULL,
+      lat REAL NOT NULL,
+      is_entrances_complete INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  raw58.exec(`
+    CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      model_id TEXT NOT NULL,
+      length_m REAL NOT NULL,
+      variant_label TEXT,
+      power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+      category_digit INTEGER NOT NULL,
+      sequential_number INTEGER NOT NULL,
+      fleet_number TEXT NOT NULL UNIQUE,
+      plate TEXT NOT NULL UNIQUE,
+      condition REAL NOT NULL DEFAULT 100,
+      purchase_price_gbp INTEGER NOT NULL,
+      bought_at TEXT NOT NULL,
+      livery_id INTEGER REFERENCES liveries(id),
+      bought_for_route_id INTEGER REFERENCES routes(id)
+    )
+  `);
+  // drivers, old (pre-v60) shape with no private_hire_vehicle_id column —
+  // same real reason as pre-creating routes above: with the same-session
+  // migration-stacking bug now fixed, this fixture walks through v60's
+  // own `ALTER TABLE drivers ADD COLUMN private_hire_vehicle_id ...`,
+  // which throws "duplicate column name" unless drivers pre-exists in
+  // its true old shape rather than being created fresh (already with
+  // that column) by openSave()'s own unconditional `db.exec(SCHEMA)`.
+  raw58.exec(`
+    CREATE TABLE drivers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      name TEXT NOT NULL,
+      score TEXT NOT NULL DEFAULT 'trainee' CHECK (score IN ('trainee', 'novice', 'competent', 'professional', 'fleet_elite'))
+    )
+  `);
+  // route_timetables, old (pre-v64) shape with neither mirror column —
+  // same real reason as drivers above: this fixture now correctly walks
+  // all the way through to the current version (the v58-62 branches'
+  // own same-session-stacking fix already applies here), reaching the
+  // v64->v65 migration's own `ALTER TABLE route_timetables ADD COLUMN
+  // mirror_source_timetable_id/mirror_offset_minutes` — which throws
+  // "duplicate column name" unless this table pre-exists in its true old
+  // shape rather than being created fresh (already with those columns)
+  // by openSave()'s own unconditional `db.exec(SCHEMA)`.
+  raw58.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw58.exec(`
+    INSERT INTO dealers (id, name, manufacturer, lon, lat, is_entrances_complete)
+    VALUES (1, 'Western Commercial (Glasgow)', 'western_commercial', -4.311747, 55.856503, 1)
+  `);
+  raw58.exec("PRAGMA user_version = 58");
+  raw58.close();
+
+  const migrated58 = openSave(migrationPath58);
+  const versionCheck58 = new DatabaseSync(migrationPath58);
+  const { user_version: version58 } = versionCheck58.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck58.close();
+  assert(version58 === SCHEMA_VERSION, `the v58 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version58}`);
+
+  const migratedDealers = listDealers(migrated58);
+  const migratedDealer = migratedDealers.find((d) => d.id === 1);
+  assert(migratedDealer?.manufacturer === "evm", `the pre-existing western_commercial dealer becomes evm, got "${migratedDealer?.manufacturer}"`);
+  assert(migratedDealer?.name === "Western Commercial (Glasgow)", "the migration preserves the dealer's own name untouched (only manufacturer is translated)");
+  assert(migratedDealer?.isRepowerSite === false, "a pre-existing dealer defaults to not being the re-power site");
+
+  // A fresh vehicle bought on the migrated save gets a real bought_game_day
+  // (the ADD COLUMN itself, proven by the column existing at all — a
+  // pre-existing vehicle's own default-to-0 backfill is covered directly
+  // against the player's real save in the v31->v36 check below, since
+  // building a second valid vehicles row here would need its own depot/
+  // depot-group fixture rows purely for foreign-key validity).
+  const g58 = createDepotGroup(migrated58, "V58 Migration Test", "East Scotland");
+  const d58 = createDepot(migrated58, g58.id, "V58 Depot", -4.2, 55.9, []).depot;
+  const migratedVehicle = buyVehicle(migrated58, g58.id, d58.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
+  assert(typeof migratedVehicle.boughtGameDay === "number", "a vehicle bought after the v58->v59 migration has a real boughtGameDay");
+
+  migrated58.close();
+  unlinkSync(migrationPath58);
+}
+
+// --- v60 -> v61 migration: drivers.private_hire_vehicle_id (T183 —
+// private hire revival, Q20/OPEN-ITEMS.md). Old (v60) drivers shape with
+// no such column, plus one pre-existing driver row, to prove the ADD
+// COLUMN migrates a real existing row to NULL rather than throwing. ---
+{
+  const migrationPath60 = "./electron/.verify-migration-v60.sqlite";
+  if (existsSync(migrationPath60)) unlinkSync(migrationPath60);
+  const raw60 = new DatabaseSync(migrationPath60);
+  raw60.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw60.exec(`
+    CREATE TABLE depots (id INTEGER PRIMARY KEY AUTOINCREMENT, depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id), name TEXT NOT NULL, lon REAL NOT NULL, lat REAL NOT NULL)
+  `);
+  raw60.exec(`
+    CREATE TABLE drivers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      name TEXT NOT NULL,
+      score TEXT NOT NULL DEFAULT 'trainee' CHECK (score IN ('trainee', 'novice', 'competent', 'professional', 'fleet_elite'))
+    )
+  `);
+  // vehicles, old (pre-v61/v62) shape with no is_spare/payment_method
+  // columns — same real reason as the v58 fixture's own routes/drivers
+  // pre-creation above: with the same-session migration-stacking bug
+  // fixed, this fixture now walks through v61's and v62's own
+  // `ALTER TABLE vehicles ADD COLUMN is_spare/payment_method ...`, which
+  // throw "duplicate column name" unless vehicles pre-exists in its true
+  // old shape rather than being created fresh (already with both
+  // columns) by openSave()'s own unconditional `db.exec(SCHEMA)`.
+  raw60.exec(`CREATE TABLE liveries (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw60.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw60.exec(`
+    CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      model_id TEXT NOT NULL,
+      length_m REAL NOT NULL,
+      variant_label TEXT,
+      power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+      category_digit INTEGER NOT NULL,
+      sequential_number INTEGER NOT NULL,
+      fleet_number TEXT NOT NULL UNIQUE,
+      plate TEXT NOT NULL UNIQUE,
+      condition REAL NOT NULL DEFAULT 100,
+      purchase_price_gbp INTEGER NOT NULL,
+      bought_at TEXT NOT NULL,
+      bought_game_day INTEGER NOT NULL DEFAULT 0,
+      livery_id INTEGER REFERENCES liveries(id),
+      bought_for_route_id INTEGER REFERENCES routes(id)
+    )
+  `);
+  // route_timetables, old (pre-v64) shape with neither mirror column —
+  // this fixture walks all the way through to the current version (the
+  // v58-62 branches' own same-session-stacking fix), reaching the
+  // v64->v65 migration's own ADD COLUMNs, which throw "duplicate column
+  // name" unless this table pre-exists in its true old shape.
+  raw60.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw60.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V60 Migration Test', 'East Scotland')`);
+  raw60.exec(`INSERT INTO depots (id, depot_group_id, name, lon, lat) VALUES (1, 1, 'V60 Depot', -3.1, 55.9)`);
+  raw60.exec(`INSERT INTO drivers (id, depot_group_id, depot_id, name, score) VALUES (1, 1, 1, 'Pre-existing Driver', 'novice')`);
+  raw60.exec("PRAGMA user_version = 60");
+  raw60.close();
+
+  const migrated60 = openSave(migrationPath60);
+  const versionCheck60 = new DatabaseSync(migrationPath60);
+  const { user_version: version60 } = versionCheck60.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck60.close();
+  assert(version60 === SCHEMA_VERSION, `the v60 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version60}`);
+
+  const preExistingDriver = listDriversForDepotGroup(migrated60, 1).find((d) => d.id === 1);
+  assert(preExistingDriver !== undefined && preExistingDriver.name === "Pre-existing Driver", "the pre-existing driver row survives the migration untouched");
+  assert(preExistingDriver?.privateHireVehicleId === null, "the new column backfills to NULL for a pre-existing driver, not an error or a default vehicle id");
+
+  migrated60.close();
+  unlinkSync(migrationPath60);
+}
+
+// --- v61 -> v62 migration: vehicles.is_spare (T184 — spare bus
+// designation, Q22/OPEN-ITEMS.md). Old (v61) vehicles shape with no such
+// column, plus one pre-existing vehicle row, to prove the ADD COLUMN
+// migrates a real existing row to is_spare = 0/false rather than throwing
+// or leaving it NULL. ---
+{
+  const migrationPath61 = "./electron/.verify-migration-v61.sqlite";
+  if (existsSync(migrationPath61)) unlinkSync(migrationPath61);
+  const raw61 = new DatabaseSync(migrationPath61);
+  raw61.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw61.exec(`
+    CREATE TABLE depots (id INTEGER PRIMARY KEY AUTOINCREMENT, depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id), name TEXT NOT NULL, lon REAL NOT NULL, lat REAL NOT NULL)
+  `);
+  // Empty stand-ins so vehicles' own FK columns below have a real table to
+  // reference — node:sqlite's DatabaseSync enforces PRAGMA foreign_keys ON
+  // by default, which fails an INSERT into vehicles with "no such table"
+  // if livery_id/bought_for_route_id reference tables that don't exist at
+  // all, even when the inserted values themselves are NULL.
+  raw61.exec(`CREATE TABLE liveries (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw61.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw61.exec(`
+    CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      model_id TEXT NOT NULL,
+      length_m REAL NOT NULL,
+      variant_label TEXT,
+      power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+      category_digit INTEGER NOT NULL,
+      sequential_number INTEGER NOT NULL,
+      fleet_number TEXT NOT NULL UNIQUE,
+      plate TEXT NOT NULL UNIQUE,
+      condition REAL NOT NULL DEFAULT 100,
+      purchase_price_gbp INTEGER NOT NULL,
+      bought_at TEXT NOT NULL,
+      bought_game_day INTEGER NOT NULL DEFAULT 0,
+      livery_id INTEGER REFERENCES liveries(id),
+      bought_for_route_id INTEGER REFERENCES routes(id)
+    )
+  `);
+  raw61.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V61 Migration Test', 'East Scotland')`);
+  raw61.exec(`INSERT INTO depots (id, depot_group_id, name, lon, lat) VALUES (1, 1, 'V61 Depot', -3.1, 55.9)`);
+  raw61.exec(`
+    INSERT INTO vehicles (id, depot_group_id, depot_id, model_id, length_m, power_type, category_digit, sequential_number, fleet_number, plate, purchase_price_gbp, bought_at)
+    VALUES (1, 1, 1, 'adl-enviro400', 11.5, 'diesel', 4, 1, '4001', 'SA01ABC', 235000, '2026-01-01T00:00:00.000Z')
+  `);
+  // route_timetables, old (pre-v64) shape — this fixture walks all the
+  // way through to the current version; see the v58 fixture's own
+  // comment above for the full reasoning.
+  raw61.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw61.exec("PRAGMA user_version = 61");
+  raw61.close();
+
+  const migrated61 = openSave(migrationPath61);
+  const versionCheck61 = new DatabaseSync(migrationPath61);
+  const { user_version: version61 } = versionCheck61.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck61.close();
+  assert(version61 === SCHEMA_VERSION, `the v61 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version61}`);
+
+  const preExistingVehicle = listVehiclesForDepotGroup(migrated61, 1).find((v) => v.id === 1);
+  assert(preExistingVehicle !== undefined && preExistingVehicle.fleetNumber === "4001", "the pre-existing vehicle row survives the migration untouched");
+
+  // is_spare (T184) existed briefly between v61->v62 and v63->v64, when
+  // the spare-bus mechanic was removed entirely per the user's own direct
+  // instruction 2026-11-14 (OPEN-ITEMS.md). This v61 fixture walks the
+  // whole chain in one openSave() call (same same-session-stacking the
+  // v58 fixture above exercises) — added then dropped in the same run —
+  // so checking the real on-disk schema here proves the column is truly
+  // gone, not just unused in the TypeScript layer.
+  const finalColumns61 = migrated61.prepare("PRAGMA table_info(vehicles)").all() as { name: string }[];
+  assert(!finalColumns61.some((c) => c.name === "is_spare"), "is_spare does not exist in the real schema after a v61 save walks the whole migration chain to the current version");
+
+  migrated61.close();
+  unlinkSync(migrationPath61);
+}
+
+// --- v62 -> v63 migration: vehicles.payment_method (T185 — real lease
+// billing, follow-up to T184). Old (v62) vehicles shape with no such
+// column, plus one pre-existing vehicle row, to prove the ADD COLUMN
+// migrates a real existing row to payment_method = 'buy_outright' rather
+// than throwing or leaving it NULL. ---
+{
+  const migrationPath62 = "./electron/.verify-migration-v62.sqlite";
+  if (existsSync(migrationPath62)) unlinkSync(migrationPath62);
+  const raw62 = new DatabaseSync(migrationPath62);
+  raw62.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw62.exec(`
+    CREATE TABLE depots (id INTEGER PRIMARY KEY AUTOINCREMENT, depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id), name TEXT NOT NULL, lon REAL NOT NULL, lat REAL NOT NULL)
+  `);
+  // Empty stand-ins so vehicles' own FK columns below have a real table to
+  // reference — same reasoning as the v61 fixture above.
+  raw62.exec(`CREATE TABLE liveries (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw62.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw62.exec(`
+    CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      model_id TEXT NOT NULL,
+      length_m REAL NOT NULL,
+      variant_label TEXT,
+      power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+      category_digit INTEGER NOT NULL,
+      sequential_number INTEGER NOT NULL,
+      fleet_number TEXT NOT NULL UNIQUE,
+      plate TEXT NOT NULL UNIQUE,
+      condition REAL NOT NULL DEFAULT 100,
+      purchase_price_gbp INTEGER NOT NULL,
+      bought_at TEXT NOT NULL,
+      bought_game_day INTEGER NOT NULL DEFAULT 0,
+      livery_id INTEGER REFERENCES liveries(id),
+      bought_for_route_id INTEGER REFERENCES routes(id),
+      is_spare INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  raw62.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V62 Migration Test', 'East Scotland')`);
+  raw62.exec(`INSERT INTO depots (id, depot_group_id, name, lon, lat) VALUES (1, 1, 'V62 Depot', -3.1, 55.9)`);
+  raw62.exec(`
+    INSERT INTO vehicles (id, depot_group_id, depot_id, model_id, length_m, power_type, category_digit, sequential_number, fleet_number, plate, purchase_price_gbp, bought_at)
+    VALUES (1, 1, 1, 'adl-enviro400', 11.5, 'diesel', 4, 1, '4001', 'SA01ABC', 235000, '2026-01-01T00:00:00.000Z')
+  `);
+  // route_timetables, old (pre-v64) shape — this fixture walks all the
+  // way through to the current version; see the v58 fixture's own
+  // comment above for the full reasoning.
+  raw62.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw62.exec("PRAGMA user_version = 62");
+  raw62.close();
+
+  const migrated62 = openSave(migrationPath62);
+  const versionCheck62 = new DatabaseSync(migrationPath62);
+  const { user_version: version62 } = versionCheck62.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck62.close();
+  assert(version62 === SCHEMA_VERSION, `the v62 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version62}`);
+
+  const preExistingVehicle62 = listVehiclesForDepotGroup(migrated62, 1).find((v) => v.id === 1);
+  assert(preExistingVehicle62 !== undefined && preExistingVehicle62.fleetNumber === "4001", "the pre-existing vehicle row survives the migration untouched");
+  assert(preExistingVehicle62?.paymentMethod === "buy_outright", "the new payment_method column backfills to 'buy_outright' for a pre-existing vehicle, not NULL or something else");
+
+  migrated62.close();
+  unlinkSync(migrationPath62);
+}
+
+// --- v63 -> v64 migration: removal of vehicles.is_spare (T184's spare-bus
+// mechanic was dropped entirely per the user's own direct instruction
+// 2026-11-14, OPEN-ITEMS.md). Old (v63) vehicles shape with BOTH is_spare
+// and payment_method already present (the real shape a save sitting at
+// v63 actually has), plus one pre-existing vehicle row with is_spare = 1,
+// to prove DROP COLUMN removes the column for real rather than just the
+// renderer/TypeScript layer no longer reading it. ---
+{
+  const migrationPath63 = "./electron/.verify-migration-v63.sqlite";
+  if (existsSync(migrationPath63)) unlinkSync(migrationPath63);
+  const raw63 = new DatabaseSync(migrationPath63);
+  raw63.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw63.exec(`
+    CREATE TABLE depots (id INTEGER PRIMARY KEY AUTOINCREMENT, depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id), name TEXT NOT NULL, lon REAL NOT NULL, lat REAL NOT NULL)
+  `);
+  // Empty stand-ins so vehicles' own FK columns below have a real table to
+  // reference — same reasoning as the v61/v62 fixtures above.
+  raw63.exec(`CREATE TABLE liveries (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw63.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw63.exec(`
+    CREATE TABLE vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+      depot_id INTEGER NOT NULL REFERENCES depots(id),
+      model_id TEXT NOT NULL,
+      length_m REAL NOT NULL,
+      variant_label TEXT,
+      power_type TEXT NOT NULL CHECK (power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+      category_digit INTEGER NOT NULL,
+      sequential_number INTEGER NOT NULL,
+      fleet_number TEXT NOT NULL UNIQUE,
+      plate TEXT NOT NULL UNIQUE,
+      condition REAL NOT NULL DEFAULT 100,
+      purchase_price_gbp INTEGER NOT NULL,
+      bought_at TEXT NOT NULL,
+      bought_game_day INTEGER NOT NULL DEFAULT 0,
+      livery_id INTEGER REFERENCES liveries(id),
+      bought_for_route_id INTEGER REFERENCES routes(id),
+      is_spare INTEGER NOT NULL DEFAULT 0,
+      payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own'))
+    )
+  `);
+  raw63.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V63 Migration Test', 'East Scotland')`);
+  raw63.exec(`INSERT INTO depots (id, depot_group_id, name, lon, lat) VALUES (1, 1, 'V63 Depot', -3.1, 55.9)`);
+  raw63.exec(`
+    INSERT INTO vehicles (id, depot_group_id, depot_id, model_id, length_m, power_type, category_digit, sequential_number, fleet_number, plate, purchase_price_gbp, bought_at, is_spare, payment_method)
+    VALUES (1, 1, 1, 'adl-enviro400', 11.5, 'diesel', 4, 1, '4001', 'SA01ABC', 235000, '2026-01-01T00:00:00.000Z', 1, 'lease')
+  `);
+  // route_timetables, old (pre-v64) shape — this fixture walks all the
+  // way through to the current version; see the v58 fixture's own
+  // comment above for the full reasoning.
+  raw63.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw63.exec("PRAGMA user_version = 63");
+  raw63.close();
+
+  const migrated63 = openSave(migrationPath63);
+  const versionCheck63 = new DatabaseSync(migrationPath63);
+  const { user_version: version63 } = versionCheck63.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck63.close();
+  assert(version63 === SCHEMA_VERSION, `the v63 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version63}`);
+
+  const finalColumns63 = migrated63.prepare("PRAGMA table_info(vehicles)").all() as { name: string }[];
+  assert(!finalColumns63.some((c) => c.name === "is_spare"), "is_spare is genuinely dropped from the vehicles table, not just left unused, after a v63 save migrates to the current version");
+
+  const preExistingVehicle63 = listVehiclesForDepotGroup(migrated63, 1).find((v) => v.id === 1);
+  assert(preExistingVehicle63 !== undefined && preExistingVehicle63.fleetNumber === "4001", "the pre-existing vehicle row (which had is_spare = 1) survives the DROP COLUMN migration untouched otherwise");
+  assert(preExistingVehicle63?.paymentMethod === "lease", "the pre-existing vehicle's unrelated payment_method value is untouched by the is_spare DROP COLUMN migration");
+  assert(!("isSpare" in preExistingVehicle63!), "the real Vehicle object returned after migration carries no isSpare field at all");
+
+  migrated63.close();
+  unlinkSync(migrationPath63);
+}
+
+// --- v64 -> v65 migration: mirror_source_timetable_id/mirror_offset_
+// minutes (2026-11-15, the return-journey auto-offset timetable feature —
+// DESIGN.md §7). Old (v64) route_timetables shape with neither column yet,
+// plus one pre-existing row, to prove the ALTER TABLE ADD COLUMNs add real
+// nullable columns that backfill to NULL for every existing row, rather
+// than requiring a value or losing the row. ---
+{
+  const migrationPath64 = "./electron/.verify-migration-v64.sqlite";
+  if (existsSync(migrationPath64)) unlinkSync(migrationPath64);
+  const raw64 = new DatabaseSync(migrationPath64);
+  raw64.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw64.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw64.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw64.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V64 Migration Test', 'East Scotland')`);
+  raw64.exec(`INSERT INTO routes (id) VALUES (1)`);
+  raw64.exec(`
+    INSERT INTO route_timetables (id, route_id, weekday_mask, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
+    VALUES (1, 1, 31, 'both', '[]', '[]', '[0]', '[0]')
+  `);
+  raw64.exec("PRAGMA user_version = 64");
+  raw64.close();
+
+  const migrated64 = openSave(migrationPath64);
+  const versionCheck64 = new DatabaseSync(migrationPath64);
+  const { user_version: version64 } = versionCheck64.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck64.close();
+  assert(version64 === SCHEMA_VERSION, `the v64 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version64}`);
+
+  const finalColumns64 = migrated64.prepare("PRAGMA table_info(route_timetables)").all() as { name: string }[];
+  assert(finalColumns64.some((c) => c.name === "mirror_source_timetable_id"), "mirror_source_timetable_id exists after a v64 save migrates to the current version");
+  assert(finalColumns64.some((c) => c.name === "mirror_offset_minutes"), "mirror_offset_minutes exists after a v64 save migrates to the current version");
+
+  const preExistingTimetable64 = listRouteTimetablesForRoute(migrated64, 1).find((t) => t.id === 1);
+  assert(preExistingTimetable64 !== undefined && preExistingTimetable64.weekdayMask === 31, "the pre-existing timetable row survives the migration untouched");
+  assert(preExistingTimetable64?.mirrorSourceTimetableId === null, "the pre-existing timetable's new mirrorSourceTimetableId backfills to null, not a crash or a fabricated value");
+  assert(preExistingTimetable64?.mirrorOffsetMinutes === null, "the pre-existing timetable's new mirrorOffsetMinutes backfills to null");
+
+  migrated64.close();
+  unlinkSync(migrationPath64);
+}
+
+// --- v65 -> v66 migration: timing points became padding above the real
+// fastest achievable time, with a separate peak figure (2026-11-15). Old
+// (v65) route_timetables shape — has the v64->v65 mirror columns already,
+// but neither "_peak" offset column — plus one pre-existing row with a
+// REAL old-shape timing_points entry ({pointIndex, legMinutes,
+// dwellMinutes}), to prove the reset-to-zero-padding migration (not just
+// an empty array) and the new peak-offset columns backfilling to a real
+// copy of the existing non-peak ones, not an empty '[]'. ---
+{
+  const migrationPath65 = "./electron/.verify-migration-v65.sqlite";
+  if (existsSync(migrationPath65)) unlinkSync(migrationPath65);
+  const raw65 = new DatabaseSync(migrationPath65);
+  raw65.exec(`
+    CREATE TABLE depot_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '')
+  `);
+  raw65.exec(`CREATE TABLE routes (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+  raw65.exec(`
+    CREATE TABLE route_timetables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_id INTEGER NOT NULL REFERENCES routes(id),
+      weekday_mask INTEGER NOT NULL,
+      term_facet TEXT NOT NULL DEFAULT 'any' CHECK (term_facet IN ('any', 'term_time', 'holiday')),
+      direction TEXT NOT NULL DEFAULT 'both' CHECK (direction IN ('both', 'outbound', 'inbound')),
+      time_bands TEXT NOT NULL,
+      timing_points TEXT NOT NULL,
+      arrival_offsets_seconds TEXT NOT NULL,
+      departure_offsets_seconds TEXT NOT NULL,
+      excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+      mirror_source_timetable_id INTEGER REFERENCES route_timetables(id),
+      mirror_offset_minutes INTEGER,
+      UNIQUE (route_id, weekday_mask, term_facet, direction)
+    )
+  `);
+  raw65.exec(`INSERT INTO depot_groups (id, name, region) VALUES (1, 'V65 Migration Test', 'East Scotland')`);
+  raw65.exec(`INSERT INTO routes (id) VALUES (1)`);
+  raw65.exec(`
+    INSERT INTO route_timetables (id, route_id, weekday_mask, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds)
+    VALUES (1, 1, 31, 'both', '[]', '[{"pointIndex":1,"legMinutes":12,"dwellMinutes":2}]', '[0,900]', '[0,1020]')
+  `);
+  raw65.exec("PRAGMA user_version = 65");
+  raw65.close();
+
+  const migrated65 = openSave(migrationPath65);
+  const versionCheck65 = new DatabaseSync(migrationPath65);
+  const { user_version: version65 } = versionCheck65.prepare("PRAGMA user_version").get() as { user_version: number };
+  versionCheck65.close();
+  assert(version65 === SCHEMA_VERSION, `the v65 fixture migrates all the way to schema v${SCHEMA_VERSION}, got v${version65}`);
+
+  const finalColumns65 = migrated65.prepare("PRAGMA table_info(route_timetables)").all() as { name: string }[];
+  assert(finalColumns65.some((c) => c.name === "arrival_offsets_seconds_peak"), "arrival_offsets_seconds_peak exists after a v65 save migrates to the current version");
+  assert(finalColumns65.some((c) => c.name === "departure_offsets_seconds_peak"), "departure_offsets_seconds_peak exists after a v65 save migrates to the current version");
+
+  const preExistingTimetable65 = listRouteTimetablesForRoute(migrated65, 1).find((t) => t.id === 1);
+  assert(
+    JSON.stringify(preExistingTimetable65?.timingPoints) === JSON.stringify([{ pointIndex: 1, standardPaddingMinutes: 0, peakPaddingMinutes: 0, dwellMinutes: 2 }]),
+    `the pre-existing timing point's old legMinutes is reset to standardPaddingMinutes/peakPaddingMinutes 0 (dwellMinutes untouched), got ${JSON.stringify(preExistingTimetable65?.timingPoints)}`,
+  );
+  assert(
+    JSON.stringify(preExistingTimetable65?.arrivalOffsetsSecondsPeak) === JSON.stringify([0, 900]) &&
+      JSON.stringify(preExistingTimetable65?.departureOffsetsSecondsPeak) === JSON.stringify([0, 1020]),
+    "the new peak-offset columns backfill to a real copy of the existing non-peak offsets, not an empty array",
+  );
+
+  migrated65.close();
+  unlinkSync(migrationPath65);
 }
 
 // composed_from_route_ids (v28->v29, DESIGN.md §6 "Combining variations"),
@@ -779,11 +1697,11 @@ db.close();
   const depotA = createDepot(db, dutyGroup.id, "Fort William Depot", -5.1, 56.8, []).depot;
   const depotB = createDepot(db, dutyGroup.id, "Mallaig Outstation", -5.7, 57.0, []).depot;
 
-  const dutyA1 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  const dutyA1 = createDuty(db, dutyGroup.id, depotA.id, MONDAY_FRIDAY_MASK);
   assert(dutyA1.dutyNumber === "1001", `first duty at the main (lowest-id) depot gets 1001, got ${dutyA1.dutyNumber}`);
-  const dutyA2 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  const dutyA2 = createDuty(db, dutyGroup.id, depotA.id, MONDAY_FRIDAY_MASK);
   assert(dutyA2.dutyNumber === "1002", `second duty at the same depot gets 1002, got ${dutyA2.dutyNumber}`);
-  const dutyB1 = createDuty(db, dutyGroup.id, depotB.id, "monday_friday");
+  const dutyB1 = createDuty(db, dutyGroup.id, depotB.id, MONDAY_FRIDAY_MASK);
   assert(dutyB1.dutyNumber === "2001", `first duty at the group's second depot gets 2001, got ${dutyB1.dutyNumber}`);
 
   // No separate persisted counter — numbering is derived from the current
@@ -791,10 +1709,10 @@ db.close();
   // for reuse; a gap left by deleting a lower number would NOT be reused
   // (the max above it is unaffected either way).
   deleteDuty(db, dutyA2.id);
-  const dutyA3 = createDuty(db, dutyGroup.id, depotA.id, "monday_friday");
+  const dutyA3 = createDuty(db, dutyGroup.id, depotA.id, MONDAY_FRIDAY_MASK);
   assert(dutyA3.dutyNumber === "1002", `deleting the current highest-numbered duty frees that exact number for reuse — expected 1002, got ${dutyA3.dutyNumber}`);
 
-  const listed = listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday");
+  const listed = listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK);
   assert(
     listed.map((d) => d.dutyNumber).join(",") === "1001,1002,2001",
     `listDutiesForDepotGroup sorts numerically, which already groups by depot — got ${listed.map((d) => d.dutyNumber).join(",")}`,
@@ -806,16 +1724,16 @@ db.close();
   );
 
   setDutyLocked(db, dutyA1.id, true);
-  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyA1.id)?.locked === true, "lock took effect");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyA1.id)?.locked === true, "lock took effect");
 
   renameDuty(db, dutyA1.id, "1001X");
-  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyA1.id)?.dutyNumber === "1001X", "manual rename overrides the generated number");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyA1.id)?.dutyNumber === "1001X", "manual rename overrides the generated number");
 
   const dutyRoute = createRoute(db, dutyGroup.id, "99", [], "outbound", null, null, "#ff0000", null, null, null, []);
   const piece = addDutyPiece(db, dutyB1.id, dutyRoute.id, 480);
-  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added");
   removeDutyPiece(db, piece.id);
-  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 0, "piece removed");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyB1.id)?.pieces.length === 0, "piece removed");
 
   // Real bug (2026-10-31): deleting a route with a duty_piece still
   // pointing at it threw "FOREIGN KEY constraint failed", silently
@@ -824,16 +1742,53 @@ db.close();
   // clears duty_pieces first, the same treatment as route_timetables.
   const deletableRoute = createRoute(db, dutyGroup.id, "100", [], "outbound", null, null, "#00ff00", null, null, null, []);
   addDutyPiece(db, dutyB1.id, deletableRoute.id, 500);
-  assert(listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added for the route about to be deleted");
+  assert(listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyB1.id)?.pieces.length === 1, "piece added for the route about to be deleted");
   deleteRoute(db, deletableRoute.id);
   assert(!listRoutes(db).some((r) => r.id === deletableRoute.id), "the route itself is gone");
   assert(
-    listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").find((d) => d.id === dutyB1.id)?.pieces.length === 0,
+    listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyB1.id)?.pieces.length === 0,
     "deleting a route also removes any duty_piece built against it, rather than throwing",
   );
 
   deleteDuty(db, dutyB1.id);
-  assert(!listDutiesForDepotGroup(db, dutyGroup.id, "monday_friday").some((d) => d.id === dutyB1.id), "deleteDuty also removes it from the listing");
+  assert(!listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).some((d) => d.id === dutyB1.id), "deleteDuty also removes it from the listing");
+
+  // --- drivers (schema v57->v58) ---
+  assert(listDriversForDepotGroup(db, dutyGroup.id).length === 0, "a new depot group starts with no drivers");
+
+  const driver1 = createDriver(db, dutyGroup.id, depotA.id, "Test Driver One");
+  assert(driver1.score === "trainee", "createDriver defaults to trainee when no score is given");
+  const driver2 = createDriver(db, dutyGroup.id, depotA.id, "Test Driver Two", "professional");
+  assert(driver2.score === "professional", "createDriver round-trips an explicit score");
+
+  const drivers = listDriversForDepotGroup(db, dutyGroup.id);
+  assert(drivers.length === 2 && drivers.every((d) => d.depotGroupId === dutyGroup.id), "both drivers are listed, with the right depotGroupId");
+
+  renameDriver(db, driver1.id, "Renamed Driver");
+  assert(listDriversForDepotGroup(db, dutyGroup.id).find((d) => d.id === driver1.id)?.name === "Renamed Driver", "renameDriver updates the name");
+
+  setDriverScore(db, driver1.id, "fleet_elite");
+  assert(listDriversForDepotGroup(db, dutyGroup.id).find((d) => d.id === driver1.id)?.score === "fleet_elite", "setDriverScore updates the score");
+
+  assert(dutyA1.driverId === null, "a newly created duty starts unassigned");
+  setDutyDriver(db, dutyA1.id, driver1.id);
+  assert(
+    listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyA1.id)?.driverId === driver1.id,
+    "setDutyDriver assigns a driver to a duty",
+  );
+  setDutyDriver(db, dutyA1.id, null);
+  assert(
+    listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyA1.id)?.driverId === null,
+    "setDutyDriver(null) unassigns it again",
+  );
+  setDutyDriver(db, dutyA1.id, driver1.id);
+
+  deleteDriver(db, driver1.id);
+  assert(!listDriversForDepotGroup(db, dutyGroup.id).some((d) => d.id === driver1.id), "deleteDriver removes it from the listing");
+  assert(
+    listDutiesForDepotGroup(db, dutyGroup.id, MONDAY_FRIDAY_MASK).find((d) => d.id === dutyA1.id)?.driverId === null,
+    "deleting an assigned driver unassigns them from their duty rather than leaving a dangling reference",
+  );
   db.close();
 }
 
@@ -850,6 +1805,7 @@ db.close();
   assert(v1.fleetNumber === "4001", `first double-decker twin-axle vehicle gets fleet number 4001, got ${v1.fleetNumber}`);
   assert(v1.plate.startsWith("SA"), `a Glasgow-area depot gets an SA plate, got ${v1.plate}`);
   assert(v1.condition === 100, "a new vehicle starts at full condition");
+  assert(v1.paymentMethod === "buy_outright", "buyVehicle defaults to buy_outright when no paymentMethod argument is given (T185)");
 
   const v2 = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.5, null, "diesel", 235_000);
   assert(v2.fleetNumber === "4002", `second vehicle in the same category gets 4002, got ${v2.fleetNumber}`);
@@ -882,6 +1838,18 @@ db.close();
   }
   assert(threwOnBadDepot, "buying against a non-existent depot throws rather than silently generating a nonsense plate");
 
+  // --- buyVehicle's own explicit paymentMethod argument (T185) — a
+  // separate vehicle, not folded into the counted sequence above, so it
+  // doesn't disturb any of that section's own fleet-number/count
+  // assertions. ---
+  const v1Leased = buyVehicle(db, vg.id, vDepot.id, "adl-enviro400", 11.5, null, "diesel", 235_000, null, null, null, "lease");
+  assert(v1Leased.paymentMethod === "lease", "buyVehicle round-trips an explicit paymentMethod (T185)");
+  assert(listVehiclesForDepotGroup(db, vg.id).find((v) => v.id === v1Leased.id)?.paymentMethod === "lease", "listVehiclesForDepotGroup round-trips paymentMethod too");
+  assert(listAllVehicles(db).find((v) => v.id === v1Leased.id)?.paymentMethod === "lease", "listAllVehicles round-trips paymentMethod too");
+
+  const transferredLeased = transferVehicle(db, v1Leased.id, vDepot.id);
+  assert(transferredLeased.paymentMethod === "lease", "transferVehicle's own returned Vehicle still carries paymentMethod (T185)");
+
   db.close();
 }
 
@@ -902,6 +1870,15 @@ db.close();
   const plainVehicle = buyVehicle(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", 235_000);
   assert(plainVehicle.liveryId === null, "a vehicle bought with no liveryId argument defaults to null (plain white)");
   assert(listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === liveriedVehicle.id)?.liveryId === livery.id, "listVehiclesForDepotGroup round-trips liveryId too");
+
+  // setRouteVehicleRestrictions' own liveryId axis against a REAL livery id
+  // (the earlier check elsewhere in this script used null, since no livery
+  // existed yet that early) — confirms the vehicle_restriction_livery_id
+  // REFERENCES liveries(id) foreign key accepts a genuine id, not just null.
+  const restrictionRoute = createRoute(db, bg.id, "99R", [], "outbound", null, null, "#654321", null, null, null);
+  setRouteVehicleRestrictions(db, restrictionRoute.id, { baseType: null, powerType: null, axleCount: null, liveryId: livery.id });
+  const restrictedRoute = listRoutes(db).find((r) => r.id === restrictionRoute.id)!;
+  assert(restrictedRoute.vehicleRestrictions.liveryId === livery.id, "setRouteVehicleRestrictions round-trips a real liveryId foreign key");
 
   // transferVehicle moves a vehicle to a different depot (and depot group,
   // if the target depot belongs to a different one).
@@ -941,12 +1918,24 @@ db.close();
   assert(ordersNow.length === beforeOrderCount + 4, "the 4 new orders are listed");
 
   const orderToCollect = ordersNow.find((o) => o.modelId === "volvo-7900")!;
+  // item3 (volvo-7900) was basketed with paymentMethod "lease" — this is
+  // the real bug T185 fixes: collectOrder used to read payment_method off
+  // the order and then silently discard it, so every collected vehicle
+  // became buy_outright regardless of what was actually ordered.
+  assert(orderToCollect.paymentMethod === "lease", "the order itself carries the real 'lease' paymentMethod it was basketed with");
   const beforeVehicleCount = listVehiclesForDepotGroup(db, bg.id).length;
   const collected = collectOrder(db, orderToCollect.id);
   assert(collected.modelId === "volvo-7900", "collectOrder finalises the right order into a real vehicle");
   assert(collected.fleetNumber.length > 0 && collected.plate.length > 0, "a collected order gets a real fleet number and plate, same as any other buyVehicle");
+  assert(collected.paymentMethod === "lease", "collectOrder (T185) now carries the order's real paymentMethod through to the finalised vehicle, instead of silently dropping it to buy_outright");
+  assert(listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === collected.id)?.paymentMethod === "lease", "the collected vehicle's real paymentMethod round-trips through listVehiclesForDepotGroup too");
   assert(listVehiclesForDepotGroup(db, bg.id).length === beforeVehicleCount + 1, "the collected vehicle is now a real owned vehicle");
   assert(!listOrders(db).some((o) => o.id === orderToCollect.id), "collectOrder removes the order once finalised");
+
+  const outrightOrder = ordersNow.find((o) => o.modelId === "adl-enviro400")!;
+  assert(outrightOrder.paymentMethod === "buy_outright", "a basket item placed with 'buy_outright' carries that same value through to its own order");
+  const collectedOutright = collectOrder(db, outrightOrder.id);
+  assert(collectedOutright.paymentMethod === "buy_outright", "collectOrder carries a real 'buy_outright' paymentMethod through correctly too, not just the lease case");
 
   let threwOnBadOrder = false;
   try {
@@ -955,6 +1944,105 @@ db.close();
     threwOnBadOrder = true;
   }
   assert(threwOnBadOrder, "collecting a non-existent order throws rather than silently doing nothing");
+
+  // --- Private hire revival (T183, Q20/OPEN-ITEMS.md) — driver auto-hire
+  // on collect, and cleanup on delete ---
+  const phLivery = createLivery(db, "Lothian Coaches", "#203030", "#ffb000");
+  addBasketItem(db, bg.id, bDepotA.id, "volvo-9700", 12.2, null, "diesel", phLivery.id, "Volvo", 1, 320_000, "buy_outright", false, null);
+  placeOrder(db);
+  const phOrder = listOrders(db).find((o) => o.modelId === "volvo-9700" && o.liveryId === phLivery.id)!;
+  const phDriversBefore = listDriversForDepotGroup(db, bg.id).length;
+  const phVehicle = collectOrder(db, phOrder.id);
+  const phDriversAfter = listDriversForDepotGroup(db, bg.id);
+  assert(phDriversAfter.length === phDriversBefore + 1, "collecting a Lothian-Coaches-liveried coach auto-hires exactly one new driver");
+  const phDriver = phDriversAfter.find((d) => d.privateHireVehicleId === phVehicle.id);
+  assert(phDriver !== undefined, "the auto-hired driver is traceable back to its own vehicle via privateHireVehicleId");
+  assert(phDriver?.score === "trainee", "the auto-hired driver starts as a trainee, same default as any other createDriver call");
+
+  // A vehicle bought with an ordinary livery (not Lothian Coaches) gets no
+  // auto-hired driver at all — collectOrder is a no-op for every ordinary
+  // purchase.
+  addBasketItem(db, bg.id, bDepotA.id, "adl-enviro400", 10.5, null, "diesel", livery.id, "Alexander Dennis", 1, 235_000, "buy_outright", false, null);
+  placeOrder(db);
+  const ordinaryOrder = listOrders(db).find((o) => o.modelId === "adl-enviro400" && o.liveryId === livery.id)!;
+  const driversBeforeOrdinary = listDriversForDepotGroup(db, bg.id).length;
+  collectOrder(db, ordinaryOrder.id);
+  assert(listDriversForDepotGroup(db, bg.id).length === driversBeforeOrdinary, "collecting an ordinarily-liveried vehicle auto-hires no driver");
+
+  // --- private_hire_income_months tracking table (T183) — plain storage,
+  // all the real month math lives in private-hire-income.mts (its own
+  // verify.mts) — this just proves the round trip and the "re-recording
+  // is a safe no-op" INSERT OR IGNORE behaviour. Done against phVehicle
+  // BEFORE it's deleted below (month_key, like every other table here,
+  // has a real REFERENCES vehicles(id) — node:sqlite's DatabaseSync
+  // enforces foreign_keys ON by default, confirmed directly, so this
+  // needs a real, still-existing vehicle id, not an arbitrary one).
+  assert(listGeneratedPrivateHireMonths(db, phVehicle.id).length === 0, "a vehicle with no generated months yet returns an empty list");
+  recordGeneratedPrivateHireMonths(db, phVehicle.id, ["2026-11", "2026-12"]);
+  assert(
+    JSON.stringify(listGeneratedPrivateHireMonths(db, phVehicle.id).sort()) === JSON.stringify(["2026-11", "2026-12"]),
+    "recordGeneratedPrivateHireMonths/listGeneratedPrivateHireMonths round-trip for a vehicle",
+  );
+  recordGeneratedPrivateHireMonths(db, phVehicle.id, ["2026-11"]); // re-recording an already-generated month
+  assert(
+    listGeneratedPrivateHireMonths(db, phVehicle.id).length === 2,
+    "re-recording an already-generated month is a safe no-op (INSERT OR IGNORE), not a duplicate or an error",
+  );
+
+  // --- lease_billing_months tracking table (T185) — plain storage,
+  // identical shape/round-trip behaviour to private_hire_income_months
+  // above; the real month math lives in vehicle-lease-billing.mts (its
+  // own verify.mts). Run against `collected`, the real leased
+  // volvo-7900 vehicle from earlier in this test block, so the FK to a
+  // real vehicle id holds the same way the private-hire check above
+  // relies on phVehicle.
+  assert(listGeneratedLeaseBillingMonths(db, collected.id).length === 0, "a vehicle with no billed months yet returns an empty list");
+  recordLeaseBillingMonths(db, collected.id, ["2026-11", "2026-12"], false);
+  assert(
+    JSON.stringify(listGeneratedLeaseBillingMonths(db, collected.id).sort()) === JSON.stringify(["2026-11", "2026-12"]),
+    "recordLeaseBillingMonths/listGeneratedLeaseBillingMonths round-trip for a vehicle",
+  );
+  recordLeaseBillingMonths(db, collected.id, ["2026-11"], false); // re-recording an already-billed month
+  assert(
+    listGeneratedLeaseBillingMonths(db, collected.id).length === 2,
+    "re-recording an already-billed month is a safe no-op (INSERT OR IGNORE), not a duplicate or an error",
+  );
+  assert(listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === collected.id)?.paymentMethod === "lease", "recordLeaseBillingMonths with flipToOutright=false leaves paymentMethod untouched");
+
+  // flipToOutright=true (the real lease-to-own term-completion moment,
+  // OPERATIONS.md §3 "then ownership") flips payment_method in the same
+  // call as recording the final billed month.
+  recordLeaseBillingMonths(db, collected.id, ["2027-01"], true);
+  assert(
+    listGeneratedLeaseBillingMonths(db, collected.id).length === 3,
+    "the final chargeable month is still recorded even when flipToOutright is also true",
+  );
+  assert(
+    listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === collected.id)?.paymentMethod === "buy_outright",
+    "recordLeaseBillingMonths with flipToOutright=true flips the vehicle's own paymentMethod to buy_outright in the same call",
+  );
+
+  // Real bug found and fixed while writing this test (T185): deleteVehicle
+  // only ever cleared private_hire_income_months before, never
+  // lease_billing_months — a vehicle with real billed lease months would
+  // have thrown "FOREIGN KEY constraint failed" on delete, the same class
+  // of bug T183's own deleteVehicle comment already protects against for
+  // its own table. Proven directly rather than just inferred from reading
+  // the fix: deleting a vehicle with 3 real lease_billing_months rows
+  // against it must not throw.
+  let threwOnDeleteLeasedVehicle = false;
+  try {
+    deleteVehicle(db, collected.id);
+  } catch {
+    threwOnDeleteLeasedVehicle = true;
+  }
+  assert(!threwOnDeleteLeasedVehicle, "deleteVehicle also clears lease_billing_months first, so deleting a vehicle with billed lease months doesn't throw a foreign key constraint violation");
+  assert(!listVehiclesForDepotGroup(db, bg.id).some((v) => v.id === collected.id), "the leased vehicle really is gone after delete");
+
+  // Deleting the private-hire vehicle cleans up its auto-hired driver too
+  // — no orphaned phantom driver left behind.
+  deleteVehicle(db, phVehicle.id);
+  assert(!listDriversForDepotGroup(db, bg.id).some((d) => d.id === phDriver!.id), "deleteVehicle removes the private-hire vehicle's own auto-hired driver too");
 
   // --- Game clock (game_clock, DESIGN.md §3) ---
   const defaultClock = getGameClock(db);
@@ -989,6 +2077,62 @@ db.close();
   db.close();
 }
 
+// --- Re-power (T179, OPEN-ITEMS.md): dealers.isRepowerSite, repower_bookings
+// CRUD, and collectRepowerBooking actually converting the vehicle ---
+{
+  db = openSave(path);
+  const rg = createDepotGroup(db, "Repower Test", "East Scotland");
+  const rDepot = createDepot(db, rg.id, "Repower Depot", -3.19, 55.95, []).depot;
+
+  const evmDealer = createDealer(db, "EVM (Horsham)", "evm", -0.3463469, 51.0367201, []).dealer;
+  assert(evmDealer.isRepowerSite === false, "a newly created dealer is not a re-power site by default");
+
+  setDealerRepowerSite(db, evmDealer.id, true);
+  let dealersNow = listDealers(db);
+  assert(dealersNow.find((d) => d.id === evmDealer.id)?.isRepowerSite === true, "setDealerRepowerSite round-trips true");
+
+  // At most one dealer per manufacturer is the re-power site.
+  const secondEvmDealer = createDealer(db, "Another EVM site", "evm", -1, 51, []).dealer;
+  setDealerRepowerSite(db, secondEvmDealer.id, true);
+  dealersNow = listDealers(db);
+  assert(dealersNow.find((d) => d.id === secondEvmDealer.id)?.isRepowerSite === true, "the second dealer marked as the re-power site is now true");
+  assert(dealersNow.find((d) => d.id === evmDealer.id)?.isRepowerSite === false, "marking a second dealer of the same manufacturer as the re-power site un-marks the first — at most one per manufacturer");
+
+  // A diesel evm-cityline vehicle, booked and then collected, really
+  // converts: power_type, fleet_number (the 'r' suffix), condition reset
+  // to 100.
+  const dieselVehicle = buyVehicle(db, rg.id, rDepot.id, "evm-cityline", 7.4, null, "diesel", 75_000, null, 40);
+  assert(dieselVehicle.condition === 40, "the test vehicle starts at a real used condition, not 100 (so the post-collect reset is a genuine change)");
+  const originalFleetNumber = dieselVehicle.fleetNumber;
+
+  const booking = createRepowerBooking(db, dieselVehicle.id, secondEvmDealer.id, "electric", 62_500, 0, 1, 15);
+  assert(booking.vehicleId === dieselVehicle.id && booking.toPowerType === "electric" && booking.finalPriceGBP === 62_500, "createRepowerBooking round-trips every field");
+  assert(listAllRepowerBookings(db).some((b) => b.id === booking.id), "listAllRepowerBookings sees the new booking");
+
+  const collected = collectRepowerBooking(db, booking.id);
+  assert(collected.powerType === "electric", "collectRepowerBooking actually converts the vehicle's power_type");
+  assert(collected.condition === 100, "collectRepowerBooking resets condition to 100 (NewPower's own 'fully checked and repaired')");
+  assert(collected.fleetNumber !== originalFleetNumber && collected.fleetNumber.endsWith("re"), `collectRepowerBooking rewrites the fleet number with the re-power 'r' suffix, got "${collected.fleetNumber}" from "${originalFleetNumber}"`);
+  assert(!listAllRepowerBookings(db).some((b) => b.id === booking.id), "the booking is gone once collected — nothing left to show");
+
+  // Cancelling (deleting) an un-collected booking leaves the vehicle untouched.
+  const secondVehicle = buyVehicle(db, rg.id, rDepot.id, "evm-cityline", 7.4, null, "diesel", 75_000);
+  const cancellable = createRepowerBooking(db, secondVehicle.id, secondEvmDealer.id, "electric", 62_500, 0, 1, 15);
+  deleteRepowerBooking(db, cancellable.id);
+  assert(!listAllRepowerBookings(db).some((b) => b.id === cancellable.id), "deleteRepowerBooking removes a booking before it's collected");
+  assert(listVehiclesForDepotGroup(db, rg.id).find((v) => v.id === secondVehicle.id)?.powerType === "diesel", "cancelling a booking never touches the vehicle — it's still diesel");
+
+  let threwOnBadBooking = false;
+  try {
+    collectRepowerBooking(db, 999_999);
+  } catch {
+    threwOnBadBooking = true;
+  }
+  assert(threwOnBadBooking, "collecting a non-existent booking throws rather than silently doing nothing");
+
+  db.close();
+}
+
 // v31 -> v36 (depot_id on duties, the vehicles table, the buy-menu
 // rebuild's livery_id/basket_items/vehicle_orders, fare_zones, then its own
 // colour column), against a copy of the player's own real save — proven
@@ -1010,7 +2154,7 @@ db.close();
       const groupWithDepot = realGroups.find((g) => realDepots.some((d) => d.depotGroupId === g.id));
       if (groupWithDepot) {
         const depot = realDepots.find((d) => d.depotGroupId === groupWithDepot.id)!;
-        const created = createDuty(upgraded, groupWithDepot.id, depot.id, "monday_friday");
+        const created = createDuty(upgraded, groupWithDepot.id, depot.id, MONDAY_FRIDAY_MASK);
         assert(created.depotId === depot.id, "a duty created on the real (migrated) save carries the right depotId");
         deleteDuty(upgraded, created.id);
 
@@ -1022,6 +2166,19 @@ db.close();
         console.log("skip real-save duty/vehicle creation check: no depot group in the real save has a depot yet");
       }
     }
+    // Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9
+    // redesign...", 2026-11-16) — real round-trip against the real
+    // migrated save's own fresh stop_upgrades table.
+    assert(listAllStopUpgrades(upgraded).length === 0, "a freshly migrated real save starts with no stop upgrades at all");
+    assert(getStopUpgrade(upgraded, 123456) === null, "a stop with no row yet reports null, not a fabricated default");
+    const installed = installStopUpgrade(upgraded, 123456, "seating", 7);
+    assert(installed.hasSeating === true && installed.hasLighting === false && installed.hasShelter === false, "installing seating only flips that one flag");
+    assert(installed.seatingInstalledGameDay === 7, "the real game day it was installed on is recorded");
+    const installedLighting = installStopUpgrade(upgraded, 123456, "lighting", 9);
+    assert(installedLighting.hasSeating === true && installedLighting.hasLighting === true, "installing a second upgrade at the same stop doesn't clear the first");
+    assert(getStopUpgrade(upgraded, 123456)?.lightingInstalledGameDay === 9, "a second real install call updates the existing row (ON CONFLICT), not a duplicate");
+    assert(listAllStopUpgrades(upgraded).length === 1, "still exactly one row for this one real stop, not two");
+
     upgraded.close();
     unlinkSync(copy);
   } else {

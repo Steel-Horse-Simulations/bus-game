@@ -18,18 +18,36 @@ import { PICKUP_DROPOFF_LABELS, type PickupDropoffOrBoth } from "./pickup-dropof
 import {
   computeStopCallingServices,
   formatClockMinutes,
-  DAY_TYPE_SHORT_LABELS,
   type StopCallingService,
 } from "./stop-calling-services.mts";
+import { describeWeekdayMask } from "./route-timetable.mts";
 import {
   buildRouteTimetableGrid,
   routeDirectionRanges,
   sliceGridToPointRange,
   buildMergedFamilyGrid,
+  makeTimetableReferenceResolver,
   type MergedGridMember,
 } from "./route-timetable-grid.mts";
 import { pickContrastColorForHex } from "./icon-contrast";
 import { buildMergedGridTable } from "./merged-grid-table";
+import { resolveFamilyDisplayColours } from "./route-combine-variations.mts";
+import type { CrowdingTier } from "./stop-crowding.mts";
+import { accelerateCostGBPPence, upgradeTriggered, UPGRADE_THRESHOLDS, UPGRADE_INSTALL_COST_GBP_PENCE, type StopUpgradeType } from "./stop-upgrades.mts";
+import { gameClockState } from "./game-clock-engine";
+import { SECONDS_PER_DAY } from "./game-clock.mts";
+import {
+  ROUTE_ADVERTISING_SETUP_FEE_GBP_PENCE,
+  ROUTE_ADVERTISING_MONTHLY_FEE_GBP_PENCE,
+  routeAdvertisingLiveFromGameDay,
+  isRouteAdvertisingLive,
+  chargeableRouteAdvertisingMonthKeys,
+  longDistanceOperatorsAtStop,
+} from "./route-advertising.mts";
+
+function todayGameDayForAdvertising(): number {
+  return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
+}
 
 interface DecodedStop {
   lon: number;
@@ -37,6 +55,11 @@ interface DecodedStop {
   kind: "bus_stop" | "platform" | "bus_station";
   name: string | null;
   osmId: number;
+  // Schema v57->v58 — set only for a depot's own staff-route stop
+  // (electron/db.mts's player_stops.depot_id), undefined for every real
+  // OSM stop and every ordinary player-placed one. Drives both its
+  // display name (below) and its visibility (visibleStops below).
+  depotId?: number;
 }
 
 interface DecodedStopArea {
@@ -103,10 +126,33 @@ export const stopsPanelState: {
   // stop's colour tracks the real route list live rather than only
   // updating on the next full reload.
   refreshUsedByService: (() => void) | null;
+  // Re-applies visibleStops()'s own filter to the live "stops" source —
+  // called by route-draw.ts's setDrawing whenever drawing starts/stops,
+  // since a depot's own staff-route stop (schema v57->v58) is the only
+  // thing visibleStops decides dynamically rather than from a one-off
+  // player action (hide/unhide, rename, etc., which already call
+  // refreshStopsSource directly at their own call sites).
+  refreshDepotStopVisibility: (() => void) | null;
+  // Mirror of this module's own "Place stop" flow (stops.push/
+  // stopsById.set), exposed for depot-placement.ts to call right after
+  // window.playerStops.createForDepot/delete — otherwise a depot's own
+  // staff-route stop wouldn't appear/disappear here until a reload.
+  registerDepotStop: ((stop: PlayerStop) => void) | null;
+  unregisterDepotStop: ((osmId: number) => void) | null;
+  // A stop's own kind (route-panel.ts's "always a timing point" rule needs
+  // to know whether a point is a bus station, 2026-11-08 live request) —
+  // null for an osmId this module hasn't decoded (shouldn't happen for any
+  // real route point, but a stale save referencing a since-deleted stop is
+  // a real possibility, same fallback reasoning as displayNameFor above).
+  kindFor: ((osmId: number) => DecodedStop["kind"] | null) | null;
 } = {
   openPopupFor: null,
   displayNameFor: null,
   refreshUsedByService: null,
+  refreshDepotStopVisibility: null,
+  registerDepotStop: null,
+  unregisterDepotStop: null,
+  kindFor: null,
 };
 
 // Mirrors routeDrawState's own shape: true while the "Place stop" tool is
@@ -125,8 +171,34 @@ export interface BusStationSummary {
 }
 export const busStationsState: BusStationSummary[] = [];
 
-// Blue for a stop at least one service uses, grey otherwise.
-const stopColorExpression = ["case", ["get", "usedByService"], "#1677ff", "#8c8c8c"];
+// Blue for a stop at least one service uses, grey otherwise — overridden
+// by plan #11's own crowding tier (orange/red) when the stop is currently
+// busier than ITS OWN typical crowd for this hour (stop-crowding.mts),
+// checked before the plain used/unused branches since a crowded stop is
+// always also a used one, so this ordering never hides real information.
+const stopColorExpression = [
+  "case",
+  ["==", ["get", "crowdingTier"], "much_busier"],
+  "#dc2626",
+  ["==", ["get", "crowdingTier"], "busier"],
+  "#f59e0b",
+  ["get", "usedByService"],
+  "#1677ff",
+  "#8c8c8c",
+];
+
+// Reads the live crowding tier for a real stop off vehicle-simulation.ts's
+// own window.__vehicleSim bridge (the same pattern usedByService's own
+// window.routes-based lookup already uses elsewhere in this file) —
+// "normal" whenever that module hasn't mounted yet (an impossible call
+// order in practice, since vehicle-simulation.ts mounts before this file
+// is ever asked to draw a stop, but a safe default regardless) or hasn't
+// exposed this function yet (an older running instance), rather than
+// throwing.
+function crowdingTierOf(osmId: number): CrowdingTier {
+  const sim = (window as unknown as { __vehicleSim?: { crowdingTierForStop?: (id: number) => CrowdingTier } }).__vehicleSim;
+  return sim?.crowdingTierForStop?.(osmId) ?? "normal";
+}
 // Bus stations get their own colour, distinct from the navies fixed real
 // contracts reserve their stops in (398 #002664, Airlink 100 #002b4e —
 // DESIGN.md §10) — DESIGN.md §4's other three categories (railway
@@ -135,6 +207,16 @@ const stopColorExpression = ["case", ["get", "usedByService"], "#1677ff", "#8c8c
 // trams (#8A0D04) aren't in that DESIGN.md list but follow the identical
 // pattern, all colours confirmed directly with the user.
 const BUS_STATION_COLOR = "#7c3aed";
+// Player-created bus stations (electron/db.mts's player_bus_stations table,
+// live request 2026-11-08: "group bus stops into a bus station but without
+// having to place one") need an osmId disjoint from player_stops' own
+// negative space (-1, -2, -3..., electron/db.mts's player_stops table) so
+// the two can never collide — offsetting by a billion is simpler than
+// coordinating the two tables' autoincrement counters.
+const PLAYER_STATION_OSM_ID_BASE = -1_000_000_000;
+function playerStationOsmId(id: number): number {
+  return PLAYER_STATION_OSM_ID_BASE - id;
+}
 // Grouped stops (DESIGN.md §4, "several shelters serving one location") —
 // a plain slate rather than the bus station's purple, since a group isn't
 // a real bus station, just a decluttering convenience over an OSM
@@ -258,9 +340,14 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
   const playerStops = await window.playerStops.list();
   const playerStopBusLegal = new Map<number, boolean>();
   for (const p of playerStops) {
-    stops.push({ lon: p.lon, lat: p.lat, kind: "bus_stop", name: null, osmId: p.osmId });
+    stops.push({ lon: p.lon, lat: p.lat, kind: "bus_stop", name: null, osmId: p.osmId, depotId: p.depotId ?? undefined });
     playerStopBusLegal.set(p.osmId, p.busLegal);
   }
+  // For a depot's own staff-route stop's display name (schema v57->v58)
+  // — fetched once here, same "built once at mount, not re-fetched on a
+  // timer" convention every other lookup in this function already
+  // follows (nameOverrides, transitLinkOfStop, etc.).
+  const depots = await window.depots.list();
 
   const railwayRes = await fetch("http://127.0.0.1:38271/railway.bin");
   const railwayBytes = new Uint8Array(await railwayRes.arrayBuffer());
@@ -288,6 +375,37 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
     return targetId === undefined ? null : (transitTargets.get(targetId)?.color ?? null);
   };
 
+  // Player-created bus stations (see player_bus_stations' own SCHEMA
+  // comment) — fetched and merged into `stops` here, before `stations`
+  // below is built, so a station the player made in an earlier session
+  // renders exactly like a real OSM one from this point on, with no
+  // special-casing anywhere downstream. Position is the live centroid of
+  // its current members (same model as a stop_group's own, recomputed
+  // below at `recomputeGroupCentroid`'s call sites) — resolved here against
+  // `stops` as it stands so far (real OSM stops plus player_stops, both
+  // already pushed above), since a station's own members are always plain
+  // stops, never another station. A station with zero members (every stop
+  // that was ever assigned to it has since been moved off) is left out
+  // entirely rather than rendered at a stale position — it reappears the
+  // moment a stop is assigned to it again, same "it mints an id, nothing
+  // more" model stop_groups already uses.
+  const playerBusStationIds = await window.playerBusStations.list();
+  const manualStationAssignments = await window.overrides.list<number | null>("stop", "bus_station");
+  if (playerBusStationIds.length > 0) {
+    const stopsSoFarById = new Map(stops.map((s) => [s.osmId, s]));
+    for (const id of playerBusStationIds) {
+      const stationOsmId = playerStationOsmId(id);
+      const members = manualStationAssignments
+        .filter(({ value }) => value === stationOsmId)
+        .map(({ osmId }) => stopsSoFarById.get(osmId))
+        .filter((s): s is DecodedStop => s !== undefined);
+      if (members.length === 0) continue;
+      const lon = members.reduce((sum, s) => sum + s.lon, 0) / members.length;
+      const lat = members.reduce((sum, s) => sum + s.lat, 0) / members.length;
+      stops.push({ lon, lat, kind: "bus_station", name: null, osmId: stationOsmId });
+    }
+  }
+
   const stationOsmIds = new Set(
     stops.filter((s) => s.kind === "bus_station").map((s) => s.osmId),
   );
@@ -308,8 +426,10 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       if (id !== stationId) stationOfStop.set(id, stationId);
     }
   }
-  const manualAssignments = await window.overrides.list<number | null>("stop", "bus_station");
-  for (const { osmId, value } of manualAssignments) {
+  // Reuses the fetch already made above (resolving player stations' own
+  // centroids) rather than asking the override layer for the same list
+  // twice.
+  for (const { osmId, value } of manualStationAssignments) {
     if (value === null) stationOfStop.delete(osmId);
     else stationOfStop.set(osmId, value);
   }
@@ -382,8 +502,13 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
   }
   usedStopIds = await computeUsedStopIds();
 
+  const depotNameFor = (s: DecodedStop): string | null =>
+    s.depotId === undefined ? null : (depots.find((d) => d.id === s.depotId)?.name ?? null);
   const displayName = (s: DecodedStop): string =>
-    nameOverrides.get(s.osmId) ?? s.name ?? (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
+    nameOverrides.get(s.osmId) ??
+    depotNameFor(s) ??
+    s.name ??
+    (s.kind === "bus_station" ? "Bus station" : s.kind === "platform" ? "Platform" : "Bus stop");
   const groupDisplayName = (g: StopGroup): string => nameOverrides.get(g.osmId) ?? "Grouped stop";
 
   busStationsState.length = 0;
@@ -412,6 +537,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       partOfStation: stationOfStop.has(s.osmId),
       partOfGroup: groupOfStop.has(s.osmId),
       linkedTransitColor: linkedTransitColorOfStop(s.osmId),
+      crowdingTier: crowdingTierOf(s.osmId),
     },
     geometry: { type: "Point", coordinates: [s.lon, s.lat] },
   });
@@ -424,9 +550,15 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
 
   const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
+  // A depot's own staff-route stop (schema v57->v58) is only visible/
+  // clickable while actually drawing a "staff" route — routeDrawState's
+  // own shape, mirrored by route-draw.ts's setDrawing at the moment
+  // drawing starts/stops (see routeDrawState's own comment for why
+  // nothing else needs to refresh this).
   const visibleStops = () =>
     stops.filter((s) => {
       if (s.kind === "bus_station") return false;
+      if (s.depotId !== undefined && !(routeDrawState.isDrawing && routeDrawState.draftRouteType === "staff")) return false;
       if (hidden.has(s.osmId)) return false;
       const stationId = stationOfStop.get(s.osmId);
       if (stationId !== undefined) return alwaysShow.get(stationId) === true;
@@ -565,12 +697,40 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         features: visibleGroups().map(groupToFeature),
       });
     };
+    // Plan #11 (stop crowding) — nothing else in this file refreshes on a
+    // timer (every other refreshStopsSource call above is event-driven,
+    // triggered by a real player action), but a stop's own crowding tier
+    // changes purely with game time/passenger generation, with no
+    // discrete "action" to hook a refresh onto. 30s matches
+    // vehicle-simulation.ts's own STOP_CROWDING_SAMPLE_INTERVAL_MS — no
+    // point polling faster than the underlying baseline itself updates.
+    setInterval(refreshStopsSource, 30_000);
 
     stopsPanelState.refreshUsedByService = () => {
       void (async () => {
         usedStopIds = await computeUsedStopIds();
         refreshStopsSource();
       })();
+    };
+    stopsPanelState.refreshDepotStopVisibility = refreshStopsSource;
+    // depot-placement.ts creates/removes a depot's own staff-route stop
+    // from its own popup, not from a map click here — so unlike the
+    // "Place stop" flow right below (which pushes into `stops`/
+    // `stopsById` itself, already in this same scope), an external
+    // caller needs this exposed instead of duplicating that logic.
+    stopsPanelState.registerDepotStop = (stop) => {
+      const newStop: DecodedStop = { lon: stop.lon, lat: stop.lat, kind: "bus_stop", name: null, osmId: stop.osmId, depotId: stop.depotId ?? undefined };
+      stops.push(newStop);
+      stopsById.set(stop.osmId, newStop);
+      playerStopBusLegal.set(stop.osmId, stop.busLegal);
+      refreshStopsSource();
+    };
+    stopsPanelState.unregisterDepotStop = (osmId) => {
+      const index = stops.findIndex((s) => s.osmId === osmId);
+      if (index !== -1) stops.splice(index, 1);
+      stopsById.delete(osmId);
+      playerStopBusLegal.delete(osmId);
+      refreshStopsSource();
     };
 
     const refreshStandsSource = () => {
@@ -788,10 +948,23 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       // clicked into, with no way to see a variation's own full grid
       // without leaving and re-clicking a different stop's own expand
       // button.
+      // A mirroring component (2026-11-15) can reference any route's
+      // timetable, not just a family member — built once from the full
+      // lists this modal was already given.
+      const resolveReference = makeTimetableReferenceResolver(allRoutes, allTimetables);
       const rootId = route.parentRouteId ?? route.id;
       const family = allRoutes
         .filter((r) => r.id === rootId || r.parentRouteId === rootId)
         .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+      // Same collision-aware colours route-timetable-panel.ts's own family
+      // tabs use (T164's resolveFamilyDisplayColours) — live bug report,
+      // 2026-11-08: "it's only showing 2 colours in the timetable even
+      // though I have 3 variations." This full-screen grid's own header
+      // row (below) used to read each member's raw stored `colour`
+      // directly, so a real collision (e.g. two minor variations both
+      // following the same parent colour, T164) silently showed fewer
+      // distinct colours than intended.
+      const familyDisplayColours = resolveFamilyDisplayColours(family, family);
 
       // "Show excluded services" (user request) — off by default (today's
       // only past behaviour: an excluded departure just isn't there), on
@@ -874,7 +1047,17 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         masthead.appendChild(closeButton);
         panel.appendChild(masthead);
 
-        const dayTypeOrder = Object.keys(DAY_TYPE_SHORT_LABELS) as DayType[];
+        // Whatever distinct day types this family's routes actually have a
+        // timetable for (DESIGN.md §7: any number of day-type components,
+        // confirmed 2026-11-07) — not a fixed 3, and not every timetable in
+        // the save, just this family's own routes. Ascending by mask value
+        // for a stable order (Mon-Fri's own mask sorts before Saturday's,
+        // which sorts before Sunday's, matching the old fixed order for
+        // the 3 original presets).
+        const familyRouteIds = new Set(family.map((m) => m.id));
+        const dayTypeOrder = [
+          ...new Set(allTimetables.filter((t) => familyRouteIds.has(t.routeId)).map((t) => t.weekdayMask)),
+        ].sort((a, b) => a - b);
 
         // Every family member's own direction segment(s), tagged with
         // which route they belong to — a simple route (no terminus loop,
@@ -935,10 +1118,9 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
 
         for (const [pageIndex, pageLabel] of pageLabels.entries()) {
           // Every day type in one scrollable view (user feedback: having to
-          // reopen the modal per day type was the wrong shape) — Mon-Fri/
-          // Sat/Sun in that fixed order (DAY_TYPE_SHORT_LABELS' own key
-          // order), not whichever order the timetables happened to be
-          // fetched in.
+          // reopen the modal per day type was the wrong shape) — ascending
+          // by weekday mask (dayTypeOrder above), not whichever order the
+          // timetables happened to be fetched in.
           const scrollWrap = document.createElement("div");
           scrollWrap.style.overflow = "auto";
           scrollWrap.style.flex = "1";
@@ -949,7 +1131,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
 
           const segmentsForThisPage = allSegments.filter((s) => s.label === pageLabel);
 
-          for (const dayType of dayTypeOrder) {
+          for (const weekdayMask of dayTypeOrder) {
             // Every contributing family member's own grid for this exact
             // (direction, day type) — only members that actually have a
             // timetable for this day type at all take part; a family
@@ -964,15 +1146,15 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
               // one, falling back to 'both' where no leg-specific
               // component exists.
               const memberTimetable =
-                allTimetables.find((t) => t.routeId === seg.routeId && t.dayType === dayType && t.direction === seg.label) ??
-                allTimetables.find((t) => t.routeId === seg.routeId && t.dayType === dayType && t.direction === "both");
+                allTimetables.find((t) => t.routeId === seg.routeId && t.weekdayMask === weekdayMask && t.direction === seg.label) ??
+                allTimetables.find((t) => t.routeId === seg.routeId && t.weekdayMask === weekdayMask && t.direction === "both");
               if (!memberRoute || !memberTimetable) continue;
-              const fullGrid = buildRouteTimetableGrid(memberRoute, memberTimetable, { includeExcluded: showExcludedServices });
+              const fullGrid = buildRouteTimetableGrid(memberRoute, memberTimetable, { includeExcluded: showExcludedServices }, resolveReference);
               const slicedGrid = sliceGridToPointRange(fullGrid, seg.fromPointIndex, seg.toPointIndex);
               members.push({
                 routeId: memberRoute.id,
                 routeNumber: memberRoute.number,
-                routeColour: memberRoute.colour,
+                routeColour: familyDisplayColours.get(memberRoute.id) ?? memberRoute.colour,
                 grid: slicedGrid,
                 isMinorVariation: memberRoute.isMinorVariation,
               });
@@ -997,7 +1179,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
             dayTypeBand.style.position = "sticky";
             dayTypeBand.style.top = "0";
             dayTypeBand.style.zIndex = "2";
-            dayTypeBand.textContent = DAY_TYPE_SHORT_LABELS[dayType].toUpperCase();
+            dayTypeBand.textContent = describeWeekdayMask(weekdayMask).toUpperCase();
             scrollWrap.appendChild(dayTypeBand);
 
             // Shared with the side-panel family comparison
@@ -1072,7 +1254,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
         }
         row.appendChild(
           document.createTextNode(
-            `${DAY_TYPE_SHORT_LABELS[svc.dayType]}: ${svc.departureClockMinutes.map(formatClockMinutes).join(", ")}`,
+            `${describeWeekdayMask(svc.weekdayMask)}: ${svc.departureClockMinutes.map(formatClockMinutes).join(", ")}`,
           ),
         );
 
@@ -1114,6 +1296,268 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       listWrap.style.marginTop = "4px";
       listWrap.appendChild(buildServicesList(services, routes, timetables));
       section.appendChild(listWrap);
+      return section;
+    };
+
+    // Route advertising (OPEN-ITEMS.md "Phase 5/9 redesign: stop
+    // ownership dropped...", confirmed 2026-11-16) — player-bought only,
+    // never council-triggered (see route-advertising.mts's own header
+    // for the full real design/figures). Lazily bills any months fallen
+    // due every time this section is built, same "bills on screen open"
+    // convention lease billing already established (fleet-list-panel.ts)
+    // — not on a central tick.
+    const buildRouteAdvertisingSection = async (osmId: number): Promise<HTMLElement> => {
+      const section = document.createElement("div");
+      section.style.marginTop = "10px";
+      section.style.paddingTop = "10px";
+      section.style.borderTop = "1px solid var(--border)";
+      const heading = document.createElement("div");
+      heading.className = "label-muted";
+      heading.textContent = "Route advertising";
+      section.appendChild(heading);
+
+      const [routes, liveries, depotGroups, bookings] = await Promise.all([
+        window.routes.list(),
+        window.liveries.list(),
+        window.depotGroups.list(),
+        window.routeAdvertising.listForStop(osmId),
+      ]);
+      const depotGroupsById = new Map(depotGroups.map((g) => [g.id, g]));
+      const today = todayGameDayForAdvertising();
+
+      // Lazy monthly billing for every existing booking here, live ones
+      // only (a pending booking inside its own 14-day delay has nothing
+      // to bill yet).
+      for (const booking of bookings) {
+        if (!isRouteAdvertisingLive(booking.liveFromGameDay, today)) continue;
+        const alreadyBilled = await window.routeAdvertising.listGeneratedMonths(booking.id);
+        const due = chargeableRouteAdvertisingMonthKeys(booking.liveFromGameDay, today, alreadyBilled);
+        if (due.length === 0) continue;
+        const label = booking.mode === "specific_route" ? `route ${routes.find((r) => r.id === booking.routeId)?.number ?? booking.routeId}` : `${booking.operatorName} long-distance`;
+        for (const monthKey of due) {
+          void window.finance.record(-ROUTE_ADVERTISING_MONTHLY_FEE_GBP_PENCE, "Marketing", booking.depotGroupId, `Route advertising (${label}) — ${monthKey}`, today);
+        }
+        void window.routeAdvertising.recordMonthsBilled(booking.id, due);
+      }
+
+      const list = document.createElement("div");
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "6px";
+      list.style.fontSize = "11px";
+
+      if (bookings.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.color = "var(--text-muted)";
+        empty.textContent = "No advertising bought here yet.";
+        list.appendChild(empty);
+      } else {
+        for (const booking of bookings) {
+          const row = document.createElement("div");
+          const live = isRouteAdvertisingLive(booking.liveFromGameDay, today);
+          const content = booking.mode === "specific_route" ? `Route ${routes.find((r) => r.id === booking.routeId)?.number ?? booking.routeId}` : `${booking.operatorName} (long-distance)`;
+          row.textContent = live ? `${content} — live` : `${content} — live from day ${booking.liveFromGameDay} (today: day ${today})`;
+          const cancelButton = document.createElement("button");
+          cancelButton.type = "button";
+          cancelButton.className = "btn btn-icon";
+          cancelButton.title = "Cancel this advertising";
+          cancelButton.textContent = "×";
+          cancelButton.style.marginLeft = "6px";
+          cancelButton.addEventListener("click", () => {
+            void window.routeAdvertising.delete(booking.id).then(() => refreshAdvertisingSection());
+          });
+          row.appendChild(cancelButton);
+          list.appendChild(row);
+        }
+      }
+      section.appendChild(list);
+
+      // Purchase form — always offered regardless of existing bookings
+      // (the real world allows more than one advert at a busy stop; this
+      // game doesn't cap it either, since nothing in the settled design
+      // said to).
+      const formRow = document.createElement("div");
+      formRow.style.marginTop = "6px";
+      formRow.style.display = "flex";
+      formRow.style.flexDirection = "column";
+      formRow.style.gap = "4px";
+
+      const groupLabels = depotGroups.map((g) => g.name);
+      let chosenGroupId = depotGroups[0]?.id ?? null;
+      if (groupLabels.length > 0) {
+        const groupDropdown = createDropdown(groupLabels, groupLabels[0], (label) => {
+          chosenGroupId = depotGroups.find((g) => g.name === label)?.id ?? chosenGroupId;
+        });
+        groupDropdown.el.style.width = "100%";
+        formRow.appendChild(groupDropdown.el);
+      }
+
+      const longDistanceOperators = longDistanceOperatorsAtStop(
+        osmId,
+        routes.map((r) => ({ id: r.id, number: r.number, routeType: r.routeType, points: r.points, depotGroupId: r.depotGroupId })),
+        liveries,
+        depotGroupsById,
+      );
+
+      const modeLabels = longDistanceOperators.length > 0 ? ["Specific route", "Long-distance (generic)"] : ["Specific route"];
+      let chosenMode: RouteAdvertisingMode = "specific_route";
+      let chosenRouteId: number | null = routes[0]?.id ?? null;
+      let chosenOperator: string | null = longDistanceOperators[0] ?? null;
+
+      const routeLabels = routes.map((r) => r.number);
+      const routeDropdown = routeLabels.length > 0 ? createDropdown(routeLabels, routeLabels[0], (label) => {
+        chosenRouteId = routes.find((r) => r.number === label)?.id ?? chosenRouteId;
+      }) : null;
+      const operatorDropdown =
+        longDistanceOperators.length > 0
+          ? createDropdown(longDistanceOperators, longDistanceOperators[0], (label) => {
+              chosenOperator = label;
+            })
+          : null;
+
+      if (modeLabels.length > 1) {
+        const modeDropdown = createDropdown(modeLabels, modeLabels[0], (label) => {
+          chosenMode = label === "Specific route" ? "specific_route" : "long_distance";
+          if (routeDropdown) routeDropdown.el.style.display = chosenMode === "specific_route" ? "" : "none";
+          if (operatorDropdown) operatorDropdown.el.style.display = chosenMode === "long_distance" ? "" : "none";
+        });
+        modeDropdown.el.style.width = "100%";
+        formRow.appendChild(modeDropdown.el);
+      }
+      if (routeDropdown) {
+        routeDropdown.el.style.width = "100%";
+        formRow.appendChild(routeDropdown.el);
+      }
+      if (operatorDropdown) {
+        operatorDropdown.el.style.width = "100%";
+        operatorDropdown.el.style.display = "none";
+        formRow.appendChild(operatorDropdown.el);
+      }
+
+      const costNote = document.createElement("div");
+      costNote.style.color = "var(--text-muted)";
+      costNote.textContent = `£${(ROUTE_ADVERTISING_SETUP_FEE_GBP_PENCE / 100).toFixed(0)} setup + £${(ROUTE_ADVERTISING_MONTHLY_FEE_GBP_PENCE / 100).toFixed(0)}/month, live in 14 days.`;
+      formRow.appendChild(costNote);
+
+      const buyButton = document.createElement("button");
+      buyButton.type = "button";
+      buyButton.className = "btn";
+      buyButton.textContent = "Buy route advertising";
+      // Real disable condition: nothing to bill to, or (in the only mode
+      // actually offered when there's no real long-distance route here)
+      // no route at all exists yet to advertise.
+      buyButton.disabled = depotGroups.length === 0 || (chosenMode === "specific_route" && routes.length === 0);
+      buyButton.addEventListener("click", () => {
+        if (chosenGroupId === null) return;
+        const bookedGameDay = todayGameDayForAdvertising();
+        const liveFromGameDay = routeAdvertisingLiveFromGameDay(bookedGameDay);
+        const routeId = chosenMode === "specific_route" ? chosenRouteId : null;
+        const operatorName = chosenMode === "long_distance" ? chosenOperator : null;
+        void window.routeAdvertising.create(osmId, chosenGroupId, chosenMode, routeId, operatorName, bookedGameDay, liveFromGameDay).then(() => {
+          void window.finance.record(-ROUTE_ADVERTISING_SETUP_FEE_GBP_PENCE, "Marketing", chosenGroupId!, "Route advertising — setup fee", bookedGameDay);
+          void refreshAdvertisingSection();
+        });
+      });
+      formRow.appendChild(buyButton);
+      section.appendChild(formRow);
+
+      const refreshAdvertisingSection = async () => {
+        const fresh = await buildRouteAdvertisingSection(osmId);
+        section.replaceWith(fresh);
+      };
+
+      return section;
+    };
+
+    const STOP_UPGRADE_LABELS: Record<StopUpgradeType, string> = { seating: "Seating", lighting: "Lighting", shelter: "Shelter" };
+
+    // Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9 redesign:
+    // stop ownership dropped...", 2026-11-16). Shelter/seating/lighting
+    // are council-funded in the public interest (unlike route
+    // advertising above, which only benefits the paying operator) — they
+    // install themselves for free once a stop's own busy-hour bus/
+    // boarding counts cross a real threshold (vehicle-simulation.ts's own
+    // 30s refresh checks this). This section just shows the real current
+    // state and lets the player pay to have one installed early.
+    const buildStopUpgradesSection = async (osmId: number): Promise<HTMLElement> => {
+      const section = document.createElement("div");
+      section.style.marginTop = "10px";
+      section.style.paddingTop = "10px";
+      section.style.borderTop = "1px solid var(--border)";
+      const heading = document.createElement("div");
+      heading.className = "label-muted";
+      heading.textContent = "Stop upgrades";
+      section.appendChild(heading);
+
+      const sim = (
+        window as unknown as {
+          __vehicleSim?: {
+            busyHourUsageForStop?: (id: number) => { boardings: number; buses: number };
+            stopUpgradeState?: (id: number) => { hasSeating: boolean; hasLighting: boolean; hasShelter: boolean } | null;
+            accelerateStopUpgrade?: (id: number, type: StopUpgradeType, depotGroupId: number) => Promise<unknown>;
+          };
+        }
+      ).__vehicleSim;
+      const usage = sim?.busyHourUsageForStop?.(osmId) ?? { boardings: 0, buses: 0 };
+      const state = sim?.stopUpgradeState?.(osmId) ?? null;
+
+      const depotGroups = await window.depotGroups.list();
+      let chosenGroupId = depotGroups[0]?.id ?? null;
+      if (depotGroups.length > 1) {
+        const groupLabels = depotGroups.map((g) => g.name);
+        const groupDropdown = createDropdown(groupLabels, groupLabels[0], (label) => {
+          chosenGroupId = depotGroups.find((g) => g.name === label)?.id ?? chosenGroupId;
+        });
+        groupDropdown.el.style.width = "100%";
+        groupDropdown.el.style.marginBottom = "4px";
+        section.appendChild(groupDropdown.el);
+      }
+
+      const list = document.createElement("div");
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "6px";
+      list.style.fontSize = "11px";
+
+      for (const upgradeType of ["seating", "lighting", "shelter"] as const) {
+        const has = upgradeType === "seating" ? state?.hasSeating : upgradeType === "lighting" ? state?.hasLighting : state?.hasShelter;
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.gap = "6px";
+        const label = document.createElement("span");
+        if (has) {
+          label.textContent = `${STOP_UPGRADE_LABELS[upgradeType]} — installed`;
+          row.appendChild(label);
+        } else {
+          const threshold = UPGRADE_THRESHOLDS[upgradeType];
+          const triggered = upgradeTriggered(usage, upgradeType);
+          const cost = accelerateCostGBPPence(usage, upgradeType);
+          label.textContent = triggered
+            ? `${STOP_UPGRADE_LABELS[upgradeType]} — due any moment (threshold reached)`
+            : `${STOP_UPGRADE_LABELS[upgradeType]} — ${usage.boardings}/${threshold.boardings} boardings, ${usage.buses}/${threshold.buses} buses`;
+          row.appendChild(label);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn btn-small";
+          button.textContent = triggered ? "Install (free)" : `Pay £${(cost / 100).toFixed(2)} now`;
+          button.disabled = chosenGroupId === null;
+          button.addEventListener("click", () => {
+            if (chosenGroupId === null) return;
+            void sim?.accelerateStopUpgrade?.(osmId, upgradeType, chosenGroupId).then(() => void refreshUpgradesSection());
+          });
+          row.appendChild(button);
+        }
+        list.appendChild(row);
+      }
+      section.appendChild(list);
+
+      const refreshUpgradesSection = async () => {
+        const fresh = await buildStopUpgradesSection(osmId);
+        section.replaceWith(fresh);
+      };
+
       return section;
     };
 
@@ -1205,6 +1649,17 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       label.appendChild(checkbox);
       label.appendChild(document.createTextNode("Always show stops here"));
       container.appendChild(label);
+
+      // Live request, 2026-11-08: "bus stations and airports should always
+      // be a timing point with no option to turn it off" — a note, not a
+      // checkbox, since it's unconditional for every bus station (route-
+      // panel.ts's own isTimingPoint calculation checks the stop's kind
+      // directly via stopsPanelState.kindFor).
+      const timingNote = document.createElement("div");
+      timingNote.className = "label-muted";
+      timingNote.style.marginBottom = "6px";
+      timingNote.textContent = "Always a timing point — bus stations always are, for every route.";
+      container.appendChild(timingNote);
 
       container.appendChild(buildTransitLinkSection(osmId, "bus_station", coords));
 
@@ -1653,6 +2108,58 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       connectionLabel.appendChild(document.createTextNode("Connection stop"));
       container.appendChild(connectionLabel);
 
+      // Stop-level timing point (DESIGN.md §4: "Timing point — set on the
+      // stop... "; live request, 2026-11-08: "bus stops should be able to
+      // be set as timing points for when multiple routes always share a
+      // timing point") — unlike a route's own timing_point_indexes, this
+      // is a property of the STOP, read by route-panel.ts's own per-point
+      // isTimingPoint calculation for EVERY route calling here, with no
+      // per-route way to turn it back off (same "no option to disable"
+      // treatment the user asked for airports/bus stations below — kept
+      // consistent rather than building a route-can-override-off tri-state
+      // nobody asked for).
+      const alwaysTimingLabel = document.createElement("label");
+      alwaysTimingLabel.style.display = "flex";
+      alwaysTimingLabel.style.alignItems = "center";
+      alwaysTimingLabel.style.gap = "6px";
+      alwaysTimingLabel.style.cursor = "pointer";
+      alwaysTimingLabel.style.marginBottom = "6px";
+      const alwaysTimingCheckbox = document.createElement("input");
+      alwaysTimingCheckbox.type = "checkbox";
+      alwaysTimingCheckbox.checked = (await window.overrides.get<boolean>("stop", osmId, "always_timing_point")) ?? false;
+      alwaysTimingCheckbox.addEventListener("change", () => {
+        if (alwaysTimingCheckbox.checked) void window.overrides.set("stop", osmId, "always_timing_point", true);
+        else void window.overrides.reset("stop", osmId, "always_timing_point");
+      });
+      alwaysTimingLabel.appendChild(alwaysTimingCheckbox);
+      alwaysTimingLabel.appendChild(document.createTextNode("Always a timing point (every route calling here)"));
+      container.appendChild(alwaysTimingLabel);
+
+      // Airport (live request, 2026-11-08: "bus stations and airports
+      // should always be a timing point with no option to turn it off") —
+      // there's no real airport-linking feature yet (DESIGN.md §4's own
+      // category, not built — see this module's BUS_STATION_COLOR-area
+      // comment), so this is a plain manual flag, confirmed with the user
+      // as the right scope for now rather than waiting on that bigger
+      // feature. A flagged stop is always a timing point, same as a bus
+      // station, with no per-route way to disable it.
+      const airportLabel = document.createElement("label");
+      airportLabel.style.display = "flex";
+      airportLabel.style.alignItems = "center";
+      airportLabel.style.gap = "6px";
+      airportLabel.style.cursor = "pointer";
+      airportLabel.style.marginBottom = "6px";
+      const airportCheckbox = document.createElement("input");
+      airportCheckbox.type = "checkbox";
+      airportCheckbox.checked = (await window.overrides.get<boolean>("stop", osmId, "is_airport")) ?? false;
+      airportCheckbox.addEventListener("change", () => {
+        if (airportCheckbox.checked) void window.overrides.set("stop", osmId, "is_airport", true);
+        else void window.overrides.reset("stop", osmId, "is_airport");
+      });
+      airportLabel.appendChild(airportCheckbox);
+      airportLabel.appendChild(document.createTextNode("Airport (always a timing point, no option to disable)"));
+      container.appendChild(airportLabel);
+
       // Long stop (2026-09-28 batch): lets more than one bus stop here at
       // once, capacity up to 3, with no ordered-departure queueing — a bus
       // behind can leave even while the one ahead is still stopped. Same
@@ -1703,14 +2210,50 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       });
 
       const NONE_LABEL = "(not part of a station)";
+      // Live request, 2026-11-08: "group bus stops into a bus station but
+      // without having to place one" — a real bus station was otherwise
+      // 100% OSM-derived with no player-creation path at all (unlike a
+      // stop group just below, which has always been player-only). Mirrors
+      // the group dropdown's own "+ Create new group here" sub-form as
+      // closely as possible: same interaction shape, same immediate-link
+      // behaviour (the stop whose popup this is gets linked to the station
+      // the moment it's created, exactly as a new group's creator does).
+      const CREATE_STATION_LABEL = "+ Create new station here";
       const labelToStationId = new Map<string, number | null>([[NONE_LABEL, null]]);
+      const stationLabelOptions = [NONE_LABEL];
       for (const { st, dist } of nearestStations) {
-        labelToStationId.set(`${displayName(st)} (${Math.round(dist)} m)`, st.osmId);
+        const label = `${displayName(st)} (${Math.round(dist)} m)`;
+        labelToStationId.set(label, st.osmId);
+        stationLabelOptions.push(label);
       }
+      stationLabelOptions.push(CREATE_STATION_LABEL);
       const currentLabel =
         [...labelToStationId.entries()].find(([, id]) => id === currentId)?.[0] ?? NONE_LABEL;
 
-      const dropdown = createDropdown([...labelToStationId.keys()], currentLabel, (chosenLabel) => {
+      const newStationRow = document.createElement("div");
+      newStationRow.style.display = "none";
+      newStationRow.style.gap = "6px";
+      newStationRow.style.marginTop = "4px";
+      const newStationInput = document.createElement("input");
+      newStationInput.type = "text";
+      newStationInput.className = "field";
+      newStationInput.style.flex = "1";
+      newStationInput.placeholder = "Station name";
+      const newStationButton = document.createElement("button");
+      newStationButton.type = "button";
+      newStationButton.className = "btn";
+      newStationButton.textContent = "Create";
+      newStationRow.appendChild(newStationInput);
+      newStationRow.appendChild(newStationButton);
+
+      const dropdown = createDropdown(stationLabelOptions, currentLabel, (chosenLabel) => {
+        if (chosenLabel === CREATE_STATION_LABEL) {
+          newStationRow.style.display = "flex";
+          newStationInput.value = "";
+          newStationInput.focus();
+          return;
+        }
+        newStationRow.style.display = "none";
         const value = labelToStationId.get(chosenLabel) ?? null;
         if (value === null) stationOfStop.delete(osmId);
         else stationOfStop.set(osmId, value);
@@ -1721,6 +2264,45 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       });
       dropdown.el.style.width = "100%";
       container.appendChild(dropdown.el);
+      container.appendChild(newStationRow);
+
+      const commitNewStation = () => {
+        const name = newStationInput.value.trim();
+        if (name === "") return;
+        void (async () => {
+          const created = await window.playerBusStations.create();
+          const stationOsmId = playerStationOsmId(created.id);
+          const newStation: DecodedStop = { lon: coords[0], lat: coords[1], kind: "bus_station", name: null, osmId: stationOsmId };
+          stops.push(newStation);
+          stations.push(newStation);
+          stopsById.set(stationOsmId, newStation);
+          void window.overrides.set("bus_station", stationOsmId, "name", name);
+          nameOverrides.set(stationOsmId, name);
+          stationOfStop.set(osmId, stationOsmId);
+          void window.overrides.set("stop", osmId, "bus_station", stationOsmId);
+          busStationsState.push({ osmId: stationOsmId, name, lon: coords[0], lat: coords[1] });
+          busStationsState.sort((a, b) => a.name.localeCompare(b.name));
+          const label = `${name} (0 m)`;
+          labelToStationId.set(label, stationOsmId);
+          // Mutating the same array `createDropdown` already closed over —
+          // its menu re-renders from this array's live contents on every
+          // open() (see the group dropdown's own identical comment below).
+          stationLabelOptions.splice(stationLabelOptions.length - 1, 0, label);
+          rebuildStandsOfStation();
+          refreshStopsSource();
+          refreshStandsSource();
+          dropdown.value = label;
+          newStationRow.style.display = "none";
+        })();
+      };
+      newStationButton.addEventListener("click", commitNewStation);
+      newStationInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commitNewStation();
+        else if (e.key === "Escape") {
+          newStationRow.style.display = "none";
+          dropdown.value = currentLabel;
+        }
+      });
 
       // Grouped stops (DESIGN.md §4) — player-created only (2026-09-27),
       // same manual-only model as the transit link below: pick an existing
@@ -1859,6 +2441,15 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       pickupDropoffDropdown.el.style.width = "100%";
       container.appendChild(pickupDropoffDropdown.el);
       container.appendChild(await buildCallingServicesSection(osmId));
+      container.appendChild(await buildRouteAdvertisingSection(osmId));
+
+      // Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9
+      // redesign...", 2026-11-16) — real OSM stops only (osmId >= 0); a
+      // player-placed staff stop (negative osmId) carries no real
+      // passenger demand of its own, so the whole mechanic doesn't apply.
+      if (osmId >= 0) {
+        container.appendChild(await buildStopUpgradesSection(osmId));
+      }
 
       // Only a player-placed stop can be deleted — a real OSM stop isn't
       // the player's own to remove (DESIGN.md's own read-only-imported-
@@ -1925,6 +2516,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       const stop = stopsById.get(osmId);
       return stop ? displayName(stop) : `Stop ${osmId}`;
     };
+    stopsPanelState.kindFor = (osmId: number) => stopsById.get(osmId)?.kind ?? null;
 
     // Hidden-stops panel: rename and hide now live on each stop's own
     // popup (buildTitleRow above) — this bottom panel is only for finding
@@ -2119,7 +2711,7 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       bus_station: stops.filter((s) => s.kind === "bus_station").length,
     },
     stationsWithStands: standsOfStation.size,
-    manualAssignmentCount: manualAssignments.length,
+    manualAssignmentCount: manualStationAssignments.length,
     alwaysShowStationCount: [...alwaysShow.values()].filter(Boolean).length,
     sampleStationsWithStands: [...standsOfStation.entries()].slice(0, 5).map(([osmId, standIds]) => {
       const station = stopsById.get(osmId);

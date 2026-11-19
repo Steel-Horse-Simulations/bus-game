@@ -9,37 +9,12 @@
 /// Phase 1 only needs classified geometry for Phase 4 to consume later.
 /// Multipolygon-relation land use/POIs are a known, documented gap, same as
 /// the equivalent simplification in `stops.rs`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
-pub enum DemandCategory {
-    Housing,
-    Retail,
-    Schools,
-    Workplaces,
-}
-
-#[derive(bincode::Encode, bincode::Decode)]
-pub struct LandUseZone {
-    pub osm_id: i64,
-    pub category: DemandCategory,
-    pub centroid_lon_e7: i32,
-    pub centroid_lat_e7: i32,
-    pub name: Option<String>,
-}
-
-#[derive(bincode::Encode, bincode::Decode)]
-pub struct Poi {
-    pub osm_id: i64,
-    pub category: DemandCategory,
-    pub lon_e7: i32,
-    pub lat_e7: i32,
-    pub name: Option<String>,
-}
-
-#[derive(bincode::Encode, bincode::Decode)]
-pub struct LandUseData {
-    pub zones: Vec<LandUseZone>,
-    pub pois: Vec<Poi>,
-}
+///
+/// The data SHAPE (this re-export) moved to `game_data` 2026-11-15 so
+/// `game-wasm` can decode it too, the same split `game_data::CoastlineData`
+/// already uses — only the shape moved, the real OSM tag classification
+/// below stays here.
+pub use game_data::{DemandCategory, LandUseData, LandUseZone, Poi};
 
 pub fn save(data: &LandUseData, path: &str) -> std::io::Result<usize> {
     use std::io::Write;

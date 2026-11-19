@@ -17,12 +17,23 @@ for (const [path, url] of Object.entries(badgeModules)) {
   BADGE_URLS_BY_NAME[name] = url;
 }
 
+// "Citylink/West Coast Motors" is the one real livery name with a literal
+// slash in it, which can't be a filename — its real badge PNG is named
+// with a dash in its place ("Citylink-West Coast Motors.png", confirmed
+// directly against the real file). A targeted one-line fallback rather
+// than a bigger id-based lookup system, since this is the only livery
+// name that needs it: try the literal name first, then the slash->dash
+// transform.
+function withSlashDashFallback(liveryName: string): string {
+  return liveryName.includes("/") ? liveryName.replace(/\//g, "-") : liveryName;
+}
+
 export function liveryBadgeUrl(liveryName: string): string | null {
-  return BADGE_URLS_BY_NAME[liveryName] ?? null;
+  return BADGE_URLS_BY_NAME[liveryName] ?? BADGE_URLS_BY_NAME[withSlashDashFallback(liveryName)] ?? null;
 }
 
 export function hasLiveryBadge(liveryName: string): boolean {
-  return liveryName in BADGE_URLS_BY_NAME;
+  return liveryName in BADGE_URLS_BY_NAME || withSlashDashFallback(liveryName) in BADGE_URLS_BY_NAME;
 }
 
 // Every livery name with real badge art, for anything that needs to

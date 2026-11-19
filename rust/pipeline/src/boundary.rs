@@ -1,8 +1,28 @@
 use std::path::{Path, PathBuf};
 
+// Moved here from road_graph.rs (T190, 2026-11-14) so a lightweight,
+// no-OSM-dependency consumer (src/bin/scotland_boundary.rs) can reuse the
+// exact same degree->fixed-point conversion every other artefact uses,
+// without pulling in road_graph.rs's own heavy OSM-parsing dependencies
+// just for this one-line formula. road_graph.rs now imports it from here
+// instead of defining its own copy.
+pub fn to_e7(deg: f64) -> i32 {
+    (deg * 1e7).round() as i32
+}
+
 /// A single outer ring from an Osmosis .poly file, as (lon, lat) pairs.
 pub struct Ring {
     points: Vec<(f64, f64)>,
+}
+
+impl Ring {
+    /// Read-only access to this ring's raw (lon, lat) points — added
+    /// (T190, 2026-11-14) for `src/bin/scotland_boundary.rs`, which needs
+    /// to convert them to the `i32` lon_e7/lat_e7 fixed-point pairs every
+    /// other artefact stores, outside this module.
+    pub fn points(&self) -> &[(f64, f64)] {
+        &self.points
+    }
 }
 
 /// Parses an Osmosis polygon filter file (the format Geofabrik publishes its

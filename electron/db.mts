@@ -1,7 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
-import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate } from "../src/renderer/fleet-numbering.mts";
+import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate, repowerFleetNumber } from "../src/renderer/fleet-numbering.mts";
+import { SECONDS_PER_DAY } from "../src/renderer/game-clock.mts";
 import { minimumStartingTier, TICKET_MACHINE_PRICE_GBP, type TicketMachineTier } from "../src/renderer/ticket-machine.mts";
 import { OPERATOR_LIVERIES } from "../src/renderer/livery-seed-data.mts";
+import type { VehicleCategory, PowerType } from "../src/renderer/vehicle-catalogue.mts";
+import { randomDriverName } from "../src/renderer/driver-names.mts";
+import type { PaymentMethod } from "../src/renderer/vehicle-buy-pricing.mts";
 export type { TicketMachineTier } from "../src/renderer/ticket-machine.mts";
 
 export type SaveDb = DatabaseSync;
@@ -11,7 +15,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 67;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -91,6 +95,22 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- means unrestricted ("both"). Indexed against this route's own "points",
 -- so cleared on any edit the same way timing points are, since the points
 -- list (and therefore what a given pointIndex means) may have changed.
+-- "timing_point_indexes" is a plain JSON array of numbers (schema v56->v57)
+-- — which of this route's own "points" are timing points, same
+-- indexed-against-"points" convention as pickup_dropoff_overrides right
+-- above, cleared the same way on updateRoute for the same reason. DESIGN.md
+-- §4 ("Timing point — set on the stop, overridable per route") and §6
+-- ("timing points are per route") already specified this at the route
+-- level; it only ever lived inside each route_timetables row's own
+-- "timing_points" column before this, which meant re-flagging the same
+-- stops for every separate day-type/direction component on the route. The
+-- actual TIMES at each of these points (legMinutes/dwellMinutes) stay on
+-- the timetable component (route_timetables.timing_points, below) since
+-- those genuinely do vary by day type — only WHICH stops count moves here.
+-- Point 0 (the journey's own departure) and the route's own terminus are
+-- always implicit timing points and never appear in this list, the same
+-- "always, regardless of this list" treatment route-timetable-panel.ts
+-- and computeOffsets already give them.
 -- "parent_route_id" (nullable, soft reference — no foreign-key cascade is
 -- enabled on this database, same as depot_group_id) is the route this is a
 -- lettered variation of (DESIGN.md §6 "Variations"), used for vehicle/
@@ -107,7 +127,7 @@ CREATE TABLE IF NOT EXISTS osm_overrides (
 -- a variation; not validated against "number" itself matching at this
 -- layer.
 -- "is_minor_variation" (DESIGN.md §6, confirmed 2026-11-01 — the real
--- Skye 56 example, skipping Bernisdale on certain school runs) marks a
+-- Skye 56 example, skipping Bernisdale on certain workings) marks a
 -- variation that shares its parent's exact "number" with no letter at
 -- all, and is ALWAYS live-linked to the parent's current path (see
 -- route-combine-variations.mts's own resolveRoutePoints) rather than
@@ -164,15 +184,28 @@ CREATE TABLE IF NOT EXISTS routes (
   colour TEXT NOT NULL DEFAULT '#3b82f6',
   name TEXT,
   pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
+  timing_point_indexes TEXT NOT NULL DEFAULT '[]',
   parent_route_id INTEGER REFERENCES routes(id),
   variation_letter TEXT,
   composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
   hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
   segments TEXT NOT NULL DEFAULT '[]',
-  route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance')),
+  route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance', 'staff')),
   is_minor_variation INTEGER NOT NULL DEFAULT 0,
   assigned_livery_id INTEGER REFERENCES liveries(id),
-  use_branded_colour INTEGER NOT NULL DEFAULT 0
+  use_branded_colour INTEGER NOT NULL DEFAULT 0,
+  -- Manual, player-set vehicle eligibility restrictions (Q19, OPEN-ITEMS.md
+  -- Q18+Q19 plan) — all 4 nullable, "unset means any vehicle qualifies on
+  -- that axis," set via setRouteVehicleRestrictions, never createRoute/
+  -- updateRoute, same dedicated-setter pattern as assigned_livery_id/
+  -- use_branded_colour just above. The automatic OSM-road-limit axis
+  -- (height/weight/length/width) carries no column of its own — it's
+  -- computed at read time from the pipeline road graph + the vehicle
+  -- catalogue, nothing to persist per-route.
+  vehicle_restriction_base_type TEXT CHECK (vehicle_restriction_base_type IS NULL OR vehicle_restriction_base_type IN ('Double-deckers', 'Specialised (sightseeing, open-top only)', 'Single-deckers / midibuses', 'Minibus', 'Coaches')),
+  vehicle_restriction_power_type TEXT CHECK (vehicle_restriction_power_type IS NULL OR vehicle_restriction_power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen')),
+  vehicle_restriction_axle_count TEXT CHECK (vehicle_restriction_axle_count IS NULL OR vehicle_restriction_axle_count IN ('twin-axle', 'tri-axle')),
+  vehicle_restriction_livery_id INTEGER REFERENCES liveries(id)
 );
 
 -- Shared long-distance sections (live design discussion, 2026-10-31) — a
@@ -207,17 +240,35 @@ CREATE TABLE IF NOT EXISTS long_distance_sections (
 -- also vary running time per band — see route-timetable.mts's own comment
 -- on why that part of the spec is intentionally not built here.
 -- "timing_points" is the player's own input: a JSON array of {pointIndex,
--- waitSeconds} flagging which of the route's stops (indexes into the
--- owning route's own "points" column) hold a bus that arrives early, and
--- for how long. "arrival_offsets_seconds" and "departure_offsets_seconds"
--- are the derived output — one entry per route point, seconds from the
--- journey's departure at point 0 — computed once from the WASM router's
--- real running times (only available in the renderer, not here) and
--- cached so a stop/station timetable query never needs to re-route every
--- leg just to read a time back. Regenerated whenever the frequency,
--- timing points, or the route's own point list changes. One row per
--- (route, day type): a route not yet given a timetable for a day type
--- simply has no row for it. "excluded_departure_minutes" is a JSON array
+-- standardPaddingMinutes, peakPaddingMinutes, dwellMinutes} — the
+-- published PADDING at each of the route's own timing points
+-- (routes.timing_point_indexes, which stop counts as one at all; schema
+-- v56->v57), on top of whatever the real fastest achievable time for that
+-- leg currently is (schema v65->v66, 2026-11-15 — "can it be set so its
+-- an amount of time more than the minimum with a separate time for peak
+-- times of day"). peakPaddingMinutes is null for an island route's own
+-- single timing point (fare-journey.mts's isIslandDepotGroup) — no
+-- separate peak figure at all, standardPaddingMinutes applies regardless
+-- of time of day. Only ever has entries for pointIndexes currently in
+-- that route-level list; a component built before v57 may still carry a
+-- stale entry for a point the route no longer flags, left as-is rather
+-- than migrated (see that migration's own comment).
+-- "arrival_offsets_seconds"/"departure_offsets_seconds" and their "_peak"
+-- siblings (schema v65->v66) are the derived output — one entry per route
+-- point, seconds from the journey's departure at point 0 — computed once
+-- from the WASM router's real running times (only available in the
+-- renderer, not here) and cached so a stop/station timetable query never
+-- needs to re-route every leg just to read a time back. The "_peak" pair
+-- is the exact same computation using each timing point's own
+-- peakPaddingMinutes (falling back to standardPaddingMinutes where unset)
+-- instead — buildRouteTimetableGrid (route-timetable-grid.mts) picks
+-- between the two pairs per JOURNEY by that journey's own real departure
+-- clock time, not once for the whole component, since the same physical
+-- timing point can publish a different figure for an 08:00 working than
+-- an 11:00 one. Regenerated whenever the frequency, timing points, or the
+-- route's own point list changes. One row per (route, day type): a route
+-- not yet given a timetable for a day type simply has no row for it.
+-- "excluded_departure_minutes" is a JSON array
 -- of specific generated departure minutes this component should NOT run
 -- (a live user request: 398A taking over 398's own 0100 slot without
 -- editing 398's own time bands) — checked against the live generated
@@ -248,19 +299,42 @@ CREATE TABLE IF NOT EXISTS long_distance_sections (
 -- Skye timetable data (UK-EXPANSION.md §13) needs sub-patterns the old
 -- fixed monday_friday/saturday/sunday enum can't express at all: 608 runs
 -- Tuesdays-and-Thursdays on a different pattern than the rest of the week,
--- 607 runs Fridays differently from Monday-Thursday, and Portree High
--- School/Portree Square need a school-day vs non-school-day split. A
--- bitmask (bit 0 = Monday ... bit 6 = Sunday, see WEEKDAY_BITS below) can
--- express any weekday combination without a schema change every time real
--- data shows a new one, crossed with an independent term_facet ('any' /
--- 'term_time' / 'holiday'). **No UI lets a player create anything beyond
--- the original 3 presets yet** — the TS-facing DayType type and every
--- existing caller are deliberately unchanged (still exactly
--- "monday_friday" | "saturday" | "sunday"); this only makes what's
--- actually stored able to represent more, translated at the boundary by
--- dayTypeToMaskAndFacet/maskAndFacetToDayType below. Letting a player
--- actually pick a custom weekday+term-time pattern in the timetable editor
--- is a separate, later increment (OPEN-ITEMS.md).
+-- and 607 runs Fridays differently from Monday-Thursday. A bitmask (bit 0
+-- = Monday ... bit 6 = Sunday, see WEEKDAY_BITS below) can express any
+-- weekday combination without a schema change every time real data shows
+-- a new one, crossed with an independent term_facet ('any' / 'term_time'
+-- / 'holiday') — originally for Skye's own real school-day timetable
+-- splits, which the game no longer models (school contracts and the
+-- school-day/holiday split dropped, 2026-11-08), so term_facet is now
+-- dormant rather than something a real pattern still needs. The
+-- weekday_mask side is now exposed directly to the UI as a freeform
+-- number (2026-11-07, the custom day-type picker — RouteTimetable.
+-- weekdayMask below, electron/db.mts); term_facet stays
+-- hardcoded to 'any' in upsertRouteTimetable for now — letting a player
+-- actually pick a term-time pattern too is a separate, later increment
+-- (OPEN-ITEMS.md).
+-- "mirror_source_timetable_id"/"mirror_offset_minutes" (schema v64->v65):
+-- when set, this component's own departures aren't generated from
+-- time_bands at all — every real departure+exclude+custom-resolved
+-- departure of the REFERENCED route_timetables row becomes a departure
+-- here, offset by mirror_offset_minutes minutes after that service's own
+-- arrival at its real end point (DESIGN.md §7's "Return departures" idea,
+-- generalised to any two services rather than just a route's own
+-- variations) — "a button to set a timetable to have a service after a
+-- settable time after one arrives, it will make return journeys much
+-- easier." A live link, not a one-time copy ("can the auto timetable bit
+-- then automatically update whenever the other timetable is updated") —
+-- route-timetable-grid.mts's generateBaseDepartureMinutes resolves it
+-- fresh every time, the same "merged view is a projection" principle the
+-- merged family grid already follows. Both nullable/default NULL; a
+-- mirroring component's own time_bands are simply ignored while set
+-- (left in place, not cleared, so turning mirror mode back off restores
+-- whatever bands were there before). Deliberately NOT allowed to
+-- reference another mirroring row (enforced by the application, not a
+-- CHECK constraint here — SQLite can't express "the referenced row's own
+-- mirror_source_timetable_id is NULL" declaratively) — this prevents a
+-- mirror-of-a-mirror chain/cycle rather than needing cycle-detection at
+-- generation time.
 CREATE TABLE IF NOT EXISTS route_timetables (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   route_id INTEGER NOT NULL REFERENCES routes(id),
@@ -271,8 +345,14 @@ CREATE TABLE IF NOT EXISTS route_timetables (
   timing_points TEXT NOT NULL,
   arrival_offsets_seconds TEXT NOT NULL,
   departure_offsets_seconds TEXT NOT NULL,
+  -- Peak-variant offsets (schema v65->v66) — see timing_points' own SCHEMA
+  -- comment below for the full reasoning.
+  arrival_offsets_seconds_peak TEXT NOT NULL DEFAULT '[]',
+  departure_offsets_seconds_peak TEXT NOT NULL DEFAULT '[]',
   excluded_departure_minutes TEXT NOT NULL DEFAULT '[]',
   custom_departure_minutes TEXT NOT NULL DEFAULT '[]',
+  mirror_source_timetable_id INTEGER REFERENCES route_timetables(id),
+  mirror_offset_minutes INTEGER,
   UNIQUE (route_id, weekday_mask, term_facet, direction)
 );
 
@@ -287,12 +367,45 @@ CREATE TABLE IF NOT EXISTS route_timetables (
 -- identified by the *negative* of this id, so it can be treated exactly
 -- like a real OSM stop's (always-positive) osmId without ever colliding
 -- with one — no "kind" flag needed at any of those call sites.
+-- "depot_id" (schema v57->v58, live request 2026-11-08: "each depot have
+-- the option to have a bus stop placed within it... only visible when
+-- making a shuttle bus route") — nullable, non-null only for the one
+-- special stop a depot can place at its own location, used as a staff-
+-- route (schema's own "staff" RouteType) terminus. lon/lat for one of
+-- these is the depot's own, copied in directly at creation
+-- (createDepotStop) rather than kerb-snapped — a depot is already a
+-- routable point in its own right everywhere else in this file (every
+-- dead-mileage/pull-out/pull-in calculation already routes to/from a
+-- depot's raw {lon, lat} with no snap step), so this needs none either.
+-- Visibility (only while drawing a "staff" route) is enforced entirely
+-- in the renderer (stops-layer.ts's visibleStops) — nothing here blocks
+-- an ordinary route from using one if a caller really wanted to.
 CREATE TABLE IF NOT EXISTS player_stops (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lon REAL NOT NULL,
   lat REAL NOT NULL,
   bus_legal INTEGER NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  depot_id INTEGER REFERENCES depots(id)
+);
+
+-- Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9 redesign: stop
+-- ownership dropped...", 2026-11-16). Keyed by the real OSM stop id, not a
+-- player_stops row — these are ordinary council-owned stops, never bought
+-- by the player, so there's nothing else in this save that already
+-- identifies one; this table is the only place a real stop's own extra
+-- state is persisted. One row is created the moment any upgrade first
+-- triggers or is accelerated at that stop; a stop with no row yet has
+-- none of the three. installed_at_game_day is kept per upgrade (not just
+-- a single shared timestamp) since they trigger independently.
+CREATE TABLE IF NOT EXISTS stop_upgrades (
+  stop_osm_id INTEGER PRIMARY KEY,
+  has_seating INTEGER NOT NULL DEFAULT 0,
+  has_lighting INTEGER NOT NULL DEFAULT 0,
+  has_shelter INTEGER NOT NULL DEFAULT 0,
+  seating_installed_game_day INTEGER,
+  lighting_installed_game_day INTEGER,
+  shelter_installed_game_day INTEGER
 );
 
 -- A depot (OPERATIONS.md §2 "Placement and entrances"): a physical site the
@@ -356,6 +469,28 @@ CREATE TABLE IF NOT EXISTS stop_groups (
   created_at TEXT NOT NULL
 );
 
+-- A player-created bus station (live request, 2026-11-08: "group bus stops
+-- into a bus station but without having to place one" — the trigger was a
+-- route whose sibling variations showed inconsistent inbound/outbound
+-- because their depot group had no main_bus_station_osm_id to anchor on,
+-- and there was no way to create one where OSM has none). Mints only an id,
+-- exactly like stop_groups above, which this otherwise mirrors completely:
+-- name lives in osm_overrides under entity_type 'bus_station' (the same
+-- entity_type a real OSM station's own name override already uses),
+-- membership is the SAME "stop"/"bus_station" override field every stop's
+-- station assignment already uses — just pointing at one of these ids
+-- instead of a real OSM one — and position is always the live centroid of
+-- current members, recomputed in the renderer, same as a stop_group's own.
+-- The one thing this needs that stop_groups doesn't: an osmId space that
+-- can never collide with player_stops' own negative ids (-1, -2, -3...) —
+-- stops-layer.ts offsets this table's own ids by a large constant before
+-- using them as an osmId anywhere, rather than coordinating the two
+-- tables' autoincrement counters.
+CREATE TABLE IF NOT EXISTS player_bus_stations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL
+);
+
 -- A vehicle dealer (T62, OPEN-ITEMS.md — CLAUDE.md's Phase 9 "dealer
 -- network," placed now so the real UK-EXPANSION.md §2 locations aren't
 -- lost before Phase 9's buying/collection logistics exist). Deliberately
@@ -368,10 +503,23 @@ CREATE TABLE IF NOT EXISTS stop_groups (
 -- rather than inferred from a name string later. Otherwise an exact
 -- mirror of "depots": same "lon"/"lat" is the raw site click, never
 -- kerb-snapped.
+-- manufacturer (schema v58->v59): 'western_commercial' replaced with
+-- 'evm' — T179, confirmed 2026-11-13: Western Commercial only ever
+-- stood in for EVM-prefixed vehicles (Sprinter/EVM Cityline) before
+-- England was in scope; now EVM gets its own real dealer entry and
+-- Western Commercial is removed entirely, not just renamed in place
+-- (see the v58->v59 migration below for the real rebuild + row
+-- translation this needs, since a CHECK can't be altered with a plain
+-- ADD COLUMN). is_repower_site (same version): at most one dealer per
+-- manufacturer may have this set (enforced in setDealerRepowerSite, not
+-- a CHECK — the same "per-manufacturer uniqueness is an application-
+-- layer rule" reasoning routes.variation_letter's own SCHEMA comment
+-- already gives for why that one isn't a CHECK either) — the one real
+-- site where that manufacturer re-powers buses (T179).
 CREATE TABLE IF NOT EXISTS dealers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'western_commercial', 'wrightbus', 'yutong')),
+  manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'evm', 'wrightbus', 'yutong')),
   lon REAL NOT NULL,
   lat REAL NOT NULL,
   -- Explicit, player-confirmed "I've added every entrance/exit this site
@@ -382,7 +530,8 @@ CREATE TABLE IF NOT EXISTS dealers (
   -- a future session hard-codes that dealer's confirmed position and
   -- entrances into source (the same way REFERENCE_PINS already hard-codes
   -- position), per the user's own stated plan.
-  is_entrances_complete INTEGER NOT NULL DEFAULT 0
+  is_entrances_complete INTEGER NOT NULL DEFAULT 0,
+  is_repower_site INTEGER NOT NULL DEFAULT 0
 );
 
 -- A dealer's own entrances — exact mirror of depot_entrances, including
@@ -507,6 +656,27 @@ CREATE TABLE IF NOT EXISTS repaint_bookings (
   completion_game_day INTEGER NOT NULL
 );
 
+-- A vehicle booked in for a re-power (T179, OPEN-ITEMS.md, confirmed
+-- 2026-11-13) — converting diesel to electric/hydrogen at the vehicle's
+-- own manufacturer's one designated site (dealers.is_repower_site).
+-- Exact same "capacity/scheduling snapshot only, no real money deducted
+-- yet" shape as repaint_bookings above, same reasons. dealer_id is never
+-- null (unlike repaint_bookings.repaint_shop_id, which is null for a
+-- home-depot "simple" repaint) — every re-power happens at a real site,
+-- there's no home-depot equivalent. to_power_type excludes 'diesel'/
+-- 'hybrid' deliberately — nothing converts TO either, only away from
+-- diesel.
+CREATE TABLE IF NOT EXISTS repower_bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  dealer_id INTEGER NOT NULL REFERENCES dealers(id),
+  to_power_type TEXT NOT NULL CHECK (to_power_type IN ('electric', 'hydrogen')),
+  final_price_gbp INTEGER NOT NULL,
+  booked_game_day INTEGER NOT NULL,
+  start_game_day INTEGER NOT NULL,
+  completion_game_day INTEGER NOT NULL
+);
+
 -- A dead mileage route between a dealer and a depot (DESIGN.md "Dead mileage
 -- routes"). trunk_waypoints is the shared path from the dealer entrance,
 -- as a JSON array of {lon, lat} the player added to the router's path.
@@ -545,33 +715,90 @@ CREATE TABLE IF NOT EXISTS dead_mileage_branches (
   UNIQUE (route_id, depot_entrance_id)
 );
 
+-- A driver (OPERATIONS.md §6 "Staff"), schema v57->v58 — the first real
+-- driver entity in the save. Deliberately minimal, confirmed with the
+-- user (2026-11-08): a roster entry a duty can be assigned to, no hours/
+-- rota validation and no wage cost yet (both genuinely separate, later
+-- increments) — one driver permanently assigned per duty, no daily
+-- rotation. "score" is the 5-level progression OPERATIONS.md §6's own
+-- wage-ratio table gives drivers specifically (trainee/novice/competent/
+-- professional, plus fleet_elite as the extra 5th level drivers get that
+-- every other role's own 4-level score doesn't) — player-set directly
+-- for now, since the real progression-by-hours-worked mechanic that
+-- table describes doesn't exist yet either. depot_id is this driver's
+-- home depot, the same one-of-the-group's-own-depots anchoring duties
+-- already use below.
+-- private_hire_vehicle_id (schema v60->v61, T183 — private hire revival,
+-- Q20/OPEN-ITEMS.md): set only on a driver auto-hired for a private-hire
+-- vehicle (one bought/liveried Lothian Coaches on an eligible class —
+-- see liveryVehicleLockReason, livery-seed-data.mts), traceable back to
+-- that vehicle so deleteVehicle can clean the driver up too (no orphaned
+-- phantom drivers left behind when the vehicle is sold). Null for every
+-- ordinary driver, which is every driver that existed before this.
+CREATE TABLE IF NOT EXISTS drivers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  name TEXT NOT NULL,
+  score TEXT NOT NULL DEFAULT 'trainee' CHECK (score IN ('trainee', 'novice', 'competent', 'professional', 'fleet_elite')),
+  private_hire_vehicle_id INTEGER REFERENCES vehicles(id)
+);
+
+-- Tracks which calendar months have already had their private-hire income
+-- bookings generated for a given vehicle (T183) — the same "re-checked
+-- fresh every time the screen opens, since the game clock keeps advancing
+-- while it's closed" lazy-generation pattern T179's re-power bookings
+-- already use, rather than a real periodic game-tick (none exists anywhere
+-- in this codebase). month_key is "<year>-<2-digit month>" (see
+-- private-hire-income.mts's own monthKeyFromGameDay) — the PRIMARY KEY on
+-- (vehicle_id, month_key) is what makes a re-open of the Depot groups
+-- panel never double-generate the same month's bookings.
+CREATE TABLE IF NOT EXISTS private_hire_income_months (
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  month_key TEXT NOT NULL,
+  PRIMARY KEY (vehicle_id, month_key)
+);
+
 -- A duty (OPERATIONS.md §7 "Duties", Phase 3's own item): one vehicle's
 -- continuous work pattern across a single day type, built from the day's
 -- own generated journeys (a route's timetable, already published — nothing
 -- new is persisted about the journeys themselves). Deliberately vehicle-only
--- for now: no driver, no hours/length validation — those are Phase 6's own
--- concern once drivers and the GB/EU hours regime actually exist, since a
--- driver can swap mid-duty and is genuinely a separate layer from which
--- vehicle does which run (decided with the user, 2026-10-17).
+-- at first: no driver, no hours/length validation — decided with the user,
+-- 2026-10-17, as Phase 6's own concern once drivers and the GB/EU hours
+-- regime actually exist. driver_id (schema v57->v58) is the first piece of
+-- that: a simple, permanent one-driver-per-duty assignment (confirmed
+-- 2026-11-08) — nullable, since a duty can exist unassigned, and
+-- deliberately NOT validated against the driver's own depot_group_id/
+-- depot_id here (no relief/cross-depot logistics yet either). Vehicle-
+-- side hours/length validation (continuous-time cap, forced depot
+-- breaks, the night/long-distance exceptions — OPEN-ITEMS.md) is still a
+-- separate, not-yet-built increment; driver_id existing doesn't change
+-- that.
 --
 -- depot_id (added 2026-10-17, same day as the table itself — real user
 -- data never existed on the depot-less shape, so this was a straight
 -- DROP+recreate, not a migrated column): every duty is anchored to one
 -- physical depot within its own depot group, since that's where the
--- vehicle (and later, the driver) actually starts and ends the day — a
+-- vehicle (and now the driver) actually starts and ends the day — a
 -- depot group can have more than one physical depot, and a duty belongs to
 -- exactly one of them, never floats free of all of them. duty_number is
 -- generated from the depot's own rank within its group (ordered by id,
 -- "the main depot" first) — 1xxx for the first depot, 2xxx for the second,
 -- and so on (electron/db.mts's own createDuty), so the numbering itself
 -- shows which depot a duty belongs to at a glance.
+-- weekday_mask (schema v55->v56): a freeform weekday bitmask, the same
+-- scheme route_timetables already uses (see that table's own SCHEMA
+-- comment) — replaced the original 3-preset day_type enum once the
+-- player-facing day-type picker (OPEN-ITEMS.md) needed duties to track
+-- whatever patterns the depot group's routes actually use, not a fixed 3.
 CREATE TABLE IF NOT EXISTS duties (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
   depot_id INTEGER NOT NULL REFERENCES depots(id),
-  day_type TEXT NOT NULL CHECK (day_type IN ('monday_friday', 'saturday', 'sunday')),
+  weekday_mask INTEGER NOT NULL CHECK (weekday_mask BETWEEN 1 AND 127),
   duty_number TEXT NOT NULL,
-  locked INTEGER NOT NULL DEFAULT 0
+  locked INTEGER NOT NULL DEFAULT 0,
+  driver_id INTEGER REFERENCES drivers(id)
 );
 
 -- One journey chained into a duty, in running order. A journey has no
@@ -615,8 +842,49 @@ CREATE TABLE IF NOT EXISTS vehicles (
   condition REAL NOT NULL DEFAULT 100,
   purchase_price_gbp INTEGER NOT NULL,
   bought_at TEXT NOT NULL,
+  -- bought_game_day (schema v58->v59, T179): the real IN-GAME day index
+  -- this vehicle was bought on — bought_at above is the real wall-clock
+  -- timestamp (new Date().toISOString()), which the re-power age gate
+  -- (5+ years old, repower-booking.mts) can't use at all since the
+  -- game's own calendar runs on its own clock, entirely independent of
+  -- real time. Defaults to 0 for any vehicle bought before this column
+  -- existed — an already-owned vehicle in an existing save is simply
+  -- always old enough, the player-friendly reading rather than
+  -- retroactively blocking something they already own.
+  bought_game_day INTEGER NOT NULL DEFAULT 0,
   livery_id INTEGER REFERENCES liveries(id),
-  bought_for_route_id INTEGER REFERENCES routes(id)
+  bought_for_route_id INTEGER REFERENCES routes(id),
+  -- payment_method (schema v62->v63, T185 — real lease billing, follow-up
+  -- to T184's new Fleet screen, approved plan
+  -- can-you-do-the-flickering-hopper.md, confirmed 2026-11-14):
+  -- vehicle_orders.payment_method was already set at order time but
+  -- never carried through into the real owned vehicle it becomes —
+  -- collectOrder read the order's own payment_method and then simply
+  -- discarded it, so a leased vehicle cost nothing, ever, after
+  -- purchase. This column is the fix: the same three real OPERATIONS.md
+  -- §3 "Buying" payment methods as basket_items/vehicle_orders already
+  -- use, defaulting to buy_outright for any vehicle bought before this
+  -- column existed (an already-owned vehicle in an existing save is
+  -- simply always treated as fully paid for, the same player-friendly
+  -- backfill precedent as bought_game_day's own default above).
+  payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own'))
+);
+
+-- Tracks which calendar months have already had their real monthly lease
+-- payment charged for a given leased/lease-to-own vehicle (T185) — the
+-- identical shape and the identical "re-checked fresh every time the
+-- screen opens" lazy-billing pattern as private_hire_income_months above
+-- (see that table's own SCHEMA comment for the full reasoning; there is
+-- still no real periodic/monthly game-tick anywhere in this codebase to
+-- hang this off instead). month_key is "<year>-<2-digit month>" (see
+-- vehicle-lease-billing.mts's own re-export of private-hire-income.mts's
+-- monthKeyFromGameDay) — the PRIMARY KEY on (vehicle_id, month_key) is
+-- what makes a re-open of the Fleet screen never double-charge the same
+-- month.
+CREATE TABLE IF NOT EXISTS lease_billing_months (
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  month_key TEXT NOT NULL,
+  PRIMARY KEY (vehicle_id, month_key)
 );
 
 -- A line in the current, uncommitted order (OPERATIONS.md §3 "Buying") —
@@ -868,6 +1136,51 @@ CREATE TABLE IF NOT EXISTS finance_transactions (
   description TEXT NOT NULL,
   game_day INTEGER NOT NULL,
   created_at TEXT NOT NULL
+);
+
+-- Route advertising (OPEN-ITEMS.md, "Phase 5/9 redesign", confirmed
+-- 2026-11-16) — player-bought only, never council-triggered (unlike
+-- shelter/seating/lighting, which genuinely serve every passenger
+-- regardless of operator). stop_osm_id is the real OSM stop this
+-- advertising is bought AT — stops aren't a persisted entity of their
+-- own in this schema (they're derived from the pipeline's own stop
+-- data), so the real osmId is the only stable identifier to key off,
+-- same convention stop_groups/playerBusStations already use elsewhere
+-- for a "which real stop" reference. mode is either a specific
+-- route (route_id set, operator_name null) or the long-distance-generic
+-- mode (operator_name set to the real derived company, route_id null) —
+-- CHECK enforces exactly one of the two is ever set, matching which
+-- column the mode implies. live_from_game_day is booked_game_day + 14
+-- (OPERATIONS.md §16's own "work starts 14 days after ordering" fitting
+-- convention, reused rather than inventing a separate delay) — a flat
+-- calendar-day add, not a working-day-aware schedule like the repaint/
+-- re-power shop-bay bookings use, since nothing here has a capacity
+-- constraint (any number of stops can have advertising ordered on the
+-- same day; there's no "fitter bay" bottleneck for printing a sign).
+CREATE TABLE IF NOT EXISTS route_advertising_bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stop_osm_id INTEGER NOT NULL,
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  mode TEXT NOT NULL CHECK (mode IN ('specific_route', 'long_distance')),
+  route_id INTEGER REFERENCES routes(id),
+  operator_name TEXT,
+  booked_game_day INTEGER NOT NULL,
+  live_from_game_day INTEGER NOT NULL,
+  CHECK ((mode = 'specific_route' AND route_id IS NOT NULL AND operator_name IS NULL)
+      OR (mode = 'long_distance' AND route_id IS NULL AND operator_name IS NOT NULL))
+);
+
+-- Which calendar months' £20 recurring fee (route-advertising.mts's own
+-- ROUTE_ADVERTISING_MONTHLY_FEE_GBP_PENCE) have already been charged for
+-- a given booking — exact same shape and billing convention as
+-- lease_billing_months above (real calendar months via
+-- private-hire-income.mts's monthKeyFromGameDay/elapsedMonthKeysSince,
+-- billed lazily whenever the relevant screen is opened, not on a
+-- central tick).
+CREATE TABLE IF NOT EXISTS route_advertising_billing_months (
+  booking_id INTEGER NOT NULL REFERENCES route_advertising_bookings(id),
+  month_key TEXT NOT NULL,
+  PRIMARY KEY (booking_id, month_key)
 );
 `;
 
@@ -1337,13 +1650,13 @@ export function openSave(path: string): SaveDb {
       "ALTER TABLE routes ADD COLUMN route_type TEXT NOT NULL DEFAULT 'ordinary' CHECK (route_type IN ('ordinary', 'night', 'sightseeing', 'airport_express', 'long_distance'))",
     );
     db.exec("ALTER TABLE fare_configs DROP COLUMN runs_night_services");
-    db.exec("PRAGMA user_version = 42");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 42) {
     // v42 -> v43: the game clock (see its own CREATE TABLE comment in
     // SCHEMA above) — brand new table, CREATE TABLE IF NOT EXISTS in
     // SCHEMA already creates it for this branch to then seed.
     db.exec("INSERT OR IGNORE INTO game_clock (id) VALUES (1)");
-    db.exec("PRAGMA user_version = 43");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 43) {
     // v43 -> v44: explicit "entrances complete" flag on dealers (2026-11-01,
     // live user request) — see dealers' own CREATE TABLE comment above.
@@ -1351,12 +1664,12 @@ export function openSave(path: string): SaveDb {
     // constraint, so a plain ADD COLUMN is enough (no table rebuild
     // needed, unlike fare_zones' own zone_type CHECK expansion earlier).
     db.exec("ALTER TABLE dealers ADD COLUMN is_entrances_complete INTEGER NOT NULL DEFAULT 0");
-    db.exec("PRAGMA user_version = 44");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 44) {
     // v44 -> v45: repaint shop entrances (see repaint_shop_entrances' own
     // CREATE TABLE comment above) — brand new table, CREATE TABLE IF NOT
     // EXISTS in SCHEMA above already creates it for this branch.
-    db.exec("PRAGMA user_version = 45");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 45) {
     // v45 -> v46: repaint_shops' weekly_capacity replaced by
     // concurrent_capacity + turnaround_days (see repaint_shops' own
@@ -1385,12 +1698,12 @@ export function openSave(path: string): SaveDb {
       SELECT id, name, lon, lat, weekly_capacity, 5 FROM repaint_shops_v45
     `);
     db.exec("DROP TABLE repaint_shops_v45");
-    db.exec("PRAGMA user_version = 46");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 46) {
     // v46 -> v47: the repaint_bookings table — brand new, created by the
     // CREATE TABLE IF NOT EXISTS in SCHEMA above, so this only advances
     // the version number.
-    db.exec("PRAGMA user_version = 47");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 47) {
     // v47 -> v48: routes gains is_minor_variation (DESIGN.md §6, major/
     // minor variations — see routes' own CREATE TABLE comment above for
@@ -1399,7 +1712,7 @@ export function openSave(path: string): SaveDb {
     // updateRoute instead of the database. Every existing row gets 0 (no
     // route was ever a minor variation before this column existed).
     db.exec("ALTER TABLE routes ADD COLUMN is_minor_variation INTEGER NOT NULL DEFAULT 0");
-    db.exec("PRAGMA user_version = 48");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 48) {
     // v48 -> v49: real bug fix, found by testing (not assumed) while
     // building the v47->v48 migration above. The v45->v46 migration
@@ -1434,7 +1747,7 @@ export function openSave(path: string): SaveDb {
       SELECT id, repaint_shop_id, lon, lat, mode FROM repaint_shop_entrances_v48
     `);
     db.exec("DROP TABLE repaint_shop_entrances_v48");
-    db.exec("PRAGMA user_version = 49");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 49) {
     // v49 -> v50: depot_groups gains ticket_machine_tier and
     // has_tap_on_tap_off (TICKETING.md §1/§2 — see depot_groups' own
@@ -1445,14 +1758,14 @@ export function openSave(path: string): SaveDb {
     // defaults to the real starting point, Basic with no tap-on tap-off.
     db.exec("ALTER TABLE depot_groups ADD COLUMN ticket_machine_tier TEXT NOT NULL DEFAULT 'basic' CHECK (ticket_machine_tier IN ('basic', 'mid', 'advanced'))");
     db.exec("ALTER TABLE depot_groups ADD COLUMN has_tap_on_tap_off INTEGER NOT NULL DEFAULT 0");
-    db.exec("PRAGMA user_version = 50");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 50) {
     // v50 -> v51: the company_upgrades table (TICKETING.md §4) — brand
     // new, CREATE TABLE IF NOT EXISTS in SCHEMA above creates it, so
     // this only advances the version number (same as game_clock's own
     // row, it's created lazily by getCompanyUpgrades/the setters below,
     // not seeded here).
-    db.exec("PRAGMA user_version = 51");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 51) {
     // v51 -> v52: the finance_transactions table (DESIGN.md §10) —
     // brand new, CREATE TABLE IF NOT EXISTS in SCHEMA above creates it.
@@ -1461,7 +1774,7 @@ export function openSave(path: string): SaveDb {
     // seed functions needing the renderer's own boot sequence for real
     // reference data, except this one real figure is simple enough to
     // seed directly here rather than round-trip through the renderer.
-    db.exec("PRAGMA user_version = 52");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 52) {
     // v52 -> v53: route branding (DESIGN.md/OPEN-ITEMS T153) — a route
     // can be assigned a livery and opt into tinting it with the route's
@@ -1478,14 +1791,14 @@ export function openSave(path: string): SaveDb {
     db.exec("ALTER TABLE vehicles ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
     db.exec("ALTER TABLE basket_items ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
     db.exec("ALTER TABLE vehicle_orders ADD COLUMN bought_for_route_id INTEGER REFERENCES routes(id)");
-    db.exec("PRAGMA user_version = 53");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 53) {
     // v53 -> v54: depot_groups gains its own colour (T154) — earmarked
     // for a second branding-mask region on the Sightseeing livery, data
     // side only. Plain ADD COLUMN, every existing depot group defaults
     // to the same blue routes already default to.
     db.exec("ALTER TABLE depot_groups ADD COLUMN colour TEXT NOT NULL DEFAULT '#3b82f6'");
-    db.exec("PRAGMA user_version = 54");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion === 54) {
     // v54 -> v55: operator groups (T155) — depot_group_operators and
     // depot_liveries are both brand new, CREATE TABLE IF NOT EXISTS in
@@ -1503,12 +1816,441 @@ export function openSave(path: string): SaveDb {
         insertOperator.run(groupId, operatorName);
       }
     }
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-    } else if (currentVersion !== SCHEMA_VERSION) {
-      throw new Error(
-        `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
-      );
+    db.exec(`PRAGMA user_version = 55`);
+  } else if (currentVersion === 55) {
+    // v55 -> v56: duties' day_type becomes a freeform weekday_mask, the
+    // same scheme route_timetables already uses (see that table's own
+    // v19->v20 migration, same reasoning) — the day-type picker
+    // (OPEN-ITEMS.md) needs duties to track whatever patterns the depot
+    // group's routes actually use, not the fixed 3 presets. Rebuilt rather
+    // than ALTER COLUMN, since SQLite can't add a CHECK constraint to an
+    // existing column in place.
+    //
+    // Built as CREATE new-name -> copy -> DROP old -> RENAME new to old,
+    // NOT route_timetables' own RENAME-old-away-first pattern — found as a
+    // real bug verifying this exact migration: duty_pieces.duty_id has a
+    // live FK to duties(id), and SQLite's ALTER TABLE RENAME automatically
+    // rewrites OTHER tables' FK text to follow a renamed table. Renaming
+    // duties -> duties_v55 silently rewrote duty_pieces' FK to
+    // "REFERENCES duties_v55(id)"; dropping duties_v55 at the end then
+    // left duty_pieces permanently referencing a table that no longer
+    // existed ("no such table: main.duties_v55" on the next delete).
+    // route_timetables has no dependent table, so that rename was never
+    // exposed to this. Renaming duties_new -> duties at the very end here
+    // never touches duty_pieces at all, since nothing ever referenced
+    // "duties_new". Every existing duty's day_type maps straight across to
+    // the equivalent mask — identical behaviour to before this migration.
+    db.exec(`
+      CREATE TABLE duties_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+        depot_id INTEGER NOT NULL REFERENCES depots(id),
+        weekday_mask INTEGER NOT NULL CHECK (weekday_mask BETWEEN 1 AND 127),
+        duty_number TEXT NOT NULL,
+        locked INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    db.exec(`
+      INSERT INTO duties_new (id, depot_group_id, depot_id, weekday_mask, duty_number, locked)
+      SELECT id, depot_group_id, depot_id,
+        CASE day_type
+          WHEN 'monday_friday' THEN ${MONDAY_FRIDAY_MASK}
+          WHEN 'saturday' THEN ${SATURDAY_MASK}
+          WHEN 'sunday' THEN ${SUNDAY_MASK}
+        END,
+        duty_number, locked
+      FROM duties
+    `);
+    // Same latent bug the routes v57->v58 migration below found and
+    // fixed for real (not assumed to apply here too — checked, since
+    // this table's own DROP never actually failed against any save seen
+    // so far): node:sqlite's `DatabaseSync` defaults `PRAGMA
+    // foreign_keys` to ON, so `DROP TABLE duties` performs an implicit
+    // `DELETE FROM duties` checked against every real duty_pieces row
+    // still referencing a real duty. This table's own DROP never
+    // actually hit it in practice only because nothing had put a real
+    // row in duty_pieces yet at the point this migration last ran
+    // against real data — the risk was always there, patched
+    // defensively now that the mechanism is understood.
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("DROP TABLE duties");
+    db.exec("ALTER TABLE duties_new RENAME TO duties");
+    const dutyFkViolations = db.prepare("PRAGMA foreign_key_check").all();
+    if (dutyFkViolations.length > 0) {
+      throw new Error(`duties rebuild (v55->v56) left ${dutyFkViolations.length} foreign key violation(s): ${JSON.stringify(dutyFkViolations)}`);
     }
+    db.exec("PRAGMA foreign_keys = ON");
+    db.exec(`PRAGMA user_version = 56`);
+  } else if (currentVersion === 56) {
+    // v56 -> v57: which of a route's points are timing points moves from
+    // being re-entered inside every separate timetable component to a
+    // single list on the route itself — a live user request (2026-11-07):
+    // "timing points should be set in the route and the times set in the
+    // timetable." DESIGN.md §4 already specified this ("Timing point —
+    // set on the stop, overridable per route") and §6's Express services
+    // note ("timing points are per route") agrees; the component-level
+    // storage this is replacing was a drift from that written spec, not
+    // a deliberate design. A plain ADD COLUMN, same as
+    // pickup_dropoff_overrides' own original migration — no CHECK
+    // constraint needed, so none of the rename-rebuild FK risk (T141,
+    // duties' own v55->v56 above) applies here. Existing timetable
+    // components keep whatever {pointIndex, legMinutes, dwellMinutes}
+    // entries they already have in their own "timing_points" column
+    // (route-timetable-panel.ts only reads/writes those whose pointIndex
+    // is also in the route's own new list going forward, but nothing here
+    // deletes the now-unreferenced ones) — left as-is rather than
+    // migrated, the same "shown as-is, player edits manually" precedent
+    // the day-type picker work used for pre-existing components.
+    db.exec("ALTER TABLE routes ADD COLUMN timing_point_indexes TEXT NOT NULL DEFAULT '[]'");
+    db.exec(`PRAGMA user_version = 57`);
+  } else if (currentVersion === 57) {
+    // v57 -> v58: two unrelated changes bundled into one version bump —
+    // drivers is brand new (CREATE TABLE IF NOT EXISTS in SCHEMA above
+    // already creates it, same "brand-new table only needs the version
+    // advanced" precedent as every other new table in this file), and
+    // routes.route_type's own CHECK constraint needed a value added
+    // ('staff' — a live request, 2026-11-08: "add a staff bus route type
+    // ... to get drivers to and from work"). A CHECK can't be altered in
+    // place, and ALTER TABLE ADD COLUMN only fixes a *new* column's own
+    // constraint, not route_type's (added long before this save's own
+    // history) — so this is a real rebuild, not a plain ADD COLUMN.
+    // `routes` is this schema's most heavily-referenced table
+    // (route_timetables.route_id, duty_pieces.route_id,
+    // vehicles/basket_items/vehicle_orders.bought_for_route_id, and
+    // routes.parent_route_id referencing itself) — built with the SAME
+    // safe CREATE-new/copy/DROP-old/RENAME pattern the duties v55->v56
+    // migration above established (never RENAME the table away first;
+    // every dependent's own FK text already says "routes" and is never
+    // touched), including the self-reference (parent_route_id), which
+    // the final RENAME fixes up exactly the same way it would fix a
+    // dependent in a different table. Takes the opportunity to drop the
+    // CHECK entirely rather than just append 'staff' to its list — the
+    // routes table's own SCHEMA comment already chose "enforced in the
+    // application layer, not a CHECK constraint" for variation_letter's
+    // own mutual-exclusivity rule, for exactly this reason (a CHECK on
+    // this particular table is expensive to ever change again); every
+    // real caller is TypeScript-typed to RouteType already, which is
+    // the actual enforcement that matters day to day.
+    //
+    // A second, real bug found running this against the full suite (not
+    // assumed safe): node:sqlite's own `DatabaseSync` defaults
+    // `PRAGMA foreign_keys` to ON (confirmed directly: a fresh in-memory
+    // DatabaseSync reports `{foreign_keys: 1}`) — contradicting this
+    // file's own much older comment elsewhere ("ON DELETE CASCADE unless
+    // PRAGMA foreign_keys is on (it is not, here)"), which must have
+    // been true of an earlier node:sqlite version, or was simply wrong,
+    // and nothing had exposed it since. With it genuinely on, `DROP
+    // TABLE routes` performs SQLite's own documented implicit `DELETE
+    // FROM routes` first, and that delete is checked against every real
+    // route_timetables/duty_pieces/vehicles/etc. row still referencing a
+    // real route — "FOREIGN KEY constraint failed" the moment any such
+    // row exists (which the real save, and this very test script by
+    // this point, both have). The duties v55->v56 migration above never
+    // hit this only because nothing had put a real row in duty_pieces
+    // yet at the point it last ran against real data — the same risk is
+    // latent there too, not something this table is uniquely exposed
+    // to. Fixed the standard way (SQLite's own documented 12-step
+    // "Making Other Kinds Of Table Schema Changes" procedure): disable
+    // enforcement for just this rebuild, restore it straight after, and
+    // run `foreign_key_check` before restoring to confirm the rebuild
+    // itself didn't silently corrupt anything (it doesn't touch any
+    // dependent table's own rows, only routes' schema, so this is
+    // expected to come back clean — checked directly, not assumed).
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE routes_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+        number TEXT NOT NULL,
+        points TEXT NOT NULL,
+        orientation TEXT NOT NULL CHECK (orientation IN ('inbound', 'outbound')),
+        terminus_index INTEGER,
+        start_index INTEGER,
+        colour TEXT NOT NULL DEFAULT '#3b82f6',
+        name TEXT,
+        pickup_dropoff_overrides TEXT NOT NULL DEFAULT '[]',
+        timing_point_indexes TEXT NOT NULL DEFAULT '[]',
+        parent_route_id INTEGER REFERENCES routes_new(id),
+        variation_letter TEXT,
+        composed_from_route_ids TEXT NOT NULL DEFAULT '[]',
+        hail_and_ride_sections TEXT NOT NULL DEFAULT '[]',
+        segments TEXT NOT NULL DEFAULT '[]',
+        route_type TEXT NOT NULL DEFAULT 'ordinary',
+        is_minor_variation INTEGER NOT NULL DEFAULT 0,
+        assigned_livery_id INTEGER REFERENCES liveries(id),
+        use_branded_colour INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    db.exec(`
+      INSERT INTO routes_new (
+        id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name,
+        pickup_dropoff_overrides, timing_point_indexes, parent_route_id, variation_letter,
+        composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation,
+        assigned_livery_id, use_branded_colour
+      )
+      SELECT
+        id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name,
+        pickup_dropoff_overrides, timing_point_indexes, parent_route_id, variation_letter,
+        composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation,
+        assigned_livery_id, use_branded_colour
+      FROM routes
+    `);
+    db.exec("DROP TABLE routes");
+    db.exec("ALTER TABLE routes_new RENAME TO routes");
+    const fkViolations = db.prepare("PRAGMA foreign_key_check").all();
+    if (fkViolations.length > 0) {
+      throw new Error(`routes rebuild (v57->v58) left ${fkViolations.length} foreign key violation(s): ${JSON.stringify(fkViolations)}`);
+    }
+    db.exec("PRAGMA foreign_keys = ON");
+    // duties already exists for an old save (drivers doesn't yet, hence
+    // the brand-new-table-only-needs-the-version-advanced treatment
+    // above) — a plain ADD COLUMN, no CHECK, no rebuild risk.
+    db.exec("ALTER TABLE duties ADD COLUMN driver_id INTEGER REFERENCES drivers(id)");
+    // A depot's own staff-route stop — see player_stops' own SCHEMA
+    // comment. Plain ADD COLUMN: nothing references player_stops, so
+    // there's no rebuild risk at all here.
+    db.exec("ALTER TABLE player_stops ADD COLUMN depot_id INTEGER REFERENCES depots(id)");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  } else if (currentVersion === 58) {
+    // v58 -> v59 (T179, OPEN-ITEMS.md, confirmed 2026-11-13): the vehicle
+    // re-power mechanic. vehicles.bought_game_day is a plain ADD COLUMN
+    // (no CHECK, no rebuild risk) — existing vehicles default to day 0,
+    // always old enough for the re-power age gate rather than
+    // retroactively blocking something the player already owns (see that
+    // column's own SCHEMA comment). dealers needs a real rebuild, not a
+    // plain ADD COLUMN, since its manufacturer CHECK constraint is
+    // changing ('western_commercial' dropped, 'evm' added — Western
+    // Commercial only ever stood in for EVM-prefixed vehicles before
+    // England was in scope) alongside the new is_repower_site column.
+    // Same safe CREATE-new/copy-with-translation/DROP-old/RENAME pattern,
+    // and the same real foreign-key-enforcement risk, as the routes
+    // v57->v58 migration above (dealer_entrances.dealer_id and the
+    // brand-new repower_bookings.dealer_id both reference this table) —
+    // ids are preserved exactly, so dealer_entrances' own rows keep
+    // resolving correctly with no changes of their own needed.
+    db.exec("ALTER TABLE vehicles ADD COLUMN bought_game_day INTEGER NOT NULL DEFAULT 0");
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE dealers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        manufacturer TEXT NOT NULL CHECK (manufacturer IN ('volvo', 'adl', 'evm', 'wrightbus', 'yutong')),
+        lon REAL NOT NULL,
+        lat REAL NOT NULL,
+        is_entrances_complete INTEGER NOT NULL DEFAULT 0,
+        is_repower_site INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    db.exec(`
+      INSERT INTO dealers_new (id, name, manufacturer, lon, lat, is_entrances_complete)
+      SELECT id, name, CASE WHEN manufacturer = 'western_commercial' THEN 'evm' ELSE manufacturer END, lon, lat, is_entrances_complete
+      FROM dealers
+    `);
+    db.exec("DROP TABLE dealers");
+    db.exec("ALTER TABLE dealers_new RENAME TO dealers");
+    const dealerFkViolations = db.prepare("PRAGMA foreign_key_check").all();
+    if (dealerFkViolations.length > 0) {
+      throw new Error(`dealers rebuild (v58->v59) left ${dealerFkViolations.length} foreign key violation(s): ${JSON.stringify(dealerFkViolations)}`);
+    }
+    db.exec("PRAGMA foreign_keys = ON");
+    // Steps to exactly the next version (59), not straight to
+    // SCHEMA_VERSION — found as a real bug 2026-11-14 while building T185,
+    // the same class of bug the v37 branch's own comment above already
+    // documents and fixed: T179/T182/T183/T184/T185 all landed in one
+    // continuous session (2026-11-13/14) with no real release applying
+    // any of them in between, so this branch had five more migrations
+    // stacked on top of it by the time this was caught — jumping straight
+    // to SCHEMA_VERSION here silently skipped all of them for any save
+    // sitting at v58, exactly the "skipping everything in between" bug
+    // v37 warns about. Caught directly, not by inspection: this file's
+    // own v58 migration-fixture test calls buyVehicle afterward, which
+    // started throwing "no such column named payment_method" once T185's
+    // own v62->v63 branch existed, because the vehicles table never
+    // actually gained is_spare/payment_method (or routes' vehicle-
+    // restriction columns, or drivers.private_hire_vehicle_id) — every
+    // later branch's own ALTER had silently never run against this path.
+    db.exec("PRAGMA user_version = 59");
+  } else if (currentVersion === 59) {
+    // v59 -> v60 (Q18+Q19, OPEN-ITEMS.md, confirmed 2026-11-13): route-level
+    // manual vehicle eligibility restrictions. Four plain nullable ADD
+    // COLUMNs — no rebuild risk (routes is never RENAMEd/dropped for this),
+    // same "plain ADD COLUMN" precedent as assigned_livery_id/
+    // use_branded_colour (v57->v58). Each CHECK explicitly allows NULL
+    // (`col IS NULL OR col IN (...)`) since every existing row gets NULL
+    // for a brand-new column with no DEFAULT — SQLite only refuses an
+    // ADD COLUMN's CHECK if it would evaluate to false (not NULL) for a
+    // pre-existing row, so this passes cleanly for every save. See the
+    // routes table's own SCHEMA comment above for the full reasoning
+    // (including why the automatic OSM-limit axis needs no column here).
+    db.exec(
+      "ALTER TABLE routes ADD COLUMN vehicle_restriction_base_type TEXT CHECK (vehicle_restriction_base_type IS NULL OR vehicle_restriction_base_type IN ('Double-deckers', 'Specialised (sightseeing, open-top only)', 'Single-deckers / midibuses', 'Minibus', 'Coaches'))",
+    );
+    db.exec(
+      "ALTER TABLE routes ADD COLUMN vehicle_restriction_power_type TEXT CHECK (vehicle_restriction_power_type IS NULL OR vehicle_restriction_power_type IN ('diesel', 'electric', 'hybrid', 'hydrogen'))",
+    );
+    db.exec(
+      "ALTER TABLE routes ADD COLUMN vehicle_restriction_axle_count TEXT CHECK (vehicle_restriction_axle_count IS NULL OR vehicle_restriction_axle_count IN ('twin-axle', 'tri-axle'))",
+    );
+    db.exec("ALTER TABLE routes ADD COLUMN vehicle_restriction_livery_id INTEGER REFERENCES liveries(id)");
+    // Steps to exactly the next version (60), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's own branch
+    // above (found alongside it, 2026-11-14).
+    db.exec("PRAGMA user_version = 60");
+  } else if (currentVersion === 60) {
+    // v60 -> v61 (T183 — private hire revival, Q20/OPEN-ITEMS.md, confirmed
+    // 2026-11-13): a plain nullable ADD COLUMN on drivers, same "no rebuild
+    // risk" precedent as every other plain ADD COLUMN above (drivers is
+    // never RENAMEd/dropped for this). private_hire_income_months is a
+    // brand-new table with no pre-existing rows to migrate at all, so it
+    // needs no ALTER/rebuild here — CREATE TABLE IF NOT EXISTS in the base
+    // SCHEMA above already creates it the moment this save is next opened.
+    db.exec("ALTER TABLE drivers ADD COLUMN private_hire_vehicle_id INTEGER REFERENCES vehicles(id)");
+    // Steps to exactly the next version (61), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's own branch
+    // above (found alongside it, 2026-11-14).
+    db.exec("PRAGMA user_version = 61");
+  } else if (currentVersion === 61) {
+    // v61 -> v62 (T184 — spare bus designation, Q22/OPEN-ITEMS.md,
+    // confirmed 2026-11-13): a plain nullable-with-default ADD COLUMN on
+    // vehicles, same "no rebuild risk" precedent as every other plain
+    // ADD COLUMN above (vehicles is never RENAMEd/dropped for this).
+    db.exec("ALTER TABLE vehicles ADD COLUMN is_spare INTEGER NOT NULL DEFAULT 0");
+    // Steps to exactly the next version (62), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's own branch
+    // above (found alongside it, 2026-11-14).
+    db.exec("PRAGMA user_version = 62");
+  } else if (currentVersion === 62) {
+    // v62 -> v63 (T185 — real lease billing, follow-up to T184, confirmed
+    // 2026-11-14): a plain NOT-NULL-with-default ADD COLUMN on vehicles,
+    // same "no rebuild risk" precedent as every other plain ADD COLUMN
+    // above (vehicles is never RENAMEd/dropped for this) — including a
+    // CHECK constraint on the new column, same as the
+    // vehicle_restriction_* columns' own v59->v60 migration already did.
+    // lease_billing_months is a brand-new table with no pre-existing rows
+    // to migrate, so it needs no ALTER/rebuild here — CREATE TABLE IF NOT
+    // EXISTS in the base SCHEMA above already creates it the moment this
+    // save is next opened.
+    db.exec("ALTER TABLE vehicles ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own'))");
+    // Steps to exactly the next version (63), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's own branch
+    // above (found alongside it, 2026-11-14).
+    db.exec("PRAGMA user_version = 63");
+  } else if (currentVersion === 63) {
+    // v63 -> v64 (removal of T184's spare bus designation, per the user's
+    // own direct instruction 2026-11-14 — see OPEN-ITEMS.md's new entry):
+    // the mechanic (isSpare flag + coverage matching) is dropped entirely,
+    // so the column it was stored in goes too, a real DROP COLUMN rather
+    // than leaving it dead. Confirmed directly (scratch test against
+    // node:sqlite's DatabaseSync) that modern SQLite's own DROP COLUMN
+    // support handles this cleanly — no table rebuild needed, unlike a
+    // RENAME/retype migration elsewhere in this file.
+    db.exec("ALTER TABLE vehicles DROP COLUMN is_spare");
+    // Explicit 64, not `${SCHEMA_VERSION}` (now 65, since the v64->v65
+    // migration below was added after this branch) — the same "set the
+    // real next step, not the shared constant, once a branch stops being
+    // the newest one" fix the v37/v38 branch's own comment already
+    // documents further down this file. Using SCHEMA_VERSION here again
+    // would jump straight past the v64->v65 migration below, leaving a
+    // genuinely v63-or-older save stuck without mirror_source_timetable_
+    // id/mirror_offset_minutes despite PRAGMA user_version correctly
+    // reading as "up to date" — caught live by this file's own v19->v20
+    // full-chain migration test suddenly failing once the v64 branch was
+    // added, not guessed.
+    db.exec("PRAGMA user_version = 64");
+  } else if (currentVersion === 64) {
+    // v64 -> v65 (2026-11-15): a timetable component can mirror another
+    // service's own arrivals instead of using the normal time-band
+    // generator — "a button to set a timetable to have a service after a
+    // settable time after one arrives, it will make return journeys much
+    // easier," confirmed to mean every departure mirrors an arrival of
+    // the referenced service, and confirmed separately that this must
+    // stay a LIVE link ("can the auto timetable bit then automatically
+    // update whenever the other timetable is updated") rather than a
+    // one-time copy — so only the reference (which other route_timetables
+    // row, and the offset) is stored; the actual mirrored departure
+    // minutes are recomputed fresh every time, same as every other
+    // derived/merged view in this schema. Both columns nullable and
+    // default NULL — only a mirroring component ever sets them, every
+    // existing row is unaffected. No ON DELETE behaviour relied on here
+    // (this project doesn't enable `PRAGMA foreign_keys`, confirmed
+    // elsewhere in this file) — a mirror whose source row no longer
+    // exists in a fresh `listAllRouteTimetables()` read simply resolves
+    // to nothing and produces zero departures, the same "can't find it,
+    // don't fake it" convention used throughout this codebase, so no
+    // explicit cleanup is needed when the source is deleted.
+    db.exec("ALTER TABLE route_timetables ADD COLUMN mirror_source_timetable_id INTEGER REFERENCES route_timetables(id)");
+    db.exec("ALTER TABLE route_timetables ADD COLUMN mirror_offset_minutes INTEGER");
+    db.exec("PRAGMA user_version = 65");
+  } else if (currentVersion === 65) {
+    // v65 -> v66 (2026-11-15): a timing point's published leg time became
+    // PADDING above the real fastest achievable time, with a separate
+    // figure for the two fixed AM/PM peak windows — "can it be set so its
+    // an amount of time more than the minimum with a separate time for
+    // peak times of day please" (route-timetable.mts's own TimingPoint
+    // comment has the full reasoning). `timing_points`' own JSON shape
+    // changes from {pointIndex, legMinutes, dwellMinutes} to {pointIndex,
+    // standardPaddingMinutes, peakPaddingMinutes, dwellMinutes}.
+    //
+    // Cannot compute each existing timing point's real historical padding
+    // here — that needs the real fastest-achievable time for its own leg,
+    // which only the WASM router can compute, and the router only runs in
+    // the renderer process, not here (this file's own established "don't
+    // import from the renderer" rule, confirmed by checking: no migration
+    // in this file has ever called into the router). So every existing
+    // timing point's padding is RESET to 0 (both standard and peak) — a
+    // one-time, deliberate reset, not a silently wrong invented number;
+    // the player will see 0 padding (= exactly the real fastest time) the
+    // next time they open each affected timetable, and can re-add
+    // whatever buffer they want. `peakPaddingMinutes: 0` (not null) is a
+    // real, valid figure here, not "unset" — a genuinely island-restricted
+    // route would only ever get null once the player (or the editor UI
+    // enforcing the restriction) saves it that way going forward.
+    //
+    // The new arrival/departure peak-offset columns default to a COPY of
+    // the existing (now-reset-to-zero-padding) non-peak offsets, not an
+    // empty array — since standard and peak padding are both 0 at this
+    // point, the two variants' real computed offsets ARE identical, so
+    // this is the genuinely correct value, not a placeholder, and avoids
+    // buildRouteTimetableGrid ever reading a mismatched-length peak array
+    // before the player next saves that timetable through the UI.
+    db.exec("ALTER TABLE route_timetables ADD COLUMN arrival_offsets_seconds_peak TEXT NOT NULL DEFAULT '[]'");
+    db.exec("ALTER TABLE route_timetables ADD COLUMN departure_offsets_seconds_peak TEXT NOT NULL DEFAULT '[]'");
+    db.exec("UPDATE route_timetables SET arrival_offsets_seconds_peak = arrival_offsets_seconds, departure_offsets_seconds_peak = departure_offsets_seconds");
+    const timingPointRows = db.prepare("SELECT id, timing_points FROM route_timetables").all() as unknown as { id: number; timing_points: string }[];
+    const updateTimingPointsStmt = db.prepare("UPDATE route_timetables SET timing_points = ? WHERE id = ?");
+    for (const row of timingPointRows) {
+      const oldPoints = JSON.parse(row.timing_points) as { pointIndex: number; legMinutes: number; dwellMinutes: number }[];
+      const newPoints = oldPoints.map((tp) => ({
+        pointIndex: tp.pointIndex,
+        standardPaddingMinutes: 0,
+        peakPaddingMinutes: 0,
+        dwellMinutes: tp.dwellMinutes,
+      }));
+      updateTimingPointsStmt.run(JSON.stringify(newPoints), row.id);
+    }
+    db.exec("PRAGMA user_version = 66");
+  } else if (currentVersion === 66) {
+    // v66 -> v67 (2026-11-16): council-triggered stop upgrades (OPEN-
+    // ITEMS.md "Phase 5/9 redesign: stop ownership dropped..."). New
+    // table only — no existing data to migrate, since no stop-upgrade
+    // state existed anywhere before this.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stop_upgrades (
+        stop_osm_id INTEGER PRIMARY KEY,
+        has_seating INTEGER NOT NULL DEFAULT 0,
+        has_lighting INTEGER NOT NULL DEFAULT 0,
+        has_shelter INTEGER NOT NULL DEFAULT 0,
+        seating_installed_game_day INTEGER,
+        lighting_installed_game_day INTEGER,
+        shelter_installed_game_day INTEGER
+      )
+    `);
+    db.exec("PRAGMA user_version = 67");
+  } else if (currentVersion !== SCHEMA_VERSION) {
+    throw new Error(
+      `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
+    );
+  }
     currentVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
   }
 
@@ -1734,7 +2476,10 @@ export interface RouteHailAndRideSection {
 // route of that type — see fare-pricing-panel.ts's fareRequirements()) and,
 // for "night" specifically, limits that route's own timetable to a real
 // window (UK-EXPANSION.md §10: "Operating window: typically 2345–0400").
-export type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance";
+// "staff" (schema v57->v58, live request 2026-11-08) is free — excluded
+// from the fare-pricing panel entirely rather than gating fields of its
+// own — and has no enforced time window, unlike night's.
+export type RouteType = "ordinary" | "night" | "sightseeing" | "airport_express" | "long_distance" | "staff";
 
 export interface Route {
   id: number;
@@ -1747,6 +2492,11 @@ export interface Route {
   colour: string;
   name: string | null;
   pickupDropoffOverrides: RoutePickupDropoffOverride[];
+  // Which of "points" are timing points (schema v56->v57) — see the
+  // routes table's own SCHEMA comment. Set via setRouteTimingPoint, not
+  // createRoute/updateRoute, same "dedicated setter for a less-central
+  // field" pattern as pickup/dropoff overrides and branding.
+  timingPointIndexes: number[];
   parentRouteId: number | null;
   variationLetter: string | null;
   composedFromRouteIds: number[];
@@ -1760,6 +2510,25 @@ export interface Route {
   // ticket machine tier.
   assignedLiveryId: number | null;
   useBrandedColour: boolean;
+  // Manual, player-set vehicle eligibility restrictions (Q19, OPEN-ITEMS.md
+  // Q18+Q19 plan) — set via setRouteVehicleRestrictions, not createRoute/
+  // updateRoute, same "dedicated setter for a less-central field" pattern
+  // as assignedLiveryId/useBrandedColour just above.
+  vehicleRestrictions: VehicleRestrictions;
+}
+
+// Manual, player-set vehicle eligibility restrictions on a route (Q19) —
+// each axis independently nullable; unset means "any vehicle qualifies on
+// that axis." Composes alongside (not instead of) the automatic OSM-
+// road-limit axis (height/weight/length/width), which has no column here
+// at all since it's derived from the pipeline road graph + vehicle
+// catalogue at read time, not stored per-route. See
+// route-vehicle-eligibility.mts for the combined check.
+export interface VehicleRestrictions {
+  baseType: VehicleCategory | null;
+  powerType: PowerType | null;
+  axleCount: "twin-axle" | "tri-axle" | null;
+  liveryId: number | null;
 }
 
 // A route's own build sequence (shared long-distance sections, 2026-10-31)
@@ -1785,6 +2554,7 @@ interface RouteRow {
   colour: string;
   name: string | null;
   pickup_dropoff_overrides: string;
+  timing_point_indexes: string;
   parent_route_id: number | null;
   variation_letter: string | null;
   composed_from_route_ids: string;
@@ -1794,6 +2564,10 @@ interface RouteRow {
   is_minor_variation: number;
   assigned_livery_id: number | null;
   use_branded_colour: number;
+  vehicle_restriction_base_type: string | null;
+  vehicle_restriction_power_type: string | null;
+  vehicle_restriction_axle_count: string | null;
+  vehicle_restriction_livery_id: number | null;
 }
 
 function routeFromRow(row: RouteRow): Route {
@@ -1808,6 +2582,7 @@ function routeFromRow(row: RouteRow): Route {
     colour: row.colour,
     name: row.name,
     pickupDropoffOverrides: JSON.parse(row.pickup_dropoff_overrides) as RoutePickupDropoffOverride[],
+    timingPointIndexes: JSON.parse(row.timing_point_indexes) as number[],
     parentRouteId: row.parent_route_id === null ? null : Number(row.parent_route_id),
     variationLetter: row.variation_letter,
     composedFromRouteIds: JSON.parse(row.composed_from_route_ids) as number[],
@@ -1817,6 +2592,12 @@ function routeFromRow(row: RouteRow): Route {
     isMinorVariation: row.is_minor_variation !== 0,
     assignedLiveryId: row.assigned_livery_id === null ? null : Number(row.assigned_livery_id),
     useBrandedColour: row.use_branded_colour !== 0,
+    vehicleRestrictions: {
+      baseType: row.vehicle_restriction_base_type as VehicleCategory | null,
+      powerType: row.vehicle_restriction_power_type as PowerType | null,
+      axleCount: row.vehicle_restriction_axle_count as "twin-axle" | "tri-axle" | null,
+      liveryId: row.vehicle_restriction_livery_id === null ? null : Number(row.vehicle_restriction_livery_id),
+    },
   };
 }
 
@@ -1837,13 +2618,20 @@ export function createRoute(
   segments: RouteSegment[] = [],
   routeType: RouteType = "ordinary",
   isMinorVariation = false,
+  // Set directly here, not left to the always-empty default createRoute
+  // used to leave it at — a live user request (2026-11-07): "timing
+  // points should also be copied between variations," so startVariation
+  // (route-draw.ts) seeds this from the parent route's own
+  // timingPointIndexes, and a brand-new route's own draft checkboxes
+  // (set while drawing, same screen) land here too.
+  timingPointIndexes: number[] = [],
 ): Route {
   if (isMinorVariation && variationLetter !== null) {
     throw new Error("createRoute: a minor variation can't also have a variation letter");
   }
   const result = db
     .prepare(
-      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routes (depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation, timing_point_indexes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       depotGroupId,
@@ -1861,6 +2649,7 @@ export function createRoute(
       JSON.stringify(segments),
       routeType,
       isMinorVariation ? 1 : 0,
+      JSON.stringify(timingPointIndexes),
     );
   return {
     id: Number(result.lastInsertRowid),
@@ -1873,6 +2662,7 @@ export function createRoute(
     colour,
     name,
     pickupDropoffOverrides: [],
+    timingPointIndexes,
     parentRouteId,
     variationLetter,
     composedFromRouteIds,
@@ -1882,18 +2672,25 @@ export function createRoute(
     isMinorVariation,
     assignedLiveryId: null,
     useBrandedColour: false,
+    vehicleRestrictions: { baseType: null, powerType: null, axleCount: null, liveryId: null },
   };
 }
 
 // Editing a saved route (route-panel.ts's "Edit" action) — updates every
 // field in place rather than creating a duplicate, and always clears the
 // route's own timetables (DESIGN.md §7) regardless of which fields
-// actually changed. A timetable's timing points and offsets are indexed
-// against the route's exact point list, so any edit could silently
-// invalidate them; clearing unconditionally is simpler than diffing the
-// old and new point lists to detect whether stops specifically changed,
-// and errs on the side of never leaving a stale-but-technically-valid
-// timetable behind.
+// actually changed. A timetable's offsets are indexed against the
+// route's exact point list, so any edit could silently invalidate them;
+// clearing unconditionally is simpler than diffing the old and new point
+// lists to detect whether stops specifically changed, and errs on the
+// side of never leaving a stale-but-technically-valid timetable behind.
+// pickup_dropoff_overrides stays reset to '[]' unconditionally (route-
+// draw.ts has no UI for it, so there's nothing a caller could usefully
+// pass through), but timing_point_indexes is now a real parameter
+// (2026-11-07, live request: "when making a route there is no way to
+// set a timing point") — route-draw.ts's own stop list can flag one
+// while drawing/editing, and the draft's current flags are what this
+// writes, not an unconditional wipe.
 export function updateRoute(
   db: SaveDb,
   id: number,
@@ -1912,19 +2709,33 @@ export function updateRoute(
   segments: RouteSegment[] = [],
   routeType: RouteType = "ordinary",
   isMinorVariation = false,
+  timingPointIndexes: number[] = [],
 ): Route {
   if (isMinorVariation && variationLetter !== null) {
     throw new Error("updateRoute: a minor variation can't also have a variation letter");
   }
-  // Branding (assigned_livery_id/use_branded_colour) is set via its own
-  // setRouteBranding, not here — fetched so the returned object reflects
-  // what's actually still in the DB rather than silently resetting it in
-  // the caller's eyes (this UPDATE never touches those two columns).
-  const existingBranding = db.prepare("SELECT assigned_livery_id, use_branded_colour FROM routes WHERE id = ?").get(id) as
-    | { assigned_livery_id: number | null; use_branded_colour: number }
+  // Branding (assigned_livery_id/use_branded_colour) and the manual vehicle
+  // restrictions (vehicle_restriction_*, set via setRouteVehicleRestrictions)
+  // are both set via their own dedicated setters, not here — fetched so the
+  // returned object reflects what's actually still in the DB rather than
+  // silently resetting it in the caller's eyes (this UPDATE never touches
+  // any of these columns).
+  const existingBranding = db
+    .prepare(
+      "SELECT assigned_livery_id, use_branded_colour, vehicle_restriction_base_type, vehicle_restriction_power_type, vehicle_restriction_axle_count, vehicle_restriction_livery_id FROM routes WHERE id = ?",
+    )
+    .get(id) as
+    | {
+        assigned_livery_id: number | null;
+        use_branded_colour: number;
+        vehicle_restriction_base_type: string | null;
+        vehicle_restriction_power_type: string | null;
+        vehicle_restriction_axle_count: string | null;
+        vehicle_restriction_livery_id: number | null;
+      }
     | undefined;
   db.prepare(
-    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?, is_minor_variation = ?
+    `UPDATE routes SET depot_group_id = ?, number = ?, points = ?, orientation = ?, terminus_index = ?, start_index = ?, colour = ?, name = ?, pickup_dropoff_overrides = '[]', timing_point_indexes = ?, parent_route_id = ?, variation_letter = ?, composed_from_route_ids = ?, hail_and_ride_sections = ?, segments = ?, route_type = ?, is_minor_variation = ?
      WHERE id = ?`,
   ).run(
     depotGroupId,
@@ -1935,6 +2746,7 @@ export function updateRoute(
     startIndex,
     colour,
     name,
+    JSON.stringify(timingPointIndexes),
     parentRouteId,
     variationLetter,
     JSON.stringify(composedFromRouteIds),
@@ -1956,6 +2768,7 @@ export function updateRoute(
     colour,
     name,
     pickupDropoffOverrides: [],
+    timingPointIndexes,
     parentRouteId,
     variationLetter,
     composedFromRouteIds,
@@ -1965,6 +2778,12 @@ export function updateRoute(
     isMinorVariation,
     assignedLiveryId: existingBranding?.assigned_livery_id ?? null,
     useBrandedColour: (existingBranding?.use_branded_colour ?? 0) !== 0,
+    vehicleRestrictions: {
+      baseType: (existingBranding?.vehicle_restriction_base_type ?? null) as VehicleCategory | null,
+      powerType: (existingBranding?.vehicle_restriction_power_type ?? null) as PowerType | null,
+      axleCount: (existingBranding?.vehicle_restriction_axle_count ?? null) as "twin-axle" | "tri-axle" | null,
+      liveryId: existingBranding?.vehicle_restriction_livery_id ?? null,
+    },
   };
 }
 
@@ -1980,6 +2799,47 @@ export function updateRoute(
 // nothing from the DB at all, so it stays in the renderer).
 export function setRouteBranding(db: SaveDb, routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean): void {
   db.prepare("UPDATE routes SET assigned_livery_id = ?, use_branded_colour = ? WHERE id = ?").run(assignedLiveryId, useBrandedColour ? 1 : 0, routeId);
+}
+
+// Sets just a route's own colour (2026-11-08, live bug report: clicking the
+// colour swatch went through updateRoute, which unconditionally clears
+// route_timetables — see its own comment above — so a pure colour change was
+// wiping a route's timetable as an unwanted side effect). Same "dedicated
+// setter for a less-central field" pattern as setRouteBranding just above:
+// a plain UPDATE touching only `colour`, nothing else. A minor variation's
+// own stored colour is irrelevant for display (route-combine-variations.mts's
+// effectiveRouteColour always resolves through its parent instead), but this
+// still writes it through unconditionally rather than special-casing minor
+// variations here — the renderer decides who's allowed to call this at all
+// (route-panel.ts only shows the swatch as clickable for a non-minor-variation
+// route).
+export function setRouteColour(db: SaveDb, routeId: number, colour: string): void {
+  db.prepare("UPDATE routes SET colour = ? WHERE id = ?").run(colour, routeId);
+}
+
+// Same "dedicated setter, not updateRoute" reasoning as setRouteColour —
+// a plain UPDATE touching only `orientation`, nothing else. Used by the
+// renderer's startup repair pass (stops-layer.ts) that recomputes every
+// route's orientation once real station coordinates are loaded, fixing the
+// 2026-11-12 bug where route-orientation.ts's own circular-route branch
+// ignored the main bus station entirely for a terminus-loop route.
+export function setRouteOrientation(db: SaveDb, routeId: number, orientation: "inbound" | "outbound"): void {
+  db.prepare("UPDATE routes SET orientation = ? WHERE id = ?").run(orientation, routeId);
+}
+
+// Sets a route's own manual vehicle eligibility restrictions (Q19,
+// OPEN-ITEMS.md Q18+Q19 plan) — a dedicated setter, not createRoute/
+// updateRoute, same "dedicated setter for a less-central field" pattern as
+// setRouteBranding/setRouteColour/setRouteOrientation above (neither
+// createRoute's INSERT nor updateRoute's UPDATE touches these 4 columns,
+// so a plain route edit can't silently wipe a restriction either). Not
+// validated against anything here — same separation as setRouteBranding's
+// own doc comment: this is a pure DB write, the caller (route-panel.ts)
+// decides what's offered.
+export function setRouteVehicleRestrictions(db: SaveDb, routeId: number, restrictions: VehicleRestrictions): void {
+  db.prepare(
+    "UPDATE routes SET vehicle_restriction_base_type = ?, vehicle_restriction_power_type = ?, vehicle_restriction_axle_count = ?, vehicle_restriction_livery_id = ? WHERE id = ?",
+  ).run(restrictions.baseType, restrictions.powerType, restrictions.axleCount, restrictions.liveryId, routeId);
 }
 
 // Refreshes a composed route's own cached "points" to match what it should
@@ -2077,10 +2937,47 @@ export function setRoutePickupDropoffOverride(
   );
 }
 
+// Flags (or unflags) one of a route's own points as a timing point (see
+// the routes table's own SCHEMA comment) — independent of updateRoute,
+// same shape as setRoutePickupDropoffOverride right above. Unlike that
+// one, this DOES reach into route_timetables: a point no longer flagged
+// can't keep a published time for it lying around (it would be
+// unreachable from route-timetable-panel.ts going forward, and stale if
+// the point index were ever reused), so it's stripped from every
+// existing component's own "timing_points" JSON. Flagging a NEW timing
+// point needs no such cleanup — every existing component simply has no
+// entry for it yet, same as adding one has always worked.
+export function setRouteTimingPoint(db: SaveDb, routeId: number, pointIndex: number, isTimingPoint: boolean): void {
+  const row = db.prepare("SELECT timing_point_indexes FROM routes WHERE id = ?").get(routeId) as
+    | { timing_point_indexes: string }
+    | undefined;
+  if (!row) return;
+  const indexes = new Set(JSON.parse(row.timing_point_indexes) as number[]);
+  if (isTimingPoint) {
+    indexes.add(pointIndex);
+  } else {
+    indexes.delete(pointIndex);
+    const timetableRows = db
+      .prepare("SELECT id, timing_points FROM route_timetables WHERE route_id = ?")
+      .all(routeId) as unknown as { id: number; timing_points: string }[];
+    const updateTimingPoints = db.prepare("UPDATE route_timetables SET timing_points = ? WHERE id = ?");
+    for (const tRow of timetableRows) {
+      const points = (JSON.parse(tRow.timing_points) as { pointIndex: number }[]).filter(
+        (tp) => tp.pointIndex !== pointIndex,
+      );
+      updateTimingPoints.run(JSON.stringify(points), tRow.id);
+    }
+  }
+  db.prepare("UPDATE routes SET timing_point_indexes = ? WHERE id = ?").run(
+    JSON.stringify([...indexes].sort((a, b) => a - b)),
+    routeId,
+  );
+}
+
 export function listRoutes(db: SaveDb): Route[] {
   const rows = db
     .prepare(
-      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation, assigned_livery_id, use_branded_colour FROM routes ORDER BY number",
+      "SELECT id, depot_group_id, number, points, orientation, terminus_index, start_index, colour, name, pickup_dropoff_overrides, timing_point_indexes, parent_route_id, variation_letter, composed_from_route_ids, hail_and_ride_sections, segments, route_type, is_minor_variation, assigned_livery_id, use_branded_colour, vehicle_restriction_base_type, vehicle_restriction_power_type, vehicle_restriction_axle_count, vehicle_restriction_livery_id FROM routes ORDER BY number",
     )
     .all() as unknown as RouteRow[];
   return rows.map(routeFromRow);
@@ -2121,16 +3018,14 @@ export function deleteRoute(db: SaveDb, id: number): void {
 // Stored underneath as a weekday bitmask + term-time facet (schema
 // v19->v20, see SCHEMA's own comment) so real sub-patterns Skye's actual
 // timetables need (UK-EXPANSION.md §13 — 608/607's Tuesday/Thursday
-// footnote, 607's own separate Friday-differs pattern, Portree High
-// School vs Portree Square's school-day split) can be represented without
-// another schema change every time real data shows a new one. `DayType`
-// itself stays exactly the original 3 presets for now — no UI lets a
-// player create anything else yet, that's a separate later increment —
-// translated at this boundary by dayTypeToMaskAndFacet/
-// maskAndFacetToDayType below.
-export type DayType = "monday_friday" | "saturday" | "sunday";
-export const DAY_TYPES: readonly DayType[] = ["monday_friday", "saturday", "sunday"];
-
+// footnote, 607's own separate Friday-differs pattern) can be represented
+// without another schema change every time real data shows a new one. The
+// weekday_mask side is now exposed directly as a freeform number (the
+// original fixed-3-preset `DayType` was lifted 2026-11-07 once the
+// player-facing day-type picker needed it) — term_facet stays hardcoded to
+// 'any' below, now dormant rather than deferred: its only real use case
+// (Skye's own school-day timetable split) no longer exists once school
+// contracts and the school-day/holiday split were dropped, 2026-11-08.
 export type TermFacet = "any" | "term_time" | "holiday";
 
 // Bit 0 = Monday ... bit 6 = Sunday.
@@ -2149,39 +3044,24 @@ export const MONDAY_FRIDAY_MASK =
 export const SATURDAY_MASK: number = WEEKDAY_BITS.saturday;
 export const SUNDAY_MASK: number = WEEKDAY_BITS.sunday;
 
-function dayTypeToMaskAndFacet(dayType: DayType): { weekdayMask: number; termFacet: TermFacet } {
-  switch (dayType) {
-    case "monday_friday":
-      return { weekdayMask: MONDAY_FRIDAY_MASK, termFacet: "any" };
-    case "saturday":
-      return { weekdayMask: SATURDAY_MASK, termFacet: "any" };
-    case "sunday":
-      return { weekdayMask: SUNDAY_MASK, termFacet: "any" };
-  }
-}
-
-// Throws on any combination beyond the 3 original presets — correct for
-// now, since nothing can create one yet (see the type's own doc comment
-// above); once a real picker exists this becomes the natural place to
-// widen DayType itself rather than a fixed 3-value union.
-function maskAndFacetToDayType(weekdayMask: number, termFacet: string): DayType {
-  if (weekdayMask === MONDAY_FRIDAY_MASK && termFacet === "any") return "monday_friday";
-  if (weekdayMask === SATURDAY_MASK && termFacet === "any") return "saturday";
-  if (weekdayMask === SUNDAY_MASK && termFacet === "any") return "sunday";
-  throw new Error(
-    `unrecognised weekday_mask/term_facet combination (${weekdayMask}/${termFacet}) — no DayType beyond the 3 original presets exists yet`,
-  );
-}
-
 // A timing point is a published scheduling location, not every physical
-// stop (route-timetable.mts's own comment has the full reasoning).
-// "legMinutes" is the published running time, in whole minutes, from the
-// previous timing point (or point 0) to this one's arrival; "dwellSeconds"
+// stop (route-timetable.mts's own comment has the full reasoning). WHICH
+// points are timing points now lives on the route itself
+// (routes.timing_point_indexes, above); this is just the per-timetable-
+// component PADDING at each of those points (schema v65->v66, 2026-11-15)
+// — whole minutes ADDED ON TOP of the real fastest achievable time,
+// "standardPaddingMinutes" outside the two fixed peak windows,
+// "peakPaddingMinutes" inside either (null for an island route's own
+// single timing point — no separate peak figure at all). "dwellMinutes"
 // is an optional layover (departure - arrival), 0 for the common case.
+// Whole minutes, not seconds (route-timetable.mts's own TimingPoint,
+// which this mirrors, confirmed this 2026-11-07: "timetables run on
+// minutes not seconds").
 export interface TimingPoint {
   pointIndex: number;
-  legMinutes: number;
-  dwellSeconds: number;
+  standardPaddingMinutes: number;
+  peakPaddingMinutes: number | null;
+  dwellMinutes: number;
 }
 
 // One or more of these per timetable (DESIGN.md §7 "time-of-day bands") —
@@ -2199,14 +3079,22 @@ export type RouteTimetableDirection = "both" | "outbound" | "inbound";
 export interface RouteTimetable {
   id: number;
   routeId: number;
-  dayType: DayType;
+  weekdayMask: number;
   direction: RouteTimetableDirection;
   timeBands: TimeBand[];
   timingPoints: TimingPoint[];
   arrivalOffsetsSeconds: number[];
   departureOffsetsSeconds: number[];
+  // Schema v65->v66 — see route_timetables' own SCHEMA comment.
+  arrivalOffsetsSecondsPeak: number[];
+  departureOffsetsSecondsPeak: number[];
   excludedDepartureMinutes: number[];
   customDepartureMinutes: number[];
+  // Schema v64->v65 — see route_timetables' own SCHEMA comment. Both null
+  // for the ordinary (non-mirroring) case, which is every row before this
+  // schema version and most rows after it.
+  mirrorSourceTimetableId: number | null;
+  mirrorOffsetMinutes: number | null;
 }
 
 interface RouteTimetableRow {
@@ -2219,22 +3107,33 @@ interface RouteTimetableRow {
   timing_points: string;
   arrival_offsets_seconds: string;
   departure_offsets_seconds: string;
+  arrival_offsets_seconds_peak: string;
+  departure_offsets_seconds_peak: string;
   excluded_departure_minutes: string;
   custom_departure_minutes: string;
+  mirror_source_timetable_id: number | null;
+  mirror_offset_minutes: number | null;
 }
+
+const ROUTE_TIMETABLE_COLUMNS =
+  "id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, arrival_offsets_seconds_peak, departure_offsets_seconds_peak, excluded_departure_minutes, custom_departure_minutes, mirror_source_timetable_id, mirror_offset_minutes";
 
 function routeTimetableFromRow(row: RouteTimetableRow): RouteTimetable {
   return {
     id: row.id,
     routeId: row.route_id,
-    dayType: maskAndFacetToDayType(row.weekday_mask, row.term_facet),
+    weekdayMask: row.weekday_mask,
     direction: row.direction as RouteTimetableDirection,
     timeBands: JSON.parse(row.time_bands) as TimeBand[],
     timingPoints: JSON.parse(row.timing_points) as TimingPoint[],
     arrivalOffsetsSeconds: JSON.parse(row.arrival_offsets_seconds) as number[],
     departureOffsetsSeconds: JSON.parse(row.departure_offsets_seconds) as number[],
+    arrivalOffsetsSecondsPeak: JSON.parse(row.arrival_offsets_seconds_peak) as number[],
+    departureOffsetsSecondsPeak: JSON.parse(row.departure_offsets_seconds_peak) as number[],
     excludedDepartureMinutes: JSON.parse(row.excluded_departure_minutes) as number[],
     customDepartureMinutes: JSON.parse(row.custom_departure_minutes) as number[],
+    mirrorSourceTimetableId: row.mirror_source_timetable_id,
+    mirrorOffsetMinutes: row.mirror_offset_minutes,
   };
 }
 
@@ -2244,27 +3143,35 @@ function routeTimetableFromRow(row: RouteTimetableRow): RouteTimetable {
 export function upsertRouteTimetable(
   db: SaveDb,
   routeId: number,
-  dayType: DayType,
+  weekdayMask: number,
   direction: RouteTimetableDirection,
   timeBands: TimeBand[],
   timingPoints: TimingPoint[],
   arrivalOffsetsSeconds: number[],
   departureOffsetsSeconds: number[],
+  arrivalOffsetsSecondsPeak: number[],
+  departureOffsetsSecondsPeak: number[],
   excludedDepartureMinutes: number[],
   customDepartureMinutes: number[],
+  mirrorSourceTimetableId: number | null = null,
+  mirrorOffsetMinutes: number | null = null,
 ): RouteTimetable {
-  const { weekdayMask, termFacet } = dayTypeToMaskAndFacet(dayType);
+  const termFacet: TermFacet = "any"; // exposing term-time facet is a later increment
   db.prepare(
     `INSERT INTO route_timetables
-       (route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, arrival_offsets_seconds_peak, departure_offsets_seconds_peak, excluded_departure_minutes, custom_departure_minutes, mirror_source_timetable_id, mirror_offset_minutes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (route_id, weekday_mask, term_facet, direction) DO UPDATE SET
        time_bands = excluded.time_bands,
        timing_points = excluded.timing_points,
        arrival_offsets_seconds = excluded.arrival_offsets_seconds,
        departure_offsets_seconds = excluded.departure_offsets_seconds,
+       arrival_offsets_seconds_peak = excluded.arrival_offsets_seconds_peak,
+       departure_offsets_seconds_peak = excluded.departure_offsets_seconds_peak,
        excluded_departure_minutes = excluded.excluded_departure_minutes,
-       custom_departure_minutes = excluded.custom_departure_minutes`,
+       custom_departure_minutes = excluded.custom_departure_minutes,
+       mirror_source_timetable_id = excluded.mirror_source_timetable_id,
+       mirror_offset_minutes = excluded.mirror_offset_minutes`,
   ).run(
     routeId,
     weekdayMask,
@@ -2274,12 +3181,16 @@ export function upsertRouteTimetable(
     JSON.stringify(timingPoints),
     JSON.stringify(arrivalOffsetsSeconds),
     JSON.stringify(departureOffsetsSeconds),
+    JSON.stringify(arrivalOffsetsSecondsPeak),
+    JSON.stringify(departureOffsetsSecondsPeak),
     JSON.stringify(excludedDepartureMinutes),
     JSON.stringify(customDepartureMinutes),
+    mirrorSourceTimetableId,
+    mirrorOffsetMinutes,
   );
   const row = db
     .prepare(
-      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+      `SELECT ${ROUTE_TIMETABLE_COLUMNS}
        FROM route_timetables WHERE route_id = ? AND weekday_mask = ? AND term_facet = ? AND direction = ?`,
     )
     .get(routeId, weekdayMask, termFacet, direction) as unknown as RouteTimetableRow;
@@ -2289,7 +3200,7 @@ export function upsertRouteTimetable(
 export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteTimetable[] {
   const rows = db
     .prepare(
-      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
+      `SELECT ${ROUTE_TIMETABLE_COLUMNS}
        FROM route_timetables WHERE route_id = ? ORDER BY weekday_mask, term_facet`,
     )
     .all(routeId) as unknown as RouteTimetableRow[];
@@ -2298,14 +3209,12 @@ export function listRouteTimetablesForRoute(db: SaveDb, routeId: number): RouteT
 
 // Every route_timetable across every route — what the stop/station
 // timetable viewer (T29) will scan to find every service calling at a
-// given stop, rather than looking routes up one at a time.
+// given stop, rather than looking routes up one at a time. Also the list
+// a mirroring component's own reference gets resolved against
+// (route-timetable-grid.mts's makeTimetableReferenceResolver) — a mirror
+// can reference ANY route's timetable, not just a sibling/family one.
 export function listAllRouteTimetables(db: SaveDb): RouteTimetable[] {
-  const rows = db
-    .prepare(
-      `SELECT id, route_id, weekday_mask, term_facet, direction, time_bands, timing_points, arrival_offsets_seconds, departure_offsets_seconds, excluded_departure_minutes, custom_departure_minutes
-       FROM route_timetables`,
-    )
-    .all() as unknown as RouteTimetableRow[];
+  const rows = db.prepare(`SELECT ${ROUTE_TIMETABLE_COLUMNS} FROM route_timetables`).all() as unknown as RouteTimetableRow[];
   return rows.map(routeTimetableFromRow);
 }
 
@@ -2321,6 +3230,9 @@ export interface PlayerStop {
   lon: number;
   lat: number;
   busLegal: boolean;
+  // Schema v57->v58 — non-null only for a depot's own staff-route stop
+  // (createDepotStop). See the player_stops table's own SCHEMA comment.
+  depotId: number | null;
 }
 
 interface PlayerStopRow {
@@ -2328,21 +3240,35 @@ interface PlayerStopRow {
   lon: number;
   lat: number;
   bus_legal: number;
+  depot_id: number | null;
 }
 
 function playerStopFromRow(row: PlayerStopRow): PlayerStop {
-  return { osmId: -row.id, lon: row.lon, lat: row.lat, busLegal: row.bus_legal !== 0 };
+  return { osmId: -row.id, lon: row.lon, lat: row.lat, busLegal: row.bus_legal !== 0, depotId: row.depot_id };
 }
 
 export function createPlayerStop(db: SaveDb, lon: number, lat: number, busLegal: boolean): PlayerStop {
   const result = db
     .prepare("INSERT INTO player_stops (lon, lat, bus_legal, created_at) VALUES (?, ?, ?, ?)")
     .run(lon, lat, busLegal ? 1 : 0, new Date().toISOString());
-  return { osmId: -Number(result.lastInsertRowid), lon, lat, busLegal };
+  return { osmId: -Number(result.lastInsertRowid), lon, lat, busLegal, depotId: null };
+}
+
+// A depot's own staff-route stop (schema v57->v58) — see player_stops'
+// own SCHEMA comment. At most one per depot; throws if one already
+// exists (the caller, depot-placement.ts, only ever offers this button
+// when stopByDepot has nothing for this depot yet).
+export function createDepotStop(db: SaveDb, depotId: number): PlayerStop {
+  const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
+  if (!depot) throw new Error(`createDepotStop: no such depot ${depotId}`);
+  const result = db
+    .prepare("INSERT INTO player_stops (lon, lat, bus_legal, created_at, depot_id) VALUES (?, ?, 1, ?, ?)")
+    .run(depot.lon, depot.lat, new Date().toISOString(), depotId);
+  return { osmId: -Number(result.lastInsertRowid), lon: depot.lon, lat: depot.lat, busLegal: true, depotId };
 }
 
 export function listPlayerStops(db: SaveDb): PlayerStop[] {
-  const rows = db.prepare("SELECT id, lon, lat, bus_legal FROM player_stops").all() as unknown as PlayerStopRow[];
+  const rows = db.prepare("SELECT id, lon, lat, bus_legal, depot_id FROM player_stops").all() as unknown as PlayerStopRow[];
   return rows.map(playerStopFromRow);
 }
 
@@ -2452,6 +3378,10 @@ export function deleteDepotEntrance(db: SaveDb, id: number): void {
 
 export function deleteDepot(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM depot_entrances WHERE depot_id = ?").run(id);
+  // The depot's own staff-route stop (schema v57->v58), if it ever
+  // placed one — same "no FK cascade enabled, so delete the dependent
+  // first" convention as depot_entrances right above.
+  db.prepare("DELETE FROM player_stops WHERE depot_id = ?").run(id);
   db.prepare("DELETE FROM depots WHERE id = ?").run(id);
 }
 
@@ -2459,7 +3389,12 @@ export function deleteDepot(db: SaveDb, id: number): void {
 // tables' own comments in SCHEMA. Exact mirror of the Depot/DepotEntrance
 // functions above except there is no owning depot_group_id (a dealer
 // isn't owned by any one operator) and "manufacturer" replaces that field.
-export type DealerManufacturer = "volvo" | "adl" | "western_commercial" | "wrightbus" | "yutong";
+// 'western_commercial' -> 'evm' (schema v58->v59, T179, OPEN-ITEMS.md,
+// confirmed 2026-11-13) — Western Commercial only ever stood in for
+// EVM-prefixed vehicles (Sprinter/EVM Cityline) before England was in
+// scope; removed entirely, not just renamed, now that EVM has its own
+// real dealer entry.
+export type DealerManufacturer = "volvo" | "adl" | "evm" | "wrightbus" | "yutong";
 export type DealerEntranceMode = DepotEntranceMode;
 
 export interface DealerEntrance {
@@ -2477,6 +3412,7 @@ export interface Dealer {
   lon: number;
   lat: number;
   isEntrancesComplete: boolean;
+  isRepowerSite: boolean;
 }
 
 interface DealerRow {
@@ -2486,10 +3422,19 @@ interface DealerRow {
   lon: number;
   lat: number;
   is_entrances_complete: number;
+  is_repower_site: number;
 }
 
 function dealerFromRow(row: DealerRow): Dealer {
-  return { id: row.id, name: row.name, manufacturer: row.manufacturer, lon: row.lon, lat: row.lat, isEntrancesComplete: row.is_entrances_complete !== 0 };
+  return {
+    id: row.id,
+    name: row.name,
+    manufacturer: row.manufacturer,
+    lon: row.lon,
+    lat: row.lat,
+    isEntrancesComplete: row.is_entrances_complete !== 0,
+    isRepowerSite: row.is_repower_site !== 0,
+  };
 }
 
 interface DealerEntranceRow {
@@ -2522,12 +3467,31 @@ export function createDealer(
       .run(dealerId, e.lon, e.lat, e.mode);
     return { id: Number(entranceResult.lastInsertRowid), dealerId, lon: e.lon, lat: e.lat, mode: e.mode };
   });
-  return { dealer: { id: dealerId, name, manufacturer, lon, lat, isEntrancesComplete: false }, entrances: createdEntrances };
+  return { dealer: { id: dealerId, name, manufacturer, lon, lat, isEntrancesComplete: false, isRepowerSite: false }, entrances: createdEntrances };
 }
 
 export function listDealers(db: SaveDb): Dealer[] {
-  const rows = db.prepare("SELECT id, name, manufacturer, lon, lat, is_entrances_complete FROM dealers").all() as unknown as DealerRow[];
+  const rows = db.prepare("SELECT id, name, manufacturer, lon, lat, is_entrances_complete, is_repower_site FROM dealers").all() as unknown as DealerRow[];
   return rows.map(dealerFromRow);
+}
+
+// At most one dealer per manufacturer may be the re-power site (T179,
+// confirmed 2026-11-13: "only one place for each manufacturer can
+// re-power buses") — enforced here, in the application layer, not a
+// CHECK (the same reasoning routes.variation_letter's own mutual-
+// exclusivity rule already uses this file for: a CHECK can't express
+// "unique among rows sharing another column's value" cleanly, and every
+// real caller is already TypeScript-typed, which is the enforcement
+// that matters day to day). Clears any OTHER dealer of the same
+// manufacturer first, so there's never ambiguity about which one is
+// "the" site.
+export function setDealerRepowerSite(db: SaveDb, id: number, isRepowerSite: boolean): void {
+  const dealer = db.prepare("SELECT manufacturer FROM dealers WHERE id = ?").get(id) as { manufacturer: DealerManufacturer } | undefined;
+  if (!dealer) throw new Error(`setDealerRepowerSite: no dealer with id ${id}`);
+  if (isRepowerSite) {
+    db.prepare("UPDATE dealers SET is_repower_site = 0 WHERE manufacturer = ? AND id != ?").run(dealer.manufacturer, id);
+  }
+  db.prepare("UPDATE dealers SET is_repower_site = ? WHERE id = ?").run(isRepowerSite ? 1 : 0, id);
 }
 
 // Explicit, player-confirmed "I've added every entrance this dealer
@@ -2585,6 +3549,19 @@ export function createStopGroup(db: SaveDb): { id: number } {
 
 export function listStopGroupIds(db: SaveDb): number[] {
   const rows = db.prepare("SELECT id FROM stop_groups").all() as unknown as { id: number }[];
+  return rows.map((r) => Number(r.id));
+}
+
+// A player-created bus station — see the player_bus_stations table's own
+// comment in SCHEMA for why this mints only an id, with everything else
+// (name, membership, position) living in the override layer / renderer.
+export function createPlayerBusStation(db: SaveDb): { id: number } {
+  const result = db.prepare("INSERT INTO player_bus_stations (created_at) VALUES (?)").run(new Date().toISOString());
+  return { id: Number(result.lastInsertRowid) };
+}
+
+export function listPlayerBusStationIds(db: SaveDb): number[] {
+  const rows = db.prepare("SELECT id FROM player_bus_stations").all() as unknown as { id: number }[];
   return rows.map((r) => Number(r.id));
 }
 
@@ -2909,6 +3886,330 @@ export function deleteRepaintBooking(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM repaint_bookings WHERE id = ?").run(id);
 }
 
+// --- Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9 redesign:
+// stop ownership dropped...", 2026-11-16) ---
+
+export type StopUpgradeType = "seating" | "lighting" | "shelter";
+
+export interface StopUpgradeState {
+  stopOsmId: number;
+  hasSeating: boolean;
+  hasLighting: boolean;
+  hasShelter: boolean;
+  seatingInstalledGameDay: number | null;
+  lightingInstalledGameDay: number | null;
+  shelterInstalledGameDay: number | null;
+}
+
+interface StopUpgradeRow {
+  stop_osm_id: number;
+  has_seating: number;
+  has_lighting: number;
+  has_shelter: number;
+  seating_installed_game_day: number | null;
+  lighting_installed_game_day: number | null;
+  shelter_installed_game_day: number | null;
+}
+
+const STOP_UPGRADE_COLUMNS = "stop_osm_id, has_seating, has_lighting, has_shelter, seating_installed_game_day, lighting_installed_game_day, shelter_installed_game_day";
+
+function stopUpgradeFromRow(row: StopUpgradeRow): StopUpgradeState {
+  return {
+    stopOsmId: row.stop_osm_id,
+    hasSeating: row.has_seating !== 0,
+    hasLighting: row.has_lighting !== 0,
+    hasShelter: row.has_shelter !== 0,
+    seatingInstalledGameDay: row.seating_installed_game_day,
+    lightingInstalledGameDay: row.lighting_installed_game_day,
+    shelterInstalledGameDay: row.shelter_installed_game_day,
+  };
+}
+
+export function listAllStopUpgrades(db: SaveDb): StopUpgradeState[] {
+  const rows = db.prepare(`SELECT ${STOP_UPGRADE_COLUMNS} FROM stop_upgrades`).all() as unknown as StopUpgradeRow[];
+  return rows.map(stopUpgradeFromRow);
+}
+
+export function getStopUpgrade(db: SaveDb, stopOsmId: number): StopUpgradeState | null {
+  const row = db.prepare(`SELECT ${STOP_UPGRADE_COLUMNS} FROM stop_upgrades WHERE stop_osm_id = ?`).get(stopOsmId) as unknown as StopUpgradeRow | undefined;
+  return row ? stopUpgradeFromRow(row) : null;
+}
+
+// `upgradeType` is one of this file's own 3-literal union, never raw
+// external input, so interpolating the real column name here (rather
+// than a `?` placeholder, which SQL doesn't allow for identifiers) is
+// safe — same convention this file already trusts itself with elsewhere
+// for internally-selected column names.
+export function installStopUpgrade(db: SaveDb, stopOsmId: number, upgradeType: StopUpgradeType, gameDay: number): StopUpgradeState {
+  const flagColumn = upgradeType === "seating" ? "has_seating" : upgradeType === "lighting" ? "has_lighting" : "has_shelter";
+  const dayColumn = upgradeType === "seating" ? "seating_installed_game_day" : upgradeType === "lighting" ? "lighting_installed_game_day" : "shelter_installed_game_day";
+  db.prepare(
+    `INSERT INTO stop_upgrades (stop_osm_id, ${flagColumn}, ${dayColumn}) VALUES (?, 1, ?)
+     ON CONFLICT(stop_osm_id) DO UPDATE SET ${flagColumn} = 1, ${dayColumn} = ?`,
+  ).run(stopOsmId, gameDay, gameDay);
+  const result = getStopUpgrade(db, stopOsmId);
+  if (!result) throw new Error(`installStopUpgrade: row missing immediately after insert for stop ${stopOsmId}`);
+  return result;
+}
+
+// --- Route advertising (OPEN-ITEMS.md "Phase 5/9 redesign: stop
+// ownership dropped...", confirmed 2026-11-16) — player-bought only,
+// never council-triggered; see route_advertising_bookings' own SCHEMA
+// comment above for the full real design (cost/timing/mode reasoning).
+// Tables created unconditionally via the SCHEMA string above (CREATE
+// TABLE IF NOT EXISTS), not a dedicated version-gated migration branch
+// — SCHEMA_VERSION's own v66->v67 slot was already claimed by the
+// sibling stop-upgrades feature built concurrently in this same session
+// (see currentVersion === 66 above); since this is pure new-table
+// creation with no existing data to migrate, the unconditional
+// IF-NOT-EXISTS create is sufficient and safe on every openSave() call,
+// same as it would be under a dedicated branch.
+
+export type RouteAdvertisingMode = "specific_route" | "long_distance";
+
+export interface RouteAdvertisingBooking {
+  id: number;
+  stopOsmId: number;
+  depotGroupId: number;
+  mode: RouteAdvertisingMode;
+  routeId: number | null;
+  operatorName: string | null;
+  bookedGameDay: number;
+  liveFromGameDay: number;
+}
+
+interface RouteAdvertisingBookingRow {
+  id: number;
+  stop_osm_id: number;
+  depot_group_id: number;
+  mode: RouteAdvertisingMode;
+  route_id: number | null;
+  operator_name: string | null;
+  booked_game_day: number;
+  live_from_game_day: number;
+}
+
+const ROUTE_ADVERTISING_COLUMNS = "id, stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day";
+
+function routeAdvertisingBookingFromRow(row: RouteAdvertisingBookingRow): RouteAdvertisingBooking {
+  return {
+    id: row.id,
+    stopOsmId: row.stop_osm_id,
+    depotGroupId: row.depot_group_id,
+    mode: row.mode,
+    routeId: row.route_id,
+    operatorName: row.operator_name,
+    bookedGameDay: row.booked_game_day,
+    liveFromGameDay: row.live_from_game_day,
+  };
+}
+
+export function createRouteAdvertisingBooking(
+  db: SaveDb,
+  stopOsmId: number,
+  depotGroupId: number,
+  mode: RouteAdvertisingMode,
+  routeId: number | null,
+  operatorName: string | null,
+  bookedGameDay: number,
+  liveFromGameDay: number,
+): RouteAdvertisingBooking {
+  const result = db
+    .prepare(
+      `INSERT INTO route_advertising_bookings (stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay);
+  return {
+    id: Number(result.lastInsertRowid),
+    stopOsmId,
+    depotGroupId,
+    mode,
+    routeId,
+    operatorName,
+    bookedGameDay,
+    liveFromGameDay,
+  };
+}
+
+export function listAllRouteAdvertisingBookings(db: SaveDb): RouteAdvertisingBooking[] {
+  const rows = db.prepare(`SELECT ${ROUTE_ADVERTISING_COLUMNS} FROM route_advertising_bookings ORDER BY booked_game_day`).all() as unknown as RouteAdvertisingBookingRow[];
+  return rows.map(routeAdvertisingBookingFromRow);
+}
+
+export function listRouteAdvertisingBookingsForStop(db: SaveDb, stopOsmId: number): RouteAdvertisingBooking[] {
+  const rows = db
+    .prepare(`SELECT ${ROUTE_ADVERTISING_COLUMNS} FROM route_advertising_bookings WHERE stop_osm_id = ? ORDER BY booked_game_day`)
+    .all(stopOsmId) as unknown as RouteAdvertisingBookingRow[];
+  return rows.map(routeAdvertisingBookingFromRow);
+}
+
+export function deleteRouteAdvertisingBooking(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM route_advertising_bookings WHERE id = ?").run(id);
+}
+
+// Same shape/convention as listGeneratedLeaseBillingMonths/
+// recordLeaseBillingMonths below — plain storage only, the real month
+// math lives in the renderer's own route-advertising.mts (reusing
+// private-hire-income.mts's monthKeyFromGameDay/elapsedMonthKeysSince,
+// the same calendar-correct utility vehicle-lease-billing.mts already
+// uses for exactly this kind of recurring charge).
+export function listGeneratedRouteAdvertisingMonths(db: SaveDb, bookingId: number): string[] {
+  const rows = db.prepare("SELECT month_key FROM route_advertising_billing_months WHERE booking_id = ?").all(bookingId) as unknown as { month_key: string }[];
+  return rows.map((r) => r.month_key);
+}
+
+export function recordRouteAdvertisingMonthsBilled(db: SaveDb, bookingId: number, monthKeys: string[]): void {
+  const stmt = db.prepare("INSERT OR IGNORE INTO route_advertising_billing_months (booking_id, month_key) VALUES (?, ?)");
+  for (const key of monthKeys) stmt.run(bookingId, key);
+}
+
+// --- Re-power bookings (T179, OPEN-ITEMS.md) ---
+
+export type RepowerPowerType = "electric" | "hydrogen";
+
+export interface RepowerBooking {
+  id: number;
+  vehicleId: number;
+  dealerId: number;
+  toPowerType: RepowerPowerType;
+  finalPriceGBP: number;
+  bookedGameDay: number;
+  startGameDay: number;
+  completionGameDay: number;
+}
+
+interface RepowerBookingRow {
+  id: number;
+  vehicle_id: number;
+  dealer_id: number;
+  to_power_type: RepowerPowerType;
+  final_price_gbp: number;
+  booked_game_day: number;
+  start_game_day: number;
+  completion_game_day: number;
+}
+
+function repowerBookingFromRow(row: RepowerBookingRow): RepowerBooking {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    dealerId: row.dealer_id,
+    toPowerType: row.to_power_type,
+    finalPriceGBP: row.final_price_gbp,
+    bookedGameDay: row.booked_game_day,
+    startGameDay: row.start_game_day,
+    completionGameDay: row.completion_game_day,
+  };
+}
+
+// Scheduling and pricing are both computed by the caller
+// (repower-booking.mts, pure renderer logic) — same storage-only split as
+// createRepaintBooking above.
+export function createRepowerBooking(
+  db: SaveDb,
+  vehicleId: number,
+  dealerId: number,
+  toPowerType: RepowerPowerType,
+  finalPriceGBP: number,
+  bookedGameDay: number,
+  startGameDay: number,
+  completionGameDay: number,
+): RepowerBooking {
+  const result = db
+    .prepare(
+      `INSERT INTO repower_bookings
+        (vehicle_id, dealer_id, to_power_type, final_price_gbp, booked_game_day, start_game_day, completion_game_day)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(vehicleId, dealerId, toPowerType, finalPriceGBP, bookedGameDay, startGameDay, completionGameDay);
+  return {
+    id: Number(result.lastInsertRowid),
+    vehicleId,
+    dealerId,
+    toPowerType,
+    finalPriceGBP,
+    bookedGameDay,
+    startGameDay,
+    completionGameDay,
+  };
+}
+
+export function listAllRepowerBookings(db: SaveDb): RepowerBooking[] {
+  const rows = db
+    .prepare(
+      `SELECT id, vehicle_id, dealer_id, to_power_type, final_price_gbp, booked_game_day, start_game_day, completion_game_day
+       FROM repower_bookings ORDER BY start_game_day`,
+    )
+    .all() as unknown as RepowerBookingRow[];
+  return rows.map(repowerBookingFromRow);
+}
+
+export function deleteRepowerBooking(db: SaveDb, id: number): void {
+  db.prepare("DELETE FROM repower_bookings WHERE id = ?").run(id);
+}
+
+// Applies the actual conversion once a booking's completion day has
+// passed — unlike a repaint booking (display/scheduling only, nothing on
+// the vehicle itself changes), a re-power really does change what the
+// vehicle IS: its power_type, its fleet number (the "r" suffix,
+// fleet-numbering.mts's repowerFleetNumber), and NewPower's own "fully
+// checked and repaired" promise resets condition to 100. The booking row
+// is removed on collection — same "collect, then gone" mechanic as
+// nothing else needs it once the swap has happened.
+export function collectRepowerBooking(db: SaveDb, id: number): Vehicle {
+  const booking = db.prepare("SELECT vehicle_id, to_power_type FROM repower_bookings WHERE id = ?").get(id) as
+    | { vehicle_id: number; to_power_type: RepowerPowerType }
+    | undefined;
+  if (!booking) throw new Error(`collectRepowerBooking: no booking with id ${id}`);
+  const vehicle = db.prepare("SELECT fleet_number FROM vehicles WHERE id = ?").get(booking.vehicle_id) as { fleet_number: string } | undefined;
+  if (!vehicle) throw new Error(`collectRepowerBooking: no vehicle with id ${booking.vehicle_id}`);
+  const newFleetNumber = repowerFleetNumber(vehicle.fleet_number, booking.to_power_type);
+  db.prepare("UPDATE vehicles SET power_type = ?, fleet_number = ?, condition = 100 WHERE id = ?").run(booking.to_power_type, newFleetNumber, booking.vehicle_id);
+  db.prepare("DELETE FROM repower_bookings WHERE id = ?").run(id);
+  const row = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
+       FROM vehicles WHERE id = ?`,
+    )
+    .get(booking.vehicle_id) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    model_id: string;
+    length_m: number;
+    variant_label: string | null;
+    power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+    fleet_number: string;
+    plate: string;
+    condition: number;
+    purchase_price_gbp: number;
+    bought_at: string;
+    bought_game_day: number;
+    livery_id: number | null;
+    bought_for_route_id: number | null;
+    payment_method: "buy_outright" | "lease" | "lease_to_own";
+  };
+  return {
+    id: row.id,
+    depotGroupId: row.depot_group_id,
+    depotId: row.depot_id,
+    modelId: row.model_id,
+    lengthM: row.length_m,
+    variantLabel: row.variant_label,
+    powerType: row.power_type,
+    fleetNumber: row.fleet_number,
+    plate: row.plate,
+    condition: row.condition,
+    purchasePriceGBP: row.purchase_price_gbp,
+    boughtAt: row.bought_at,
+    boughtGameDay: row.bought_game_day,
+    liveryId: row.livery_id,
+    boughtForRouteId: row.bought_for_route_id,
+    paymentMethod: row.payment_method,
+  };
+}
+
 export interface DeadMileageWaypoint {
   lon: number;
   lat: number;
@@ -3050,10 +4351,98 @@ export interface Duty {
   id: number;
   depotGroupId: number;
   depotId: number;
-  dayType: DayType;
+  weekdayMask: number;
   dutyNumber: string;
   locked: boolean;
+  // Schema v57->v58 — set via setDutyDriver, not createDuty (same
+  // "dedicated setter for a less-central field" pattern as route
+  // branding/pickup-dropoff overrides). Null means unassigned.
+  driverId: number | null;
   pieces: DutyPiece[];
+}
+
+// A driver (OPERATIONS.md §6), schema v57->v58 — see the drivers table's
+// own SCHEMA comment for this increment's deliberate scope.
+export interface Driver {
+  id: number;
+  depotGroupId: number;
+  depotId: number;
+  name: string;
+  score: DriverScore;
+  // Schema v60->v61 (T183) — see drivers' own SCHEMA comment. Null for
+  // every ordinary driver; set via setDriverPrivateHireVehicleId only for
+  // one auto-hired onto a private-hire vehicle.
+  privateHireVehicleId: number | null;
+}
+
+export type DriverScore = "trainee" | "novice" | "competent" | "professional" | "fleet_elite";
+
+interface DriverRow {
+  id: number;
+  depot_group_id: number;
+  depot_id: number;
+  name: string;
+  score: string;
+  private_hire_vehicle_id: number | null;
+}
+
+function driverFromRow(row: DriverRow): Driver {
+  return {
+    id: row.id,
+    depotGroupId: row.depot_group_id,
+    depotId: row.depot_id,
+    name: row.name,
+    score: row.score as DriverScore,
+    privateHireVehicleId: row.private_hire_vehicle_id,
+  };
+}
+
+export function createDriver(db: SaveDb, depotGroupId: number, depotId: number, name: string, score: DriverScore = "trainee"): Driver {
+  const result = db
+    .prepare("INSERT INTO drivers (depot_group_id, depot_id, name, score) VALUES (?, ?, ?, ?)")
+    .run(depotGroupId, depotId, name, score);
+  return { id: Number(result.lastInsertRowid), depotGroupId, depotId, name, score, privateHireVehicleId: null };
+}
+
+export function listDriversForDepotGroup(db: SaveDb, depotGroupId: number): Driver[] {
+  const rows = db
+    .prepare("SELECT id, depot_group_id, depot_id, name, score, private_hire_vehicle_id FROM drivers WHERE depot_group_id = ? ORDER BY id")
+    .all(depotGroupId) as unknown as DriverRow[];
+  return rows.map(driverFromRow);
+}
+
+export function renameDriver(db: SaveDb, driverId: number, name: string): void {
+  db.prepare("UPDATE drivers SET name = ? WHERE id = ?").run(name, driverId);
+}
+
+export function setDriverScore(db: SaveDb, driverId: number, score: DriverScore): void {
+  db.prepare("UPDATE drivers SET score = ? WHERE id = ?").run(score, driverId);
+}
+
+// T183 — links an auto-hired driver back to the private-hire vehicle that
+// hired them (see drivers' own SCHEMA comment). Not exposed over IPC on
+// its own; only ever called from maybeAutoHireDriverForPrivateHire below,
+// right after createDriver, within the same collectOrder flow.
+function setDriverPrivateHireVehicleId(db: SaveDb, driverId: number, vehicleId: number): void {
+  db.prepare("UPDATE drivers SET private_hire_vehicle_id = ? WHERE id = ?").run(vehicleId, driverId);
+}
+
+// Deleting a driver unassigns them from every duty first — no FK cascade
+// is enabled on this database (same convention as every other delete in
+// this file), so a duty left pointing at a deleted driver's id would
+// otherwise be a dangling reference.
+export function deleteDriver(db: SaveDb, driverId: number): void {
+  db.prepare("UPDATE duties SET driver_id = NULL WHERE driver_id = ?").run(driverId);
+  db.prepare("DELETE FROM drivers WHERE id = ?").run(driverId);
+}
+
+// One driver permanently assigned per duty (confirmed 2026-11-08) — no
+// daily rotation/rota grid yet, that's Phase 6's own real rota, a later
+// increment. Pass driverId = null to unassign. Deliberately doesn't
+// validate the driver's own depot/depot group against the duty's —
+// cross-depot relief logistics don't exist yet either.
+export function setDutyDriver(db: SaveDb, dutyId: number, driverId: number | null): void {
+  db.prepare("UPDATE duties SET driver_id = ? WHERE id = ?").run(driverId, dutyId);
 }
 
 // A depot's 1-based rank within its own group, ordered by id (the first
@@ -3086,12 +4475,12 @@ function nextDutyNumber(db: SaveDb, depotGroupId: number, depotId: number): stri
   return String(Math.max(maxNumber ?? base, base) + 1);
 }
 
-export function createDuty(db: SaveDb, depotGroupId: number, depotId: number, dayType: DayType): Duty {
+export function createDuty(db: SaveDb, depotGroupId: number, depotId: number, weekdayMask: number): Duty {
   const dutyNumber = nextDutyNumber(db, depotGroupId, depotId);
   const result = db
-    .prepare("INSERT INTO duties (depot_group_id, depot_id, day_type, duty_number, locked) VALUES (?, ?, ?, ?, 0)")
-    .run(depotGroupId, depotId, dayType, dutyNumber);
-  return { id: Number(result.lastInsertRowid), depotGroupId, depotId, dayType, dutyNumber, locked: false, pieces: [] };
+    .prepare("INSERT INTO duties (depot_group_id, depot_id, weekday_mask, duty_number, locked) VALUES (?, ?, ?, ?, 0)")
+    .run(depotGroupId, depotId, weekdayMask, dutyNumber);
+  return { id: Number(result.lastInsertRowid), depotGroupId, depotId, weekdayMask, dutyNumber, locked: false, driverId: null, pieces: [] };
 }
 
 export function deleteDuty(db: SaveDb, dutyId: number): void {
@@ -3132,28 +4521,29 @@ export function removeDutyPiece(db: SaveDb, pieceId: number): void {
 // by duty_number (not id), so the natural sort already groups them by
 // depot (1xxx block, then 2xxx, ...) the way the user asked for
 // (2026-10-17), without the caller needing to re-sort.
-export function listDutiesForDepotGroup(db: SaveDb, depotGroupId: number, dayType: DayType): Duty[] {
+export function listDutiesForDepotGroup(db: SaveDb, depotGroupId: number, weekdayMask: number): Duty[] {
   const dutyRows = db
     .prepare(
-      "SELECT id, depot_group_id, depot_id, day_type, duty_number, locked FROM duties WHERE depot_group_id = ? AND day_type = ? ORDER BY CAST(duty_number AS INTEGER)",
+      "SELECT id, depot_group_id, depot_id, weekday_mask, duty_number, locked, driver_id FROM duties WHERE depot_group_id = ? AND weekday_mask = ? ORDER BY CAST(duty_number AS INTEGER)",
     )
-    .all(depotGroupId, dayType) as {
+    .all(depotGroupId, weekdayMask) as {
     id: number;
     depot_group_id: number;
     depot_id: number;
-    day_type: DayType;
+    weekday_mask: number;
     duty_number: string;
     locked: number;
+    driver_id: number | null;
   }[];
   const pieceRows = db
     .prepare(
       `SELECT p.id, p.duty_id, p.route_id, p.departure_minutes
        FROM duty_pieces p
        JOIN duties d ON d.id = p.duty_id
-       WHERE d.depot_group_id = ? AND d.day_type = ?
+       WHERE d.depot_group_id = ? AND d.weekday_mask = ?
        ORDER BY p.duty_id, p.sequence_order`,
     )
-    .all(depotGroupId, dayType) as { id: number; duty_id: number; route_id: number; departure_minutes: number }[];
+    .all(depotGroupId, weekdayMask) as { id: number; duty_id: number; route_id: number; departure_minutes: number }[];
   const piecesByDuty = new Map<number, DutyPiece[]>();
   for (const p of pieceRows) {
     const list = piecesByDuty.get(p.duty_id) ?? [];
@@ -3164,9 +4554,10 @@ export function listDutiesForDepotGroup(db: SaveDb, depotGroupId: number, dayTyp
     id: d.id,
     depotGroupId: d.depot_group_id,
     depotId: d.depot_id,
-    dayType: d.day_type,
+    weekdayMask: d.weekday_mask,
     dutyNumber: d.duty_number,
     locked: !!d.locked,
+    driverId: d.driver_id,
     pieces: piecesByDuty.get(d.id) ?? [],
   }));
 }
@@ -3186,12 +4577,21 @@ export interface Vehicle {
   condition: number;
   purchasePriceGBP: number;
   boughtAt: string;
+  // The real in-game day index this vehicle was bought on (schema
+  // v58->v59, T179) — see that column's own SCHEMA comment for why
+  // boughtAt (a real wall-clock timestamp) can't serve the re-power age
+  // gate, which runs on the game's own independent calendar.
+  boughtGameDay: number;
   liveryId: number | null;
   // Which route this vehicle was bought for (T153, confirmed
   // 2026-11-07) — recorded for reference only, same convention as the
   // comment on Route.assignedLiveryId in depot-groups.d.ts; nothing
   // reads this as an enforced link.
   boughtForRouteId: number | null;
+  // How this vehicle was paid for (T185) — see the vehicles table's own
+  // SCHEMA comment for why this exists and why it defaults to
+  // buy_outright for a vehicle bought before this column existed.
+  paymentMethod: "buy_outright" | "lease" | "lease_to_own";
 }
 
 // Buys one vehicle: computes its real category digit from the model/
@@ -3214,6 +4614,13 @@ export function buyVehicle(
   liveryId: number | null = null,
   conditionOverride: number | null = null,
   boughtForRouteId: number | null = null,
+  // How this vehicle was paid for (T185) — appended at the end, rather
+  // than inserted among the other already-established optional
+  // parameters above, purely so every existing call site (several in
+  // this file's own verify.mts, none of which cared about payment
+  // method before this) keeps compiling unchanged at its default of
+  // buy_outright; collectOrder below passes the order's own real value.
+  paymentMethod: PaymentMethod = "buy_outright",
 ): Vehicle {
   const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
   if (!depot) throw new Error(`buyVehicle: depot ${depotId} not found`);
@@ -3228,14 +4635,18 @@ export function buyVehicle(
   const boughtAt = new Date();
   const plate = generatePlate(depot.lon, depot.lat, boughtAt);
   const condition = conditionOverride ?? 100;
+  // Real in-game day, independent of boughtAt's real wall-clock timestamp
+  // above — the re-power age gate (repower-booking.mts) runs on the
+  // game's own calendar, not the player's.
+  const boughtGameDay = Math.floor(getGameClock(db).accumulatedGameSeconds / SECONDS_PER_DAY);
 
   const result = db
     .prepare(
       `INSERT INTO vehicles
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), liveryId, boughtForRouteId);
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), boughtGameDay, liveryId, boughtForRouteId, paymentMethod);
 
   return {
     id: Number(result.lastInsertRowid),
@@ -3250,15 +4661,17 @@ export function buyVehicle(
     condition,
     purchasePriceGBP,
     boughtAt: boughtAt.toISOString(),
+    boughtGameDay,
     liveryId,
     boughtForRouteId,
+    paymentMethod,
   };
 }
 
 export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
        FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
     )
     .all(depotGroupId) as {
@@ -3274,8 +4687,10 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     condition: number;
     purchase_price_gbp: number;
     bought_at: string;
+    bought_game_day: number;
     livery_id: number | null;
     bought_for_route_id: number | null;
+    payment_method: "buy_outright" | "lease" | "lease_to_own";
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -3290,8 +4705,10 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     condition: r.condition,
     purchasePriceGBP: r.purchase_price_gbp,
     boughtAt: r.bought_at,
+    boughtGameDay: r.bought_game_day,
     liveryId: r.livery_id,
     boughtForRouteId: r.bought_for_route_id,
+    paymentMethod: r.payment_method,
   }));
 }
 
@@ -3301,7 +4718,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
 export function listAllVehicles(db: SaveDb): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
        FROM vehicles ORDER BY fleet_number`,
     )
     .all() as {
@@ -3317,8 +4734,10 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     condition: number;
     purchase_price_gbp: number;
     bought_at: string;
+    bought_game_day: number;
     livery_id: number | null;
     bought_for_route_id: number | null;
+    payment_method: "buy_outright" | "lease" | "lease_to_own";
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -3333,12 +4752,31 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     condition: r.condition,
     purchasePriceGBP: r.purchase_price_gbp,
     boughtAt: r.bought_at,
+    boughtGameDay: r.bought_game_day,
     liveryId: r.livery_id,
     boughtForRouteId: r.bought_for_route_id,
+    paymentMethod: r.payment_method,
   }));
 }
 
+// T183 (private hire revival, Q20/OPEN-ITEMS.md) — a private-hire vehicle
+// sold/deleted leaves its auto-hired driver behind with nothing to do, so
+// that driver is deleted too (going through deleteDriver, not a bare
+// DELETE, so any duty it's somehow been put on is unassigned first — same
+// "no FK cascade enabled" caution as everywhere else in this file). An
+// ordinary vehicle has no matching row here at all, so this is a no-op
+// for every vehicle that isn't private hire.
 export function deleteVehicle(db: SaveDb, vehicleId: number): void {
+  const driver = db.prepare("SELECT id FROM drivers WHERE private_hire_vehicle_id = ?").get(vehicleId) as { id: number } | undefined;
+  if (driver) deleteDriver(db, driver.id);
+  // Also clears any private_hire_income_months rows (T183) and
+  // lease_billing_months rows (T185) — node:sqlite's DatabaseSync
+  // enforces `PRAGMA foreign_keys` ON by default (confirmed directly),
+  // so leaving an orphaned child row referencing this vehicle in EITHER
+  // table would make the DELETE below throw a foreign key constraint
+  // violation, not just leave stale data behind.
+  db.prepare("DELETE FROM private_hire_income_months WHERE vehicle_id = ?").run(vehicleId);
+  db.prepare("DELETE FROM lease_billing_months WHERE vehicle_id = ?").run(vehicleId);
   db.prepare("DELETE FROM vehicles WHERE id = ?").run(vehicleId);
 }
 
@@ -3356,7 +4794,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
   db.prepare("UPDATE vehicles SET depot_id = ?, depot_group_id = ? WHERE id = ?").run(newDepotId, depot.depot_group_id, vehicleId);
   const row = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, livery_id, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
        FROM vehicles WHERE id = ?`,
     )
     .get(vehicleId) as {
@@ -3372,8 +4810,10 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     condition: number;
     purchase_price_gbp: number;
     bought_at: string;
+    bought_game_day: number;
     livery_id: number | null;
     bought_for_route_id: number | null;
+    payment_method: "buy_outright" | "lease" | "lease_to_own";
   };
   return {
     id: row.id,
@@ -3388,8 +4828,10 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     condition: row.condition,
     purchasePriceGBP: row.purchase_price_gbp,
     boughtAt: row.bought_at,
+    boughtGameDay: row.bought_game_day,
     liveryId: row.livery_id,
     boughtForRouteId: row.bought_for_route_id,
+    paymentMethod: row.payment_method,
   };
 }
 
@@ -3658,9 +5100,84 @@ export function collectOrder(db: SaveDb, orderId: number): Vehicle {
     order.livery_id,
     order.is_used ? order.used_condition : null,
     order.bought_for_route_id,
+    // T185: the real gap this fixes — order.payment_method was already
+    // read above (it's part of VehicleOrderRow) but never passed to
+    // buyVehicle until now, so every collected order silently became a
+    // buy_outright vehicle regardless of what was actually ordered.
+    order.payment_method,
   );
   db.prepare("DELETE FROM vehicle_orders WHERE id = ?").run(orderId);
+  maybeAutoHireDriverForPrivateHire(db, vehicle);
   return vehicle;
+}
+
+// T183 (private hire revival, Q20/OPEN-ITEMS.md, confirmed 2026-11-13):
+// buying/liverying a vehicle Lothian Coaches on an eligible class (coach
+// or the EVM Cityline "Sprinter" — liveryVehicleLockReason, livery-seed-
+// data.mts, already enforces that no other vehicle can ever carry this
+// livery) IS the "this is now a private-hire vehicle" designation, same
+// as the renderer's own reasoning — no separate boolean column on
+// vehicles at all. The moment such an order is COLLECTED into a real
+// owned vehicle (this function's only caller) mirrors how T179's
+// re-power/transfer flows hook this same collect moment, and is the
+// right moment to auto-hire its driver too: "the commercial team do
+// everything" is the whole premise of this feature, confirmed directly
+// with the user. A vehicle bought with any other livery is left alone
+// entirely — a plain no-op for every ordinary purchase.
+function maybeAutoHireDriverForPrivateHire(db: SaveDb, vehicle: Vehicle): void {
+  if (vehicle.liveryId === null) return;
+  const livery = db.prepare("SELECT name FROM liveries WHERE id = ?").get(vehicle.liveryId) as { name: string } | undefined;
+  if (!livery || livery.name !== "Lothian Coaches") return;
+  const driver = createDriver(db, vehicle.depotGroupId, vehicle.depotId, randomDriverName(), "trainee");
+  setDriverPrivateHireVehicleId(db, driver.id, vehicle.id);
+}
+
+// --- Private hire income tracking (private_hire_income_months' own SCHEMA
+// comment above; T183) — plain storage only, the actual month math and
+// booking generation is all in the renderer's pure private-hire-income.mts
+// module (testable on its own, same convention as fare-pricing.mts etc.);
+// this is just "which months has this vehicle already had generated" so a
+// re-open of the Depot groups panel never double-generates.
+export function listGeneratedPrivateHireMonths(db: SaveDb, vehicleId: number): string[] {
+  const rows = db.prepare("SELECT month_key FROM private_hire_income_months WHERE vehicle_id = ?").all(vehicleId) as { month_key: string }[];
+  return rows.map((r) => r.month_key);
+}
+
+// INSERT OR IGNORE since the PRIMARY KEY is (vehicle_id, month_key) — a
+// re-entrant call with a month already recorded is a safe no-op, not an
+// error, same defensive spirit as this whole feature's "never double-
+// generate" design.
+export function recordGeneratedPrivateHireMonths(db: SaveDb, vehicleId: number, monthKeys: string[]): void {
+  const stmt = db.prepare("INSERT OR IGNORE INTO private_hire_income_months (vehicle_id, month_key) VALUES (?, ?)");
+  for (const monthKey of monthKeys) stmt.run(vehicleId, monthKey);
+}
+
+// --- Lease billing tracking (lease_billing_months' own SCHEMA comment
+// above; T185, follow-up to T184) — plain storage only, identical shape
+// and purpose to the private-hire tracking immediately above: which
+// months have already had their real monthly lease payment charged for
+// a given vehicle, so a re-open of the Fleet screen never double-charges
+// the same month. The real month math/charge calculation is all in the
+// renderer's pure vehicle-lease-billing.mts.
+export function listGeneratedLeaseBillingMonths(db: SaveDb, vehicleId: number): string[] {
+  const rows = db.prepare("SELECT month_key FROM lease_billing_months WHERE vehicle_id = ?").all(vehicleId) as { month_key: string }[];
+  return rows.map((r) => r.month_key);
+}
+
+// INSERT OR IGNORE, same idempotent-storage convention as
+// recordGeneratedPrivateHireMonths — a re-entrant call with a month
+// already recorded is a safe no-op. flipToOutright additionally flips
+// the vehicle's own payment_method to buy_outright, in the same call as
+// recording the final chargeable month — the real lease-to-own term
+// completion (OPERATIONS.md §3 "then ownership"), landed alongside the
+// billing-month write rather than as a separate round-trip from the
+// renderer that could land only one half if it were ever split.
+export function recordLeaseBillingMonths(db: SaveDb, vehicleId: number, monthKeys: string[], flipToOutright: boolean): void {
+  const stmt = db.prepare("INSERT OR IGNORE INTO lease_billing_months (vehicle_id, month_key) VALUES (?, ?)");
+  for (const monthKey of monthKeys) stmt.run(vehicleId, monthKey);
+  if (flipToOutright) {
+    db.prepare("UPDATE vehicles SET payment_method = 'buy_outright' WHERE id = ?").run(vehicleId);
+  }
 }
 
 // --- Fare zones (DESIGN.md §9) — see fare_zones' own SCHEMA comment above

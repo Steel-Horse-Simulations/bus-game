@@ -14,11 +14,23 @@ import type { GeoJSON } from "geojson";
 import type { Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { routeDrawState } from "./route-draw";
-import { placeStopState } from "./stops-layer";
+import { placeStopState, stopsPanelState } from "./stops-layer";
 import { ENTRANCE_MODE_LABELS, ENTRANCE_MODE_COLORS } from "./entrance-marker";
 import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+import { setMenuOpen } from "./menu-visibility";
 
 export const placeDepotState = { isPlacing: false };
+
+// Shown/hidden by the Depots section of the bottom bar (depots-screen.ts),
+// not its own floating toggle button any more (T167 — same "get all menus
+// working" conversion T162/T166 already did for Fleet/Fares). Kept
+// separate from `placeDepotState` above, which other modules (dealer-
+// placement.ts, fare-zone-drawing.ts, repaint-shop-panel.ts) already read
+// directly as a map-tool mutual-exclusion guard — its shape can't change.
+export const placeDepotPanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
 const emptyGeojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -38,6 +50,14 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   // than starting a new one. A real gap the user caught live: entrances
   // could be removed from an existing depot but never added to one.
   let addEntranceForDepot: Depot | null = null;
+  // The depot's own staff-route-only stop (schema v57->v58, live
+  // request 2026-11-08) — at most one per depot, keyed by depotId rather
+  // than a list like entrances, since there's only ever the one. Only
+  // visible/clickable on the map while drawing a "staff" route
+  // (stops-layer.ts's own visibleStops) — this popup is where it's
+  // actually created/removed, same as entrances are managed here rather
+  // than on the map's own stop layer.
+  let stopByDepot = new Map<number, PlayerStop>();
 
   const refreshEntranceIndex = async (): Promise<void> => {
     const all = await window.depots.listAllEntrances();
@@ -49,6 +69,15 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
     }
   };
   await refreshEntranceIndex();
+
+  const refreshStopIndex = async (): Promise<void> => {
+    const all = await window.playerStops.list();
+    stopByDepot = new Map();
+    for (const s of all) {
+      if (s.depotId !== null) stopByDepot.set(s.depotId, s);
+    }
+  };
+  await refreshStopIndex();
 
   map.addSource("depots", { type: "geojson", data: emptyGeojson });
   map.addLayer({
@@ -68,8 +97,27 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
     type: "symbol",
     source: "depots",
     minzoom: 11,
-    layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 1.3], "text-allow-overlap": false },
-    paint: { "text-color": "#ffffff", "text-halo-color": "#000000", "text-halo-width": 1 },
+    // Real fix, 2026-11-16: the earlier size/halo-width increases (11 ->
+    // 13, halo 1 -> 1.5 -> 2) were the wrong lever — the user's own
+    // direct comparison ("the OSM text is smaller but much easier to
+    // read") pointed at the actual cause: an overly thick solid-colour
+    // halo blobs small glyph shapes together, hurting legibility rather
+    // than helping it. Copied the OSM basemap's own real, proven label
+    // style wholesale instead of guessing further — basemap-style.json's
+    // place-label layers use text-color #333333 on a semi-transparent
+    // white halo (rgba(255,255,255,0.8)), width 1.2, size back near the
+    // original 11. Depot labels sit mostly on the plain map background
+    // (not a coloured shape), so the same dark-on-light scheme applies
+    // directly, unlike vehicle route numbers (see vehicle-simulation.ts),
+    // which still need to read against arbitrary livery colours.
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": 12,
+      "text-offset": [0, 1.3],
+      "text-allow-overlap": false,
+    },
+    paint: { "text-color": "#333333", "text-halo-color": "rgba(255,255,255,0.8)", "text-halo-width": 1.2 },
   });
 
   // Entrances/exits are plain dots, coloured by mode (see
@@ -134,16 +182,8 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
   };
   refreshDepotsSource();
 
-  // --- Placement toggle + draft panel ---
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Place depot";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "440px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
-
+  // --- Draft panel (shown via placeDepotPanelState.open()/close() below,
+  // the Depots screen's own "Place depot" tab) ---
   const draftPanel = document.createElement("div");
   draftPanel.className = "panel";
   draftPanel.style.position = "absolute";
@@ -301,7 +341,6 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
         refreshDepotsSource();
         resetDraft();
         placeDepotState.isPlacing = false;
-        toggle.classList.remove("is-active");
         renderDraftPanel();
       })();
     });
@@ -310,21 +349,22 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
     draftPanel.appendChild(actionRow);
   }
 
-  toggle.addEventListener("click", () => {
-    placeDepotState.isPlacing = !placeDepotState.isPlacing;
-    toggle.classList.toggle("is-active", placeDepotState.isPlacing);
-    if (placeDepotState.isPlacing) {
-      // Refreshed on arming rather than kept live — depot groups rarely
-      // change mid-session, and this is the only moment the dropdown is
-      // actually shown.
-      void window.depotGroups.list().then((groups) => {
-        depotGroups = groups;
-      });
-    } else {
-      resetDraft();
-      renderDraftPanel();
-    }
-  });
+  placeDepotPanelState.open = () => {
+    placeDepotState.isPlacing = true;
+    setMenuOpen("depot-placement", true);
+    // Refreshed on arming rather than kept live — depot groups rarely
+    // change mid-session, and this is the only moment the dropdown is
+    // actually shown.
+    void window.depotGroups.list().then((groups) => {
+      depotGroups = groups;
+    });
+  };
+  placeDepotPanelState.close = () => {
+    placeDepotState.isPlacing = false;
+    setMenuOpen("depot-placement", false);
+    resetDraft();
+    renderDraftPanel();
+  };
 
   map.on("click", (e) => {
     if (!placeDepotState.isPlacing || routeDrawState.isDrawing || placeStopState.isPlacing) return;
@@ -442,6 +482,34 @@ export async function mountDepotPlacement(map: maplibregl.Map, router: Router): 
       depotPopup?.remove();
     });
     container.appendChild(addEntranceButton);
+
+    const existingStop = stopByDepot.get(depot.id) ?? null;
+    const stopButton = document.createElement("button");
+    stopButton.className = "btn";
+    stopButton.style.marginTop = "8px";
+    if (existingStop) {
+      stopButton.textContent = "Remove staff-route stop";
+      stopButton.title = "Removes this depot's own stop — it can no longer be used as a staff/shuttle route's terminus";
+      stopButton.addEventListener("click", () => {
+        void window.playerStops.delete(existingStop.osmId).then(async () => {
+          stopsPanelState.unregisterDepotStop?.(existingStop.osmId);
+          await refreshStopIndex();
+          openDepotPopup(depot);
+        });
+      });
+    } else {
+      stopButton.textContent = "+ Add staff-route stop";
+      stopButton.title =
+        "Creates a stop here, named after this depot — only visible and clickable while drawing a Staff bus route, for use as its terminus";
+      stopButton.addEventListener("click", () => {
+        void window.playerStops.createForDepot(depot.id).then(async (stop) => {
+          stopsPanelState.registerDepotStop?.(stop);
+          await refreshStopIndex();
+          openDepotPopup(depot);
+        });
+      });
+    }
+    container.appendChild(stopButton);
 
     const deadMileageButton = document.createElement("button");
     deadMileageButton.className = "btn";

@@ -1,30 +1,147 @@
-// Timetable generation (DESIGN.md §7), scoped to the minimal slice: a
-// single component per route per day type, no variations, padding,
-// connections, extensions or event calendar yet (OPEN-ITEMS.md T29). Pure
-// functions only — the actual per-leg running time comes from the WASM
-// router, which the caller supplies as `legTimesSeconds`, keeping this
-// module (and its verify script) free of any WASM/DOM dependency.
-export type DayType = "monday_friday" | "saturday" | "sunday";
-export const DAY_TYPES: readonly DayType[] = ["monday_friday", "saturday", "sunday"];
+// Timetable generation (DESIGN.md §7), scoped to a route having any number
+// of day-type components, no variations, padding, connections, extensions
+// or event calendar yet (OPEN-ITEMS.md T29). Pure functions only — the
+// actual per-leg running time comes from the WASM router, which the caller
+// supplies as `legTimesSeconds`, keeping this module (and its verify
+// script) free of any WASM/DOM dependency.
+//
+// A day type is a freeform weekday bitmask (bit 0 = Monday ... bit 6 =
+// Sunday), not a fixed 3-value enum — the original "monday_friday" /
+// "saturday" / "sunday" presets were lifted 2026-11-07 (live user request:
+// "can I also have the days timetables run be selectable per day, Airlink
+// 100 runs the same service 7 days a week but I had to make the same
+// timetable 3 times") once it turned out the save format already stored
+// exactly this (electron/db.mts's own weekday_mask column, schema v19->v20)
+// and only the UI was still stuck on the 3 presets. A route can have any
+// number of these components; the only rule is that two components for the
+// same route+direction can't claim the same day twice (weekdayMasksOverlap
+// below) — enforced by the UI, not here, since blocking it is a greying
+// decision at add-time, not a hard invariant every pure function needs to
+// defend.
+export const WEEKDAY_BITS = {
+  monday: 1,
+  tuesday: 2,
+  wednesday: 4,
+  thursday: 8,
+  friday: 16,
+  saturday: 32,
+  sunday: 64,
+} as const;
+const WEEKDAY_BIT_ORDER: readonly number[] = [
+  WEEKDAY_BITS.monday,
+  WEEKDAY_BITS.tuesday,
+  WEEKDAY_BITS.wednesday,
+  WEEKDAY_BITS.thursday,
+  WEEKDAY_BITS.friday,
+  WEEKDAY_BITS.saturday,
+  WEEKDAY_BITS.sunday,
+];
+const WEEKDAY_ABBREVIATIONS: readonly string[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+export const MONDAY_FRIDAY_MASK =
+  WEEKDAY_BITS.monday | WEEKDAY_BITS.tuesday | WEEKDAY_BITS.wednesday | WEEKDAY_BITS.thursday | WEEKDAY_BITS.friday;
+export const SATURDAY_MASK: number = WEEKDAY_BITS.saturday;
+export const SUNDAY_MASK: number = WEEKDAY_BITS.sunday;
+export const WEEKEND_MASK: number = SATURDAY_MASK | SUNDAY_MASK;
+export const EVERY_DAY_MASK: number = MONDAY_FRIDAY_MASK | WEEKEND_MASK;
+
+export function validateWeekdayMask(mask: number): string | null {
+  if (!Number.isInteger(mask) || mask < 1 || mask > EVERY_DAY_MASK) {
+    return "A day type needs at least one day selected.";
+  }
+  return null;
+}
+
+// Two components clash if they'd both claim at least one of the same day —
+// the rule the "Add day type" picker's own greying enforces (a day already
+// claimed by another component for this route+direction can't be ticked).
+export function weekdayMasksOverlap(a: number, b: number): boolean {
+  return (a & b) !== 0;
+}
+
+// Auto-generated label from a weekday mask (confirmed 2026-11-07: "Auto-
+// generated from the days" rather than a player-typed name) — groups
+// consecutive selected days (Monday through Sunday, no midnight-style
+// wraparound: Sun+Mon is two separate single-day runs, not one) into
+// ranges, e.g. 31 -> "Mon-Fri", 20 -> "Thu, Fri", 127 -> "Every day". The
+// two weekend-adjacent presets get their own friendlier names rather than
+// falling out of the general range logic ("Sat-Sun" would be technically
+// correct but not how a real timetable describes it).
+export function describeWeekdayMask(mask: number): string {
+  if (mask === EVERY_DAY_MASK) return "Every day";
+  if (mask === WEEKEND_MASK) return "Weekend";
+  const runs: string[] = [];
+  let i = 0;
+  while (i < 7) {
+    if ((mask & WEEKDAY_BIT_ORDER[i]) === 0) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < 7 && (mask & WEEKDAY_BIT_ORDER[j + 1]) !== 0) j++;
+    runs.push(j > i ? `${WEEKDAY_ABBREVIATIONS[i]}-${WEEKDAY_ABBREVIATIONS[j]}` : WEEKDAY_ABBREVIATIONS[i]);
+    i = j + 1;
+  }
+  return runs.length > 0 ? runs.join(", ") : "No days";
+}
 
 // A timing point is a published scheduling location, not every physical
 // stop — most routes have far more stops than timing points (a real
-// timetable might publish 5 times for a 30-stop route). "legMinutes" is the
-// published running time, in whole minutes, from the *previous* timing
-// point (or the journey's own departure at point 0, for the first one) to
-// this point's arrival — matching how a printed timetable states leg
-// times, not a "wait here" duration. The bus is held at a timing point
-// only as a side effect of the published time being longer than the
-// fastest possible running time; that padding is computed, never entered
-// directly. "dwellMinutes" is an optional layover (departure - arrival at
-// this same point, e.g. a bus station stand), in whole minutes — 0 for the
-// common case where a timing point is just passed through. Whole minutes,
-// not seconds, confirmed 2026-11-07: "timetables run on minutes not
-// seconds," matching legMinutes right above it.
+// timetable might publish 5 times for a 30-stop route). The published
+// running time from the *previous* timing point (or the journey's own
+// departure at point 0, for the first one) to this point's arrival is now
+// PADDING (2026-11-15 live request: "can it be set so its an amount of
+// time more than the minimum with a separate time for peak times of
+// day") — whole minutes ADDED ON TOP of whatever the router's own real
+// fastest achievable time for that stretch currently computes to, rather
+// than a fixed absolute figure the player has to keep updating by hand if
+// the route or road network changes. "standardPaddingMinutes" applies
+// outside the fixed peak windows (AM_PEAK_START_MINUTES.. below);
+// "peakPaddingMinutes" applies inside either of them, confirmed as FIXED
+// clock-time windows rather than following whatever time bands a given
+// timetable happens to use. `null` means "no separate peak figure" — the
+// only route this is ever null for is an island route (confirmed by the
+// user: an island depot group's routes are limited to exactly one timing
+// point with no peak distinction at all; see isIslandDepotGroup in
+// fare-journey.mts), in which case the standard padding is used
+// regardless of time of day. Because padding can never be negative, the
+// published time can never fall below the real fastest achievable time —
+// the old "infeasible timing point, clamp up" case this model replaced
+// (ComputedOffsets used to flag it) is now structurally impossible, not
+// just rare.
+// "dwellMinutes" is an optional layover (departure - arrival at this same
+// point, e.g. a bus station stand), in whole minutes — 0 for the common
+// case where a timing point is just passed through. Whole minutes, not
+// seconds, confirmed 2026-11-07: "timetables run on minutes not seconds."
+// WHICH points are timing points at all is a route-level fact
+// (electron/db.mts's own Route.timingPointIndexes, schema v56->v57) —
+// this is just the per-component TIMES at each of them, which genuinely
+// do vary by day type/direction.
 export interface TimingPoint {
   pointIndex: number;
-  legMinutes: number;
+  standardPaddingMinutes: number;
+  peakPaddingMinutes: number | null;
   dwellMinutes: number;
+}
+
+// Fixed AM/PM peak clock-time windows (2026-11-15, user-confirmed) — the
+// exact figures DEFAULT_TIME_BANDS below already uses for its own "AM
+// peak"/"PM peak" comments, reused as the real peak-window definition
+// rather than inventing separate ones. Deliberately independent of
+// whatever time bands a given timetable actually has configured — a
+// timing point's peak padding always means these two windows, full stop.
+export const AM_PEAK_START_MINUTES = 420; // 07:00
+export const AM_PEAK_END_MINUTES = 540; // 09:00
+export const PM_PEAK_START_MINUTES = 960; // 16:00
+export const PM_PEAK_END_MINUTES = 1080; // 18:00
+
+// Whether a departure's own clock minute (0-1439, from midnight) falls in
+// either fixed peak window — the one place this decision is made, so
+// computeOffsetsForDirection/buildRouteTimetableGrid and anything else
+// that needs it stay in sync with each other automatically.
+export function isPeakMinute(minute: number): boolean {
+  const m = ((minute % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  return (m >= AM_PEAK_START_MINUTES && m < AM_PEAK_END_MINUTES) || (m >= PM_PEAK_START_MINUTES && m < PM_PEAK_END_MINUTES);
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -36,6 +153,18 @@ const MINUTES_PER_DAY = 24 * 60;
 // a single band like 23:45→03:45, not two artificial same-day bands
 // stitched together) rather than being rejected outright, which is what
 // this function used to do unconditionally.
+// A mirror component's own "how long after the referenced service
+// arrives" figure (DESIGN.md §7, 2026-11-15) — whole minutes, at least 0
+// (always AFTER an arrival, per the user's own framing: "a service after
+// a settable time after one arrives"; 0 means "immediately", not
+// disallowed, for a genuine same-stand turnaround).
+export function validateMirrorOffsetMinutes(offsetMinutes: number): string | null {
+  if (!Number.isInteger(offsetMinutes) || offsetMinutes < 0) {
+    return "The time after arrival must be a whole number of minutes, at least 0.";
+  }
+  return null;
+}
+
 export function validateFrequency(
   startMinutes: number,
   endMinutes: number,
@@ -248,10 +377,44 @@ export const DEFAULT_TIME_BANDS: readonly TimeBand[] = [
 // early"). Point 0 needs no entry of its own — it's always the journey's
 // own generated departure, the implicit first anchor every leg is measured
 // from.
+// `isIslandRoute` (2026-11-15, user-confirmed) — an island depot group's
+// own routes are restricted to EXACTLY one OPTIONAL timing point, with no
+// peak-padding field at all (fare-journey.mts's isIslandDepotGroup decides
+// this from the real depot's own location against the real fare zones,
+// checked and enforced here too so a bypassed client-side UI can't
+// produce invalid saved data). Defaults false so every pre-existing
+// caller/test keeps behaving exactly as before for an ordinary route.
+//
+// Real bug, fixed 2026-11-19 (live report: "Island routes can only have 1
+// timing point time for whole route not 1 per timing point like it should
+// be"): this used to count EVERY entry in `timingPoints` against the cap,
+// including the route's own MANDATORY ones — the physical/interior
+// terminus (always needs a real published arrival time, no way to
+// disable) and any stop-level "forced" timing point (bus station/airport/
+// always-shared) — which aren't optional player choices at all, they're
+// baseline timing data every route needs regardless of island status.
+// Counting them meant setting a real time on the terminus alone could
+// already exhaust the "one timing point" budget, collapsing the whole
+// route to a single shared figure instead of letting mandatory points
+// work normally and capping only the genuinely optional extra one.
+// `routeTimingPointIndexes` is `Route.timingPointIndexes` — the real,
+// persisted, route-level list of indices the PLAYER has explicitly
+// flagged via the checkbox mechanism (route-panel.ts) — mandatory/forced
+// entries are never added to it, so filtering the cap check to only
+// entries whose index appears there correctly excludes them without
+// needing to re-derive "is this point mandatory" here.
 export function validateTimingPoints(
   points: readonly { kind: "stop" | "waypoint" }[],
   timingPoints: readonly TimingPoint[],
+  isIslandRoute = false,
+  routeTimingPointIndexes: readonly number[] = [],
 ): string | null {
+  if (isIslandRoute) {
+    const optionalCount = timingPoints.filter((tp) => routeTimingPointIndexes.includes(tp.pointIndex)).length;
+    if (optionalCount > 1) {
+      return "An island route is limited to a single optional timing point (its own start/terminus and any stop-forced timing point are unaffected).";
+    }
+  }
   const seen = new Set<number>();
   for (const tp of timingPoints) {
     if (!Number.isInteger(tp.pointIndex) || tp.pointIndex < 0 || tp.pointIndex >= points.length) {
@@ -267,14 +430,35 @@ export function validateTimingPoints(
       return "The same stop can't be flagged as a timing point twice.";
     }
     seen.add(tp.pointIndex);
-    if (!Number.isInteger(tp.legMinutes) || tp.legMinutes < 0) {
-      return "A timing point's leg time must be a whole number of minutes, at least 0.";
+    if (!Number.isInteger(tp.standardPaddingMinutes) || tp.standardPaddingMinutes < 0) {
+      return "A timing point's standard padding must be a whole number of minutes, at least 0.";
+    }
+    if (isIslandRoute) {
+      if (tp.peakPaddingMinutes !== null) {
+        return "An island route's timing point has no separate peak padding.";
+      }
+    } else if (tp.peakPaddingMinutes !== null && (!Number.isInteger(tp.peakPaddingMinutes) || tp.peakPaddingMinutes < 0)) {
+      return "A timing point's peak padding must be a whole number of minutes, at least 0, or left unset.";
     }
     if (!Number.isInteger(tp.dwellMinutes) || tp.dwellMinutes < 0) {
       return "A timing point's dwell (layover) must be a whole number of minutes, at least 0.";
     }
   }
   return null;
+}
+
+export type TimingPointVariant = "standard" | "peak";
+
+// Which padding figure a given variant actually uses for one timing point
+// — peak variant falls back to the standard figure when no separate peak
+// value is set (every island-route timing point, by construction, and any
+// ordinary timing point the player hasn't bothered giving a distinct peak
+// figure to), so computing the "peak" variant for such a point produces
+// exactly the same result as "standard" rather than a different, unset
+// number.
+function paddingMinutesFor(tp: TimingPoint, variant: TimingPointVariant): number {
+  if (variant === "standard") return tp.standardPaddingMinutes;
+  return tp.peakPaddingMinutes ?? tp.standardPaddingMinutes;
 }
 
 export interface ComputedOffsets {
@@ -287,33 +471,30 @@ export interface ComputedOffsets {
   // timing points exist to preserve (a route can have far more physical
   // stops than published times).
   estimated: boolean[];
-  // Timing points whose published leg time is faster than the route can
-  // actually be driven — scheduled at the fastest achievable time instead
-  // of a negative wait, flagged (with the actual published vs. fastest
-  // figures, in whole minutes rounded up) so the caller can build a
-  // specific, actionable warning rather than a bare pass/fail (DESIGN.md
-  // §7: "a running time below what is physically achievable gets a
-  // stronger warning").
-  infeasibleTimingPoints: { pointIndex: number; publishedMinutes: number; fastestMinutes: number }[];
 }
 
 // Turns per-leg running times into per-point arrival/departure offsets
-// (seconds from the journey's own departure at point 0). A timing point
-// carries the *published* running time from the previous timing point (or
-// point 0) to its own arrival — DESIGN.md §4/§7's padding is exactly the
-// gap between that published time and the fastest the route can actually
-// be driven, computed here rather than entered directly anywhere. Every
-// point between two timing points shares that same fixed budget, its own
-// offset estimated by giving it the same share of the budget as its share
-// of the natural (fastest-route) running time within that stretch — not
-// equal time slices, since distance and time don't scale together. A
-// stretch with no further timing point ahead of it (including the whole
-// route, if none are set at all) just keeps the natural running time, no
-// padding applied.
+// (seconds from the journey's own departure at point 0), for ONE padding
+// variant (`variant` — a caller building a real timetable component calls
+// this (or computeOffsetsForDirection) twice, once per variant, and
+// persists both results; buildRouteTimetableGrid then picks whichever one
+// a given departure's own clock time actually falls under). A timing
+// point's target time is the real fastest achievable time for that
+// stretch PLUS its own padding for this variant — always >= the natural
+// time by construction (padding can't be negative), so there is no
+// "infeasible, clamp up" case to flag any more, unlike the old absolute-
+// minutes model this replaced. Every point between two timing points
+// shares that same fixed budget, its own offset estimated by giving it
+// the same share of the budget as its share of the natural (fastest-
+// route) running time within that stretch — not equal time slices, since
+// distance and time don't scale together. A stretch with no further
+// timing point ahead of it (including the whole route, if none are set at
+// all) just keeps the natural running time, no padding applied.
 export function computeOffsets(
   pointCount: number,
   legTimesSeconds: readonly number[],
   timingPoints: readonly TimingPoint[],
+  variant: TimingPointVariant = "standard",
 ): ComputedOffsets {
   if (pointCount < 2) {
     throw new Error("a route needs at least two points to have a timetable");
@@ -328,7 +509,6 @@ export function computeOffsets(
   const arrivalOffsetsSeconds: number[] = new Array(pointCount).fill(0);
   const departureOffsetsSeconds: number[] = new Array(pointCount).fill(0);
   const estimated: boolean[] = new Array(pointCount).fill(true);
-  const infeasibleTimingPoints: ComputedOffsets["infeasibleTimingPoints"] = [];
   estimated[0] = false;
 
   let anchorIndex = 0; // last point with a known (non-estimated) departure
@@ -336,15 +516,7 @@ export function computeOffsets(
 
   for (const tp of sorted) {
     const naturalSeconds = legTimesSeconds.slice(anchorIndex, tp.pointIndex).reduce((sum, s) => sum + s, 0);
-    let targetSeconds = tp.legMinutes * 60;
-    if (targetSeconds < naturalSeconds) {
-      infeasibleTimingPoints.push({
-        pointIndex: tp.pointIndex,
-        publishedMinutes: tp.legMinutes,
-        fastestMinutes: Math.ceil(naturalSeconds / 60),
-      });
-      targetSeconds = naturalSeconds;
-    }
+    const targetSeconds = naturalSeconds + paddingMinutesFor(tp, variant) * 60;
 
     let cumulativeNatural = 0;
     for (let i = anchorIndex + 1; i < tp.pointIndex; i++) {
@@ -378,7 +550,7 @@ export function computeOffsets(
   // using whatever natural running time gets it there.
   estimated[pointCount - 1] = false;
 
-  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints };
+  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated };
 }
 
 // Combines a generated departure with a point's own offset to get the

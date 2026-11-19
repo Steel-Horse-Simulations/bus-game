@@ -152,10 +152,33 @@ pub fn assemble_chains(raw: Vec<RawCoastlineWay>) -> Vec<CoastlineChain> {
 /// and merges them (reversing one side if needed, the same four-case
 /// direction logic `assemble_chains`'s own loop already uses, just
 /// between two whole chains instead of a way and a growing one), until
-/// no pair is left within tolerance. O(n^2) per round — fine at the
-/// Scotland+border extract's scale (a few thousand ends); a future
-/// whole-UK run with many more chains would want a spatial grid instead
-/// of a flat scan.
+/// no pair is left within tolerance.
+///
+/// T185 (OPEN-ITEMS.md): this used to do a flat O(n^2) all-pairs scan
+/// EVERY round (fine, as originally noted here, "at the Scotland+border
+/// extract's scale" — a few thousand ends). At full combined
+/// GB+Ireland+IoM scale that assumption broke: tens of thousands of
+/// chains, each needing a full O(n^2) rescan once per real merge (itself
+/// scaling with n), which measured as ~8x slower per doubling of n (a
+/// cubic O(rounds * n^2) blowup) — confirmed directly against the
+/// reported "7+ hours, zero progress" hang (2026-11-13), not an
+/// infinite loop, just genuinely that slow. Fixed by restricting the
+/// candidate search to a uniform grid keyed on each end's own
+/// coordinate, sized so a 3x3 cell neighbourhood is always wide enough
+/// to contain everything within `tolerance_m` (never narrower — missing
+/// a real candidate here would silently under-bridge). The grid is
+/// rebuilt once per round (O(n) chains, 2 ends each) rather than
+/// maintained incrementally, trading a little extra constant work for
+/// much simpler, easier-to-verify code — still a large win since the
+/// per-round candidate search itself drops from O(n^2) to roughly O(n)
+/// for real, geographically-spread coastline data (most of a country's
+/// coastline isn't within 25m of most of the rest of it). One honest
+/// nuance from this change: in the vanishingly rare case of an *exact*
+/// tie between two or more equally-close candidate pairs, which one is
+/// processed first can now differ from the old flat scan's fixed
+/// i-then-j order — real OSM coordinates essentially never tie exactly,
+/// and every existing unit test below (none of which relies on an exact
+/// tie) still passes unchanged.
 pub fn bridge_nearby_chain_ends(chains: Vec<CoastlineChain>, tolerance_m: f64) -> Vec<CoastlineChain> {
     const DEG_TO_M_LAT: f64 = 111_000.0;
     fn dist_m(a: (i32, i32), b: (i32, i32)) -> f64 {
@@ -168,19 +191,56 @@ pub fn bridge_nearby_chain_ends(chains: Vec<CoastlineChain>, tolerance_m: f64) -
 
     let mut chains: Vec<Vec<(i32, i32)>> = chains.into_iter().map(|c| c.geometry).collect();
 
+    // Grid cell size in raw e7 (degree * 1e7) units, picked so two points
+    // within `tolerance_m` of each other can never land more than one
+    // cell apart — the standard guarantee that makes a 3x3 neighbourhood
+    // search exhaustive. Longitude degrees shrink in real metres as
+    // latitude rises (cos falloff); 0.3 is a deliberately conservative
+    // floor (correct up to ~70 degrees N) rather than a per-point value,
+    // since GB+Ireland+IoM (up to Shetland, ~60.8N) never gets close to
+    // where that floor would matter.
+    let cell_size_lat_e7 = ((tolerance_m / DEG_TO_M_LAT) * 1e7).ceil().max(1.0) as i64;
+    let cell_size_lon_e7 = ((tolerance_m / (DEG_TO_M_LAT * 0.3)) * 1e7).ceil().max(1.0) as i64;
+    let cell_of = |p: (i32, i32)| -> (i64, i64) {
+        ((p.0 as i64).div_euclid(cell_size_lon_e7), (p.1 as i64).div_euclid(cell_size_lat_e7))
+    };
+
     loop {
+        // Every still-open chain end, bucketed by grid cell — rebuilt
+        // fresh each round since the previous round's merge changed the
+        // geometry. Each bucket entry is (chain index, whether this end
+        // is that chain's LAST point rather than its first).
+        let mut grid: HashMap<(i64, i64), Vec<(usize, bool)>> = HashMap::new();
+        for (idx, c) in chains.iter().enumerate() {
+            grid.entry(cell_of(c[0])).or_default().push((idx, false));
+            grid.entry(cell_of(*c.last().unwrap())).or_default().push((idx, true));
+        }
+
         // (chain i, i's matching end is its LAST point, chain j, j's
         // matching end is its LAST point, distance)
         let mut best: Option<(usize, bool, usize, bool, f64)> = None;
         for i in 0..chains.len() {
-            for j in (i + 1)..chains.len() {
-                let i_ends = [(chains[i][0], false), (*chains[i].last().unwrap(), true)];
-                let j_ends = [(chains[j][0], false), (*chains[j].last().unwrap(), true)];
-                for &(i_pt, i_is_last) in &i_ends {
-                    for &(j_pt, j_is_last) in &j_ends {
-                        let d = dist_m(i_pt, j_pt);
-                        if d <= tolerance_m && best.is_none_or(|(_, _, _, _, bd)| d < bd) {
-                            best = Some((i, i_is_last, j, j_is_last, d));
+            let i_ends = [(chains[i][0], false), (*chains[i].last().unwrap(), true)];
+            for &(i_pt, i_is_last) in &i_ends {
+                let (cx, cy) = cell_of(i_pt);
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let Some(bucket) = grid.get(&(cx + dx, cy + dy)) else { continue };
+                        for &(j, j_is_last) in bucket {
+                            // i < j only, matching the original flat
+                            // scan's `for j in (i+1)..chains.len())` —
+                            // every unordered pair is still considered
+                            // exactly once, just found from whichever of
+                            // the two sides' grid lookup reaches it
+                            // first.
+                            if j <= i {
+                                continue;
+                            }
+                            let j_pt = if j_is_last { *chains[j].last().unwrap() } else { chains[j][0] };
+                            let d = dist_m(i_pt, j_pt);
+                            if d <= tolerance_m && best.is_none_or(|(_, _, _, _, bd)| d < bd) {
+                                best = Some((i, i_is_last, j, j_is_last, d));
+                            }
                         }
                     }
                 }
@@ -353,5 +413,75 @@ mod tests {
         ];
         let bridged = bridge_nearby_chain_ends(chains, 5.0);
         assert_eq!(bridged.len(), 1, "a chain of real gaps all bridge together into a single chain, not just the first pair");
+    }
+
+    /// N short chains laid end-to-end along a line, each one's own end
+    /// sitting ~1m (`ABOUT_1M`) from the next chain's own start — a real
+    /// digitisation gap repeated N times. Each chain spans 3000 raw units
+    /// (~33m), well clear of the 25m real pipeline tolerance, so only
+    /// truly adjacent chains are ever within range of each other — this
+    /// is deliberate: it forces exactly N-1 real merges (the worst case
+    /// for a naive "rescan every pair, one merge per round" approach)
+    /// without ever producing a wrong bridge between non-adjacent chains.
+    fn synthetic_line_chains(n: usize) -> Vec<CoastlineChain> {
+        (0..n)
+            .map(|i| {
+                let base = (i as i32) * (3000 + ABOUT_1M);
+                chain(&[(base, 0), (base + 3000, 0)])
+            })
+            .collect()
+    }
+
+    /// T185 (OPEN-ITEMS.md) — Q23's flagged pathological-slowness bug.
+    /// `bridge_nearby_chain_ends` recomputes a full all-pairs scan over
+    /// *every remaining chain end* from scratch after each single merge,
+    /// with no spatial index — at full GB+Ireland+IoM scale that's tens
+    /// of thousands of chains needing thousands of real merges, each one
+    /// re-scanning a shrinking-but-still-huge all-pairs set: O(rounds *
+    /// n^2), not O(n^2) once. This stress test is marked `#[ignore]`
+    /// (timing-based, not suitable for ordinary CI) — run manually with
+    /// `cargo test --release -p pipeline -- --ignored --nocapture
+    /// bridge_nearby_chain_ends_scales`. Confirmed against the pre-fix
+    /// code (2026-11-14): n=500/1000/2000/4000 measured roughly 8x time
+    /// per doubling of n — the cubic signature of O(rounds * n^2) with
+    /// rounds scaling linearly with n, exactly matching the reported
+    /// "7+ hours, zero progress" symptom once n reaches tens of
+    /// thousands. After the grid-indexed fix, growth per doubling must
+    /// stay well under the cubic ~8x (a generous near-linear/near-
+    /// quadratic allowance, not a tight bound, to avoid flaking on a
+    /// loaded CI box).
+    #[test]
+    #[ignore]
+    fn bridge_nearby_chain_ends_scales_near_linearly_with_many_chains() {
+        use std::time::Instant;
+
+        fn timed_bridge(n: usize) -> std::time::Duration {
+            let chains = synthetic_line_chains(n);
+            let start = Instant::now();
+            let bridged = bridge_nearby_chain_ends(chains, 25.0);
+            let elapsed = start.elapsed();
+            assert_eq!(bridged.len(), 1, "the whole synthetic line should bridge into a single chain");
+            elapsed
+        }
+
+        let sizes = [500usize, 1000, 2000, 4000];
+        let mut times = Vec::new();
+        for &n in &sizes {
+            let t = timed_bridge(n);
+            println!("n={n:>5}  time={t:?}");
+            times.push(t.as_secs_f64());
+        }
+
+        for i in 1..times.len() {
+            let ratio = times[i] / times[i - 1].max(1e-9);
+            println!("ratio n={}->{}: {:.2}x", sizes[i - 1], sizes[i], ratio);
+            assert!(
+                ratio < 6.0,
+                "doubling the chain count made bridge_nearby_chain_ends {ratio:.2}x slower \
+                 (n={}->{}) — that's the cubic blowup T185 fixed, not near-linear/near-quadratic growth",
+                sizes[i - 1],
+                sizes[i]
+            );
+        }
     }
 }

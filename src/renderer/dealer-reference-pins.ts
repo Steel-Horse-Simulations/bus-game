@@ -60,7 +60,7 @@ interface ReferencePin {
 const MANUFACTURER_COLORS: Record<string, string> = {
   volvo: "#1d4ed8",
   adl: "#15803d",
-  western_commercial: "#a16207",
+  evm: "#a16207",
   wrightbus: "#b91c1c",
   yutong: "#be185d",
 };
@@ -74,15 +74,18 @@ const REFERENCE_PINS: ReferencePin[] = [
   // every other entry in this file landed in). OPERATIONS.md's own
   // "1 location, near Falkirk" description, now with an exact position.
   { manufacturer: "adl", label: "Alexander Dennis", plusCode: "254F+F2", lon: -3.827497, lat: 56.006128 },
-  // Real-world data supplied directly by the user (2026-10-02), all 4 of
-  // OPERATIONS.md's own "4 locations: Dundee, Edinburgh (Broxburn),
-  // Bellshill, Glasgow" now with exact positions — same validated decoder,
-  // each landing 1.4-5.5km from its own town reference, consistent with
-  // every other entry in this file.
-  { manufacturer: "western_commercial", label: "Western Commercial (Glasgow)", plusCode: "VM4Q+J8", lon: -4.311747, lat: 55.856503 },
-  { manufacturer: "western_commercial", label: "Western Commercial (Broxburn)", plusCode: "WHR2+86", lon: -3.449497, lat: 55.940753 },
-  { manufacturer: "western_commercial", label: "Western Commercial (Bellshill)", plusCode: "RXH4+58", lon: -4.044247, lat: 55.827878 },
-  { manufacturer: "western_commercial", label: "Western Commercial (Dundee)", plusCode: "F4M5+PW", lon: -2.890247, lat: 56.484253 },
+  // T179 (2026-11-13): EVM replaces Western Commercial entirely as this
+  // game's evm dealer network — the 4 old Scottish Western Commercial
+  // sites are gone (any already placed in an existing save are migrated,
+  // not deleted — see db.mts's v58->v59 migration), replaced by EVM's
+  // own single real site, which the user supplied directly: lat
+  // 51.0367201, lon -0.3463469 (Horsham). This is also the site where
+  // evm-cityline "Sprinters" are both bought and later re-powered.
+  { manufacturer: "evm", label: "EVM (Horsham)", plusCode: "", lon: -0.3463469, lat: 51.0367201 },
+  // Wrightbus's real NewPower re-power site (Bicester), lat 51.9035125,
+  // lon -1.1822564, supplied directly by the user 2026-11-13 — resolves
+  // the earlier (0,0) placeholder.
+  { manufacturer: "wrightbus", label: "Wrightbus NewPower (Bicester)", plusCode: "", lon: -1.1822564, lat: 51.9035125 },
   { manufacturer: "volvo", label: "Inverness", plusCode: "FQRJ+H3", lon: -4.219872, lat: 57.491378 },
   { manufacturer: "volvo", label: "Aberdeen", plusCode: "3V89+J9", lon: -2.131622, lat: 57.066503 },
   { manufacturer: "volvo", label: "Perth", plusCode: "CG8C+4Q", lon: -3.478122, lat: 56.415253 },
@@ -181,8 +184,8 @@ export async function mountDealerReferencePins(map: maplibregl.Map): Promise<voi
         MANUFACTURER_COLORS.volvo,
         "adl",
         MANUFACTURER_COLORS.adl,
-        "western_commercial",
-        MANUFACTURER_COLORS.western_commercial,
+        "evm",
+        MANUFACTURER_COLORS.evm,
         "wrightbus",
         MANUFACTURER_COLORS.wrightbus,
         "yutong",

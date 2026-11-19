@@ -36,11 +36,8 @@ const BROAD_CLASS_BY_MODEL_ID: Record<string, VehicleBroadClass> = {
   "evm-cityline": "minibus",
   "volvo-9700": "coach",
   "volvo-9700dd": "coach",
-  "yutong-coach": "coach",
-  "adl-enviro400-opentop-diesel": "double-decker",
-  "adl-enviro400-opentop-electric": "double-decker",
+  "wrightbus-streetdeck-opentop": "double-decker",
   "wrightbus-gb-kite": "single-deck",
-  "yutong-e10-e12": "single-deck",
 };
 
 export function broadClassForModel(modelId: string): VehicleBroadClass {
@@ -83,6 +80,20 @@ export function powerTypeSuffix(powerType: "diesel" | "electric" | "hybrid" | "h
 // (db.mts) tracks that count, this function just formats it.
 export function formatFleetNumber(categoryDigit: number, sequential: number, suffix: "" | "e" | "h"): string {
   return `${categoryDigit}${String(sequential).padStart(3, "0")}${suffix}`;
+}
+
+// A re-powered vehicle's fleet number (T179, OPEN-ITEMS.md, confirmed
+// 2026-11-13): "r" prepended to the existing e/h power suffix — a
+// diesel 83 re-powered to electric becomes "83re", a diesel 93
+// re-powered to hydrogen becomes "93rh" (the user's own worked examples).
+// Re-power is the first thing that ever changes a vehicle's power type
+// after purchase, so in practice this only ever appends "r"+the new
+// letter to a bare number with no existing suffix — the `replace` guards
+// against a (currently unreachable) second re-power of the same vehicle
+// stacking suffixes instead of replacing the old one.
+export function repowerFleetNumber(currentFleetNumber: string, toPowerType: "electric" | "hydrogen"): string {
+  const withoutOldSuffix = currentFleetNumber.replace(/r?[eh]$/, "");
+  return `${withoutOldSuffix}r${powerTypeSuffix(toPowerType)}`;
 }
 
 // --- Registration plates (OPERATIONS.md §3 "Fleet numbers and plates") ---

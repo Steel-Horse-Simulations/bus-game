@@ -2,7 +2,7 @@
 // `node --experimental-strip-types src/renderer/vehicle-position.verify.mts`
 // — same pattern as the project's other .verify.mts files. Pure geometry,
 // no DOM/maplibre-gl/wasm dependency.
-import { interpolateAlongPolyline, computeVehiclePosition, type RouteLeg, type JourneyPointTiming } from "./vehicle-position.mts";
+import { interpolateAlongPolyline, computeVehiclePosition, badgeDisplayRotation, type RouteLeg, type JourneyPointTiming } from "./vehicle-position.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -48,6 +48,59 @@ function closeTo(a: number, b: number, tolerance: number): boolean {
     "a quarter of the way through should be a quarter along the first (eastward) leg only",
   );
   assert(closeTo(quarter.bearingDegrees, 90, 0.5), "travelling due east is bearing 90");
+}
+
+{
+  // Real bug found live (2026-11-14): both existing cases above happen to
+  // zero out one axis entirely (lat=0 for the eastward leg, lon=0 for the
+  // northward one), which is exactly why a real unit-mismatch bug in
+  // bearingDegrees (x in radians, y left in raw degrees — ~57x/180/pi too
+  // large) passed both of them undetected. Neither cardinal case exercises
+  // a genuine diagonal where both components matter. This one does, at a
+  // realistic Scotland-ish latitude (route 398's own area) — expected value
+  // computed independently and directly from the corrected formula, not
+  // copied from the implementation under test.
+  const coords: [number, number][] = [[-4.258, 55.86], [-4.251, 55.862]];
+  const result = interpolateAlongPolyline(coords, 1);
+  assert(
+    closeTo(result.bearingDegrees, 63.02, 0.1),
+    `a real diagonal NE-ish segment should bear ~63°, got ${result.bearingDegrees}`,
+  );
+}
+
+// --- badgeDisplayRotation ---
+
+{
+  // Real bug report, 2026-11-14: rotating the badge through the
+  // "upside-down" half made liveries read upside down heading roughly
+  // west. East/west are the pair that actually matter for "flipped when
+  // going east to west" — east stays normal, west must mirror.
+  const east = badgeDisplayRotation(90);
+  assert(!east.needsMirror && closeTo(east.badgeRotation, 0, 1e-9), `due east should not mirror, rotation 0, got ${JSON.stringify(east)}`);
+  const west = badgeDisplayRotation(270);
+  assert(west.needsMirror && closeTo(west.badgeRotation, 0, 1e-9), `due west should mirror, rotation 0 (not 180), got ${JSON.stringify(west)}`);
+}
+
+{
+  // North/south are the pair the earlier -90 artwork-orientation fix was
+  // about — neither should need the mirror (they're not in the "upside
+  // down" half), and their badgeRotation should match the plain -90
+  // correction with no further adjustment.
+  const north = badgeDisplayRotation(0);
+  assert(!north.needsMirror && closeTo(north.badgeRotation, 270, 1e-9), `due north should not mirror, rotation 270, got ${JSON.stringify(north)}`);
+  const south = badgeDisplayRotation(180);
+  assert(!south.needsMirror && closeTo(south.badgeRotation, 90, 1e-9), `due south should not mirror, rotation 90, got ${JSON.stringify(south)}`);
+}
+
+{
+  // A non-cardinal bearing just past the mirror boundary (south-west-ish)
+  // — confirms the clamp/mirror combination for a real diagonal, not just
+  // the four cardinal directions.
+  const southwestish = badgeDisplayRotation(185);
+  assert(
+    southwestish.needsMirror && closeTo(southwestish.badgeRotation, -85, 1e-9),
+    `185° should mirror with rotation -85, got ${JSON.stringify(southwestish)}`,
+  );
 }
 
 // --- computeVehiclePosition ---

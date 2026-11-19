@@ -23,9 +23,17 @@ import { Router } from "./wasm/game_wasm.js";
 import { routeDrawState } from "./route-draw";
 import { stopsPanelState } from "./stops-layer";
 import { resolveSegments, findRoutesUsingSectionId, type SectionSource, type SectionPoint, type RouteSegment as ResolvedRouteSegment } from "./long-distance-sections.mts";
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+import { setMenuOpen } from "./menu-visibility";
 
 export const sectionDrawState = { isDrawing: false };
+
+// Shown/hidden by the Routes section of the bottom bar (routes-screen.ts),
+// not its own floating toggle button any more (same "get all menus
+// working" conversion this session already did for Fleet/Fares/Depots).
+export const longDistanceSectionsPanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
 const DRAFT_SOURCE_ID = "section-draft-line";
 const DRAFT_POINTS_SOURCE_ID = "section-draft-points";
@@ -35,15 +43,6 @@ function sectionStopLabel(osmId: number): string {
 }
 
 export async function mountLongDistanceSectionsTool(map: maplibregl.Map, router: Router): Promise<void> {
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Long-distance sections";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "1760px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
-
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
@@ -526,23 +525,24 @@ export async function mountLongDistanceSectionsTool(map: maplibregl.Map, router:
     }
   }
 
-  let panelOpen = false;
-  toggle.addEventListener("click", async () => {
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) {
+  longDistanceSectionsPanelState.open = () => {
+    panel.style.display = "flex";
+    setMenuOpen("long-distance-sections-panel", true);
+    void (async () => {
       await reloadSections();
       render();
-    } else {
-      sectionDrawState.isDrawing = false;
-      redrawingSectionId = null;
-      draftPoints = [];
-      draftCoords = [];
-      insertAfterIndex = null;
-      updateDraftLayer();
-    }
-  });
+    })();
+  };
+  longDistanceSectionsPanelState.close = () => {
+    panel.style.display = "none";
+    setMenuOpen("long-distance-sections-panel", false);
+    sectionDrawState.isDrawing = false;
+    redrawingSectionId = null;
+    draftPoints = [];
+    draftCoords = [];
+    insertAfterIndex = null;
+    updateDraftLayer();
+  };
 
   await reloadSections();
 }

@@ -1,3 +1,6 @@
+import { isPointInScotland } from "./scotland-boundary.mts";
+import { isPointInWales } from "./wales-boundary.mts";
+
 // Real liveries to seed into a fresh/existing save (OPERATIONS.md §4), so
 // the buy menu's livery picker has real, recognisable choices from the
 // start rather than needing the player to hand-type 38 liveries themselves
@@ -25,15 +28,16 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   Citylink: { primary: "#003080", secondary: "#ffd000" },
   "D&E": { primary: "#f0f0f0", secondary: "#d01030" },
   "East Coast Buses": { primary: "#fff0f0", secondary: "#005030" },
-  Ember: { primary: "#303030", secondary: "#509080" },
   "Explore Dundee": { primary: "#006040", secondary: "#50d020" },
-  "Express 100": { primary: "#008080", secondary: "#b0f0f0" },
   "Express 500": { primary: "#701070", secondary: "#a050b0" },
   "First Bus": { primary: "#301080", secondary: "#d0e0e0" },
   "First Training": { primary: "#ffd000", secondary: "#005030" },
   "Hebridean Transport": { primary: "#800020", secondary: "#f0f0d0" },
   "Islay Coaches": { primary: "#ffffff", secondary: "#007030" },
   "Lochs Motor Transport": { primary: "#f0f0f0", secondary: "#30b0e0" },
+  // Re-added (T183, 2026-11-13) after T158's uncommitted removal — private
+  // hire revival, see lothianCoachesCapReason below. Same colour pair it
+  // had before (never actually committed removed, just staged).
   "Lothian Coaches": { primary: "#203030", secondary: "#ffb000" },
   "Lothian Country": { primary: "#fff0f0", secondary: "#005030" },
   "Lothian Girraffe": { primary: "#a06030", secondary: "#f0e0c0" },
@@ -56,17 +60,8 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   "Stagecoach Training - Yellow": { primary: "#202020", secondary: "#ffc030" },
   "West Coast Motors": { primary: "#fff0f0", secondary: "#e01010" },
 
-  // No real badge exists yet for this one at all (OPEN-ITEMS.md T98 —
-  // "only Highland Council's badge genuinely remains missing"), so there's
-  // nothing to sample colours from. Seeded anyway with a plain placeholder
-  // pair so Caithness's own lock list has a real, selectable row for
-  // every one of its accepted liveries — `livery-badges.mts` simply has
-  // no image for this name yet, so the buy menu falls back to the colour
-  // swatch it already shows for any livery lacking a badge file.
-  "Highland Council": { primary: "#4b5563", secondary: "#e5e7eb" },
-
   // Added 2026-11-05 (user request) — no real badge photo supplied yet
-  // either, same treatment as Highland Council above: a plain neutral
+  // either, same treatment as the other flagged placeholders in this file:
   // placeholder pair, not a guess at the real Oxford Tube livery, so
   // nothing here implies a colour that hasn't actually been confirmed.
   // Replace with real sampled colours once a reference photo is supplied.
@@ -80,9 +75,32 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   "National Express": { primary: "#52525b", secondary: "#e4e4e7" },
   // Added alongside it, same request — a distinct livery, not a re-use of
   // National Express's own colours, so the two read as genuinely separate
-  // on screen; still a flagged neutral placeholder, no reference photo
-  // supplied.
-  "National Express Local": { primary: "#57534e", secondary: "#f5f5f4" },
+  // on screen. Recoloured T190 (2026-11-14, user-supplied real figures,
+  // replacing the earlier flagged neutral placeholder pair).
+  "National Express Local": { primary: "#495D70", secondary: "#64E0F7" },
+
+  // Added T190 (2026-11-14) — same primary as plain National Express
+  // (confirmed: it's the same operator's vehicles, just restricted to
+  // Scotland-bound work), real user-supplied secondary. See the
+  // long-distance block below and `liveryEligibleForRoute`/
+  // `liveryUnavailableReason`'s route-points check for the Scotland-
+  // terminus restriction itself.
+  "National Express Scottish": { primary: "#52525b", secondary: "#005EB5" },
+
+  // Added 2026-11-15, user's own instruction: "National Express Welsh...
+  // should follow all the same rules as the Scottish livery except
+  // Wales instead of Scotland." Unlike every other National Express
+  // entry above, these are NOT a placeholder pair — the user supplied
+  // real badge artwork (`assets/liveries/National Express Welsh.png`)
+  // and both figures were sampled directly from its real pixel data (a
+  // proper PNG-filter-reversing decode, not a guess): the body is a
+  // consistent off-white `#f1f0f0` (23,486 of 28,488 opaque pixels, zero
+  // exact pure-white matches, so a deliberate off-white, not
+  // compression noise) and the dragon/accent colour is an exact,
+  // crisp `#c8102e` (2,669 pixels) — which also happens to be the real
+  // official Welsh flag/dragon red, lending further confidence this was
+  // drawn deliberately rather than resampled from a lossy source.
+  "National Express Welsh": { primary: "#f1f0f0", secondary: "#c8102e" },
 
   // Added 2026-11-07 (user request) — a real dual-branded livery: West
   // Coast Motors runs a few vehicles double-branded for Citylink on their
@@ -90,12 +108,22 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // placeholder treatment as the others above.
   "Citylink/West Coast Motors": { primary: "#3f3f46", secondary: "#d4d4d8" },
 
-  // Added 2026-11-07 (user request, T155 — the operator-group work) —
-  // three more real/confirmed liveries, all flagged neutral placeholders,
-  // no reference photos supplied for any of them.
-  McGills: { primary: "#44403c", secondary: "#fafaf9" }, // real West-of-Scotland operator
+  // Added 2026-11-07 (user request, T155 — the operator-group work).
+  // Railair is still a flagged neutral placeholder, no reference photo
+  // supplied. McGills and First Electric (also added this batch) were
+  // removed outright T190 (2026-11-14) — zero owned vehicles referenced
+  // either in the real save before deletion; their operator
+  // groups/siblings stay (see OPERATOR_LIVERIES below).
   Railair: { primary: "#1e1b4b", secondary: "#c7d2fe" }, // UK-EXPANSION.md §9a's own station-to-airport product
-  "First Electric": { primary: "#3730a3", secondary: "#e0e7ff" }, // electric-only variant, First Bus group
+
+  // Added 2026-11-15 (user request) — real badge PNGs supplied
+  // (`assets/liveries/Irish Citylink.png`/`Translink.png`), colours
+  // auto-sampled directly from them (the two most common, sufficiently-
+  // distinct opaque pixel colours — same methodology as the header note
+  // above, confirmed real, not invented). See the Ireland-nation-lock
+  // block below for both liveries' real constraints.
+  "Irish Citylink": { primary: "#fce908", secondary: "#1eadfb" },
+  Translink: { primary: "#eb167e", secondary: "#ffffff" },
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
@@ -118,7 +146,11 @@ export const RESTRICTED_AREA_LIVERIES: Record<string, { accepted: string[]; pref
   // Narrowed 2026-11-05 (user request) — previously also accepted D&E and
   // Highland Council; Skye is now Rapsons-only.
   Skye: { accepted: ["Rapsons"], preferred: "Rapsons" },
-  Caithness: { accepted: ["D&E", "Highland Council"], preferred: "D&E" },
+  // Highland Council (the livery) dropped T190 (2026-11-14) — the
+  // "Highland Council" operator GROUP (covering D&E) stays, see
+  // OPERATOR_LIVERIES below, but it no longer offers its own plain
+  // livery choice, so Caithness's own accepted list narrows to D&E only.
+  Caithness: { accepted: ["D&E"], preferred: "D&E" },
   Ullapool: { accepted: ["Rapsons"], preferred: "Rapsons" },
 };
 
@@ -145,16 +177,27 @@ export function liveryRestrictionForArea(depotGroupName: string): { accepted: st
 export const OPERATOR_LIVERIES: Record<string, string[]> = {
   Lothian: ["Lothian", "Lothian Country", "East Coast Buses", "Airlink 100", "SkyLink", "Lothian Girraffe", "Lothian Coaches"],
   Stagecoach: ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric", "Stagecoach Jet", "Oxford Tube"],
-  McGills: ["McGills", "Explore Dundee", "Midland Bluebird"],
-  "First Bus": ["First Bus", "Express 500", "Express 100", "First Electric"],
+  // McGills (the livery) dropped T190 (2026-11-14) — operator group key
+  // stays (McGills is a real operator), just no longer offers its own
+  // plain livery choice.
+  McGills: ["Explore Dundee", "Midland Bluebird"],
+  // First Electric dropped T190 (2026-11-14) — zero owned vehicles
+  // referenced it in the real save before deletion.
+  "First Bus": ["First Bus", "Express 500"],
   "Lochs Motor Transport": ["Lochs Motor Transport"],
   "Shiel Buses": ["Shiel Buses"],
   "West Coast Motors": ["West Coast Motors", "Borders Buses", "Citylink/West Coast Motors"],
   Citylink: ["Citylink", "Air"],
-  Ember: ["Ember"],
   MegaBus: ["MegaBus"],
-  "National Express": ["National Express", "National Express Local"],
-  "Highland Council": ["D&E", "Highland Council"],
+  // National Express Scottish added T190 (2026-11-14) — sits alongside
+  // its two siblings under the same operator group.
+  // National Express Welsh added 2026-11-15 — sits alongside its three
+  // siblings under the same operator group, exact mirror of National
+  // Express Scottish per the user's own instruction.
+  "National Express": ["National Express", "National Express Local", "National Express Scottish", "National Express Welsh"],
+  // Highland Council (the livery) dropped T190 (2026-11-14) — group key
+  // stays (covers D&E), no longer offers its own plain livery choice.
+  "Highland Council": ["D&E"],
   "Shetland Transport": ["Shetland Transport"],
   "Orkney Council": ["Orkney Council"],
   SPT: ["SPT"],
@@ -168,6 +211,11 @@ export const OPERATOR_LIVERIES: Record<string, string[]> = {
   // depot group needs to turn on, same as its own existing hard vehicle
   // lock already makes it universally available in spirit.
   Sightseeing: ["Sightseeing"],
+  // Added 2026-11-15 — each a standalone operator in its own right, same
+  // shape as Citylink/MegaBus above (not grouped under an existing
+  // operator; neither is a variant of anything already in this file).
+  "Irish Citylink": ["Irish Citylink"],
+  Translink: ["Translink"],
 };
 
 export function liveryOperator(liveryName: string): string | null {
@@ -189,7 +237,9 @@ export function liveryOperator(liveryName: string): string | null {
 // Electric is too").
 export const LIVERY_LINKED_TO: Record<string, string[]> = {
   "First Training": ["First Bus"],
-  "First Electric": ["First Bus"],
+  // First Electric dropped T190 (2026-11-14) — removed from this map too,
+  // since a link-target that no longer exists would silently never
+  // trigger anyway, but there's no reason to leave a dangling entry.
   "Stagecoach Electric": ["Stagecoach", "Stagecoach Dark"],
   "Stagecoach Training - Blue": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
   "Stagecoach Training - Teal": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
@@ -236,8 +286,8 @@ export function depotNarrowingReason(liveryName: string, narrowedLiveryNames: re
 
 // Long-distance operator liveries (the user's own instruction, 2026-10-18,
 // corrected 2026-10-18 after a live report — "Megabus is available in
-// Portree, that's the wrong way around"): Citylink and Ember are
-// Scotland-only, exempt from every area lock within Scotland (including the
+// Portree, that's the wrong way around"): Citylink is Scotland-only,
+// exempt from every area lock within Scotland (including the
 // island/remote depots above with their own lock list) but unavailable
 // outside it; MegaBus is the England/Wales equivalent — exempt from any
 // area lock there (none exist yet) but unavailable in Scotland. The first
@@ -245,8 +295,15 @@ export function depotNarrowingReason(liveryName: string, narrowedLiveryNames: re
 // what let MegaBus show up at a Scottish depot (Portree/Skye) — the nation
 // check below is what was missing. National Express was removed outright
 // (the user's own instruction — "didn't realise National Express wasn't in,
-// that can be removed") rather than built out further. All three are also
+// that can be removed") rather than built out further. Both are also
 // locked to specific vehicles (see liveryVehicleLockReason below).
+//
+// Ember (the Scotland-only member of this group originally) was fully
+// removed from the game (T188, 2026-11-14) — its only ever-eligible
+// vehicle, the Yutong coach, was itself removed outright in T181, and the
+// livery had already been soft-removed (filtered, not deleted) since T179.
+// Confirmed zero owned vehicles referenced it in the real save before
+// deletion.
 // "Can only run on long-distance services" is NOT enforced anywhere — no
 // system assigns a vehicle to a specific route/service at purchase time yet
 // (that's Phase 2 route-level work) — so this is a UI note only.
@@ -260,7 +317,39 @@ export function depotNarrowingReason(liveryName: string, narrowedLiveryNames: re
 // Motors' real double-branded vehicles on Citylink services. Narrower
 // than a nation lock: locked to Glasgow and Oban depots specifically (see
 // LIVERY_DEPOT_GROUP_LOCKS below), not all of Scotland.
-export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "Ember", "MegaBus", "National Express", "Citylink/West Coast Motors"];
+//
+// "National Express Scottish" added T190 (2026-11-14) — a third National
+// Express livery. Deliberately given NO special-cased branch in
+// `longDistanceNationLockReason` below (its literal-name checks only
+// match "Citylink"/"MegaBus"/"National Express" exactly, so a livery
+// named anything else — this one included — simply falls through to
+// that function's final `return null`, i.e. NO depot-region nation lock
+// at all, unlike plain National Express's own England/Wales-only lock).
+// Confirmed correct, not an oversight: the user's own rule is "any
+// National Express livery can run to Scotland but the Scottish one can
+// only run to/from Scotland" — a restriction on route DESTINATION, not
+// on where the vehicle is based. Locking it to England/Wales depots too
+// would directly contradict "runs to/from Scotland." Its real
+// restriction — at least one route terminus inside Scotland — is a
+// separate, additive check in `liveryUnavailableReason`/
+// `liveryEligibleForRoute` (`nationalExpressScottishTerminusReason`
+// below) against the real Geofabrik Scotland boundary
+// (scotland-boundary.mts), not a nation/depot-region rule at all.
+// "Irish Citylink" added 2026-11-15 — user's own words: "usable only on
+// coaches, only in Ireland, and only on long-distance services," the
+// Republic of Ireland's own real long-distance coach brand (a separate
+// operator from GB Citylink, not a variant of it). Its own nation lock
+// is below in `longDistanceNationLockReason`; its coach-only vehicle
+// lock is in `liveryVehicleLockReason`.
+// "National Express Welsh" added 2026-11-15 — user's own instruction:
+// "should follow all the same rules as the Scottish livery except Wales
+// instead of Scotland." Exact mirror of National Express Scottish's own
+// shape, deliberately given NO special-cased branch in
+// `longDistanceNationLockReason` below for the same reason Scottish
+// isn't: its restriction is on route TERMINUS (can run to/from Wales),
+// not depot location — a depot-nation lock would contradict that, same
+// reasoning as Scottish's own comment above.
+export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "MegaBus", "National Express", "National Express Scottish", "National Express Welsh", "Citylink/West Coast Motors", "Irish Citylink"];
 
 export function isLongDistanceLiveryName(name: string): boolean {
   return LONG_DISTANCE_LIVERY_NAMES.includes(name);
@@ -286,7 +375,20 @@ export function isLocalOnlyLiveryName(name: string): boolean {
   return LOCAL_ONLY_LIVERY_NAMES.includes(name);
 }
 
-export type Nation = "scotland" | "england-wales";
+// "ireland" added 2026-11-15 for Irish Citylink/Translink — UK-
+// EXPANSION.md §1 confirms the real road map data already covers the
+// whole island (Republic and Northern Ireland both, deliberately left
+// unclipped), but no depot group has ever been created there yet in any
+// real save, and UK-EXPANSION.md's own documented 5-region scheme (North
+// Scotland, West Scotland, East Scotland, North England, Shetland) never
+// names an Ireland/Northern Ireland region at all. So unlike the other
+// two nations below, this match is INFERRED, not confirmed against any
+// real depot-group region string or documented naming convention — flag
+// clearly rather than guess silently (this file's own established
+// convention). `/ireland/i` catches both "Ireland" and "Northern
+// Ireland" as substrings, consistent with this function's existing
+// substring-match style.
+export type Nation = "scotland" | "england-wales" | "ireland";
 
 // The region field is free text per depot group (window.depotGroups.create
 // (name, region)), but in practice follows the 5-region scheme (UK-
@@ -295,20 +397,25 @@ export type Nation = "scotland" | "england-wales";
 // as the game expands there. Matched by substring rather than an exact
 // list, since this can't enumerate every future region name.
 export function nationForRegion(region: string): Nation {
+  if (/ireland/i.test(region)) return "ireland";
   return /england|wales/i.test(region) ? "england-wales" : "scotland";
 }
 
 // Returns why a long-distance livery can't be used from a depot group in
-// this region, or null if it's allowed there. Only Citylink/Ember/MegaBus/
+// this region, or null if it's allowed there. Only Citylink/MegaBus/
 // National Express are nation-locked — every other livery goes through the
 // area-lock table instead (liveryRestrictionForArea).
 export function longDistanceNationLockReason(liveryName: string, depotGroupRegion: string): string | null {
   const nation = nationForRegion(depotGroupRegion);
-  if ((liveryName === "Citylink" || liveryName === "Ember") && nation !== "scotland") {
+  if (liveryName === "Citylink" && nation !== "scotland") {
     return `${liveryName} is a Scotland-only livery.`;
   }
   if ((liveryName === "MegaBus" || liveryName === "National Express") && nation !== "england-wales") {
     return `${liveryName} is an England/Wales-only livery.`;
+  }
+  // Added 2026-11-15 — see LONG_DISTANCE_LIVERY_NAMES's own comment above.
+  if (liveryName === "Irish Citylink" && nation !== "ireland") {
+    return `${liveryName} is an Ireland-only livery.`;
   }
   return null;
 }
@@ -361,9 +468,9 @@ export function isSightseeingLiveryName(name: string): boolean {
 // since the vehicle/livery pairing there is 1:1 and exhaustive already).
 export type RouteTypeCategory = "long_distance" | "airport" | "local_night";
 
-// Which route types each vehicle MODEL is suited for. The 2 sightseeing
-// open-top models are deliberately absent — SIGHTSEEING_VEHICLE_CATEGORY
-// above already fully governs them.
+// Which route types each vehicle MODEL is suited for. The sightseeing
+// open-top model is deliberately absent — SIGHTSEEING_VEHICLE_CATEGORY
+// above already fully governs it.
 export const VEHICLE_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   "adl-enviro400": ["local_night", "airport"],
   "adl-enviro400-xlb": ["local_night", "airport"],
@@ -372,21 +479,18 @@ export const VEHICLE_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   "volvo-7900": ["local_night", "airport"],
   "mcv-evora": ["local_night"],
   "wrightbus-gb-kite": ["local_night"],
-  "yutong-e10-e12": ["local_night", "airport"],
   "evm-cityline": ["local_night"],
   "volvo-9700": ["airport", "long_distance"],
   "volvo-9700dd": ["airport", "long_distance"],
-  "yutong-coach": ["long_distance", "airport"], // covers both real T12E/T15E lengths, one catalogue entry
 };
 
 // Which route types each GENERAL livery is valid for — excludes every
 // livery with its own separate, more specific mechanism instead: the 2
-// sightseeing liveries (isSightseeingLiveryName), the 4 training-only
-// liveries and Lothian Coaches' private-hire-only case (none listed here
-// at all — "not part of this general system" is the correct reading of a
-// missing entry, not "allowed everywhere"), and the 8 liveries locked to
-// one specific named route (LIVERY_SPECIFIC_ROUTE below, checked instead
-// of a general category).
+// sightseeing liveries (isSightseeingLiveryName) and the 4 training-only
+// liveries (none listed here at all — "not part of this general system"
+// is the correct reading of a missing entry, not "allowed everywhere"),
+// and the 7 liveries locked to one specific named route
+// (LIVERY_SPECIFIC_ROUTE below, checked instead of a general category).
 export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   Lothian: ["local_night"],
   Stagecoach: ["local_night"],
@@ -410,29 +514,43 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   "Stagecoach Electric": ["local_night"],
   "Stagecoach Jet": ["airport"],
   "West Coast Motors": ["local_night"],
-  "Highland Council": ["local_night"],
+  // Highland Council (the livery) dropped T190 (2026-11-14) — removed
+  // from this map.
   Citylink: ["long_distance"],
-  Ember: ["long_distance"],
   MegaBus: ["long_distance"],
   "National Express": ["long_distance"],
+  // Same category as plain National Express (confirmed: it's a genuine
+  // long-distance operator variant, not a local one — only its extra
+  // Scotland-terminus restriction differs, checked separately).
+  "National Express Scottish": ["long_distance"],
+  // Same shape as National Express Scottish above — a genuine
+  // long-distance operator variant, only its Wales-terminus restriction
+  // differs (checked separately, see nationalExpressWelshTerminusReason).
+  "National Express Welsh": ["long_distance"],
   "National Express Local": ["local_night"],
   "Citylink/West Coast Motors": ["long_distance"],
+  // Added 2026-11-15 — see LONG_DISTANCE_LIVERY_NAMES's own comment.
+  // Translink is deliberately NOT listed here: the user's own stated
+  // restriction is vehicle-type (no coaches) and nation (Ireland) only,
+  // with no route-type restriction — a missing entry here already means
+  // "not part of this general system, genuinely unrestricted" per
+  // `liveryRouteTypeReason`'s own comment below, exactly what's wanted.
+  "Irish Citylink": ["long_distance"],
 };
 
 // Liveries locked to one specific named route rather than a general
 // category, confirmed 2026-11-07 — matched against a real route's own
-// `number`. Four of these (Air, Express 100, SkyLink, Oxford Tube) are
-// the player's own words — "it will be [the contract] once added" /
-// "doesn't exist in the game yet" — so there's genuinely nothing to match
-// yet; left in so the lock activates the moment such a route exists,
-// rather than needing this file touched again.
+// `number`. Three of these (Air, SkyLink, Oxford Tube) are the player's
+// own words — "it will be [the contract] once added" / "doesn't exist in
+// the game yet" — so there's genuinely nothing to match yet; left in so
+// the lock activates the moment such a route exists, rather than needing
+// this file touched again.
 export const LIVERY_SPECIFIC_ROUTE: Record<string, string> = {
   "Airlink 100": "Airlink 100",
   "Lothian Girraffe": "Airlink 100",
   "Express 500": "500",
   ScotRail: "398",
   Air: "Air",
-  "Express 100": "Express 100",
   SkyLink: "SkyLink",
   "Oxford Tube": "Oxford Tube",
 };
@@ -447,6 +565,101 @@ export function liverySpecificRouteReason(liveryName: string, route: { number: s
   const requiredRoute = LIVERY_SPECIFIC_ROUTE[liveryName];
   if (!requiredRoute) return null;
   return route.number === requiredRoute ? null : `${liveryName} is locked to route ${requiredRoute}.`;
+}
+
+// Airlink 100's own last-resort fallback (2026-11-15), the user's exact
+// words: "The Airlink 100 can use Lothian liveried Enviro XLB's if there
+// is absolutely no alternatives left," clarified via a follow-up
+// question to: "Only if a bus is in for a service or repaint etc it can
+// use a Lothian liveried one from the existing fleet."
+//
+// "In for a service" has no real tracking anywhere in this codebase —
+// Maintenance is Phase 8 (CLAUDE.md's own build order), not built yet.
+// Only repaint/re-power bookings are real (`workshop-booking.mts`'s
+// `AwayBooking`, shared by `repaint-booking.mts`/`repower-booking.mts`),
+// so this checks "away for repaint/re-power" only — a genuine, flagged
+// gap for "service," not silently ignored or faked.
+//
+// "No alternatives left" means every real Airlink 100/Lothian Girraffe
+// liveried vehicle this depot group actually OWNS is currently away
+// (`awayVehicleIds`, the caller's own already-resolved set from real
+// `AwayBooking` rows via `workshop-booking.mts`'s own day-overlap
+// convention) — a depot group that owns NEITHER livery's vehicles at
+// all has nothing to fall back FROM, so this correctly stays false
+// rather than firing the moment a fresh depot group hasn't bought one
+// yet. The fallback also requires the depot group to actually own at
+// least one real ADL Enviro400 XLB (`adl-enviro400-xlb` —
+// `vehicle-catalogue.mts`'s own note confirms this is already Airlink
+// 100's real required vehicle model) — "from the existing fleet" never
+// implies buying a new one for this.
+export function airlinkLothianFallbackEligible(
+  depotGroupId: number,
+  vehicles: readonly Pick<Vehicle, "id" | "depotGroupId" | "modelId" | "liveryId">[],
+  liveries: readonly Pick<Livery, "id" | "name">[],
+  awayVehicleIds: ReadonlySet<number>,
+): boolean {
+  const liveryIdByName = new Map(liveries.map((l) => [l.name, l.id]));
+  const airlinkLiveryIds = new Set(
+    [liveryIdByName.get("Airlink 100"), liveryIdByName.get("Lothian Girraffe")].filter((id): id is number => id !== undefined),
+  );
+  const depotVehicles = vehicles.filter((v) => v.depotGroupId === depotGroupId);
+  const properLiveryVehicles = depotVehicles.filter((v) => v.liveryId !== null && airlinkLiveryIds.has(v.liveryId));
+  if (properLiveryVehicles.length === 0) return false;
+  if (!properLiveryVehicles.every((v) => awayVehicleIds.has(v.id))) return false;
+  return depotVehicles.some((v) => v.modelId === "adl-enviro400-xlb");
+}
+
+// National Express Scottish's own extra restriction (T190, 2026-11-14),
+// confirmed directly from the user: "any National Express livery can run
+// to Scotland but the Scottish one can only run to/from Scotland" — i.e.
+// plain National Express/National Express Local are unaffected (this
+// function only ever returns non-null for the one livery name), and
+// National Express Scottish requires at least one real route TERMINUS
+// (just the two endpoints, not every intermediate stop — confirmed
+// interpretation) to fall inside the real Geofabrik Scotland boundary,
+// checked via `isPointInScotland` (scotland-boundary.mts, backed by the
+// new WASM `point_in_scotland` getter against the genuinely separate
+// `scotland-boundary.poly`/`scotland_boundary.bin` artifact — NOT the
+// existing extract-boundary.poly, which is deliberately extended into
+// England and would wrongly pass Carlisle/Berwick/Newcastle). `points`
+// absent or empty means the route isn't yet known (an in-progress draft,
+// or a caller that hasn't fetched it) — same "can't check it, don't
+// block on it" convention as every other optional axis in this file, so
+// this does NOT block in that case.
+export function nationalExpressScottishTerminusReason(liveryName: string, points: { lon: number; lat: number }[] | undefined): string | null {
+  if (liveryName !== "National Express Scottish") return null;
+  if (!points || points.length === 0) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (isPointInScotland(first.lon, first.lat) || isPointInScotland(last.lon, last.lat)) return null;
+  return "National Express Scottish only runs to/from Scotland.";
+}
+
+// National Express Welsh's own extra restriction (2026-11-15) — exact
+// mirror of nationalExpressScottishTerminusReason above, Wales instead
+// of Scotland, per the user's own direct instruction.
+export function nationalExpressWelshTerminusReason(liveryName: string, points: { lon: number; lat: number }[] | undefined): string | null {
+  if (liveryName !== "National Express Welsh") return null;
+  if (!points || points.length === 0) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (isPointInWales(first.lon, first.lat) || isPointInWales(last.lon, last.lat)) return null;
+  return "National Express Welsh only runs to/from Wales.";
+}
+
+// Translink's own nation lock (2026-11-15) — unlike Irish Citylink,
+// Translink isn't a long-distance livery (see LIVERY_ROUTE_TYPES's own
+// comment), so it never goes through `isLongDistanceLiveryName`'s
+// pathway (`longDistanceLocationLockReason`/`longDistanceNationLockReason`)
+// at all. Checked unconditionally instead, same shape as
+// `nationalExpressScottishTerminusReason` above — a no-op for every
+// other livery. `depotGroupRegion` undefined means no depot group is
+// known yet, same "can't check it, don't block on it" convention as
+// everywhere else in this file.
+export function translinkNationReason(liveryName: string, depotGroupRegion: string | undefined): string | null {
+  if (liveryName !== "Translink") return null;
+  if (depotGroupRegion === undefined) return null;
+  return nationForRegion(depotGroupRegion) === "ireland" ? null : "Translink is an Ireland-only livery.";
 }
 
 function vehicleRouteTypeReason(liveryName: string, vehicleId: string): string | null {
@@ -488,21 +701,52 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   if (vehicle.category === SIGHTSEEING_VEHICLE_CATEGORY) {
     return "A sightseeing vehicle can only carry a Sightseeing livery.";
   }
-  if (liveryName === "Ember") {
-    return vehicle.id === "yutong-coach" ? null : "Ember is locked to the Yutong coach only.";
-  }
-  if (liveryName === "Citylink" || liveryName === "MegaBus" || liveryName === "National Express" || liveryName === "Citylink/West Coast Motors") {
+  // National Express Scottish included here (T190, 2026-11-14) — same
+  // coach-only vehicle lock as its three siblings in this branch; not
+  // spelled out explicitly in the plan's own design section but implied
+  // by "sits under the existing National Express operator group... same
+  // category as its siblings" — without it, this livery would be the
+  // only LONG_DISTANCE_LIVERY_NAMES member left unlocked to any
+  // non-coach model not covered by VEHICLE_ROUTE_TYPES below.
+  if (
+    liveryName === "Citylink" ||
+    liveryName === "MegaBus" ||
+    liveryName === "National Express" ||
+    liveryName === "National Express Scottish" ||
+    // National Express Welsh added 2026-11-15 — same coach-only lock as
+    // its siblings, exact mirror of National Express Scottish.
+    liveryName === "National Express Welsh" ||
+    liveryName === "Citylink/West Coast Motors" ||
+    // Irish Citylink added 2026-11-15 — same coach-only lock as every
+    // other long-distance operator in this branch.
+    liveryName === "Irish Citylink"
+  ) {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
+  }
+  // Translink added 2026-11-15 — the user's own words: "any vehicle
+  // except coaches." The exact inverse of the branch above, so it needs
+  // its own check rather than reusing it.
+  if (liveryName === "Translink") {
+    return vehicle.category === "Coaches" ? "Translink can't be used on coaches." : null;
   }
   if (liveryName === "ScotRail") {
     return scotRailVehicleReason(vehicle, powerType);
   }
-  // Stagecoach Electric / First Electric (T155, confirmed 2026-11-07) —
-  // electric vehicles only, same "real configured power, not just a
-  // model capable of it" pattern as ScotRail above, and the same
-  // optional-powerType convention (omitted means only unconfigured-power
-  // callers are left unblocked, not that electric is assumed).
-  if ((liveryName === "Stagecoach Electric" || liveryName === "First Electric") && powerType !== undefined && powerType !== "electric") {
+  // Private hire revival (T183, confirmed 2026-11-13): buying/livering a
+  // vehicle Lothian Coaches IS the "this is now a private-hire vehicle"
+  // designation (no separate boolean on Vehicle) — restricted to the two
+  // eligible classes, coaches by category and the EVM Cityline ("Sprinter")
+  // by id specifically (its own category is "Minibus", not "Coaches").
+  if (liveryName === "Lothian Coaches") {
+    return vehicle.category === "Coaches" || vehicle.id === "evm-cityline" ? null : "Lothian Coaches is locked to coaches and the EVM Cityline (private hire) only.";
+  }
+  // Stagecoach Electric (T155, confirmed 2026-11-07; First Electric was
+  // the First Bus equivalent here but was dropped outright T190,
+  // 2026-11-14) — electric vehicles only, same "real configured power,
+  // not just a model capable of it" pattern as ScotRail above, and the
+  // same optional-powerType convention (omitted means only unconfigured-
+  // power callers are left unblocked, not that electric is assumed).
+  if (liveryName === "Stagecoach Electric" && powerType !== undefined && powerType !== "electric") {
     return `${liveryName} is locked to electric vehicles only.`;
   }
   const routeTypeReason = vehicleRouteTypeReason(liveryName, vehicle.id);
@@ -536,7 +780,7 @@ export function liveryUnavailableReason(
   depotGroup: { name: string; region: string } | undefined,
   currentVehicleCount?: number,
   powerType?: string,
-  route?: { number: string },
+  route?: { number: string; points?: { lon: number; lat: number }[] },
   enabledOperators?: readonly string[],
   narrowedLiveryNames?: readonly string[] | null,
 ): string | null {
@@ -550,6 +794,12 @@ export function liveryUnavailableReason(
   if (requiredRoute !== undefined && (!route || route.number !== requiredRoute)) {
     return `${liveryName} is only available when buying for route ${requiredRoute}.`;
   }
+  const scottishTerminusReason = nationalExpressScottishTerminusReason(liveryName, route?.points);
+  if (scottishTerminusReason) return scottishTerminusReason;
+  const welshTerminusReason = nationalExpressWelshTerminusReason(liveryName, route?.points);
+  if (welshTerminusReason) return welshTerminusReason;
+  const translinkReason = translinkNationReason(liveryName, depotGroup?.region);
+  if (translinkReason) return translinkReason;
   const operatorReason = operatorNotEnabledReason(liveryName, enabledOperators);
   if (operatorReason) return operatorReason;
   const narrowReason = depotNarrowingReason(liveryName, narrowedLiveryNames);
@@ -575,7 +825,11 @@ export function liveryUnavailableReason(
 
 // Maps a real route's own routeType onto the 3-category system
 // VEHICLE_ROUTE_TYPES/LIVERY_ROUTE_TYPES use — null for "sightseeing"
-// since that's handled entirely separately (isSightseeingLiveryName).
+// since that's handled entirely separately (isSightseeingLiveryName), and
+// for "staff" (schema v57->v58) since a staff bus carries no livery
+// restriction of its own at all — any general livery is fine, the same
+// "not part of this general system" reading `liveryRouteTypeReason`
+// already gives a missing entry.
 export function routeTypeCategoryFor(routeType: RouteType): RouteTypeCategory | null {
   if (routeType === "ordinary" || routeType === "night") return "local_night";
   if (routeType === "airport_express") return "airport";
@@ -594,9 +848,24 @@ export function routeTypeCategoryFor(routeType: RouteType): RouteTypeCategory | 
 // duplicated in both places (CLAUDE.md: "build it once").
 export function liveryEligibleForRoute(
   liveryName: string,
-  route: { routeType: RouteType; number: string },
+  route: { routeType: RouteType; number: string; points?: { lon: number; lat: number }[] },
   depotGroup: { name: string; region: string } | undefined,
+  // Airlink 100's own last-resort fallback (2026-11-15) — see
+  // `airlinkLothianFallbackEligible`'s own doc comment for the full
+  // reasoning. The caller (whoever actually has the real owned-vehicle
+  // and away-booking data) computes this via that function and passes
+  // the result straight through; undefined (the caller hasn't checked,
+  // or this isn't even the Airlink 100/"Lothian" combination) means
+  // "don't apply the fallback," same can't-check-don't-block convention
+  // as every other optional axis in this file.
+  airlinkLothianFallbackAvailable?: boolean,
 ): boolean {
+  // Checked before every other rule below, including the plain
+  // `Lothian` livery's own normal `local_night`-only lock — this is an
+  // explicit, narrow override, not threaded through the general rule
+  // stack, so it stays correct regardless of what route-type category
+  // Airlink 100 itself is tagged as.
+  if (airlinkLothianFallbackAvailable && liveryName === "Lothian" && route.number === "Airlink 100") return true;
   // A link-only livery (the 4 training ones — no operator entry of its
   // own, see OPERATOR_LIVERIES/LIVERY_LINKED_TO) is never directly
   // selectable here — it only ever rides along with its own trigger
@@ -608,12 +877,21 @@ export function liveryEligibleForRoute(
   if (isLongDistanceLiveryName(liveryName)) {
     if (route.routeType !== "long_distance") return false;
     if (depotGroup && longDistanceLocationLockReason(liveryName, depotGroup)) return false;
+    // National Express Scottish's own extra restriction (T190) — see
+    // nationalExpressScottishTerminusReason above; a no-op for every
+    // other long-distance livery.
+    if (nationalExpressScottishTerminusReason(liveryName, route.points)) return false;
+    // National Express Welsh's own mirror restriction (2026-11-15) — see
+    // nationalExpressWelshTerminusReason above; a no-op for every other
+    // long-distance livery.
+    if (nationalExpressWelshTerminusReason(liveryName, route.points)) return false;
     return true;
   }
   if (isLocalOnlyLiveryName(liveryName) && route.routeType === "long_distance") return false;
   if (isSightseeingLiveryName(liveryName)) return route.routeType === "sightseeing";
   if (route.routeType === "sightseeing") return false;
   if (liverySpecificRouteReason(liveryName, route)) return false;
+  if (translinkNationReason(liveryName, depotGroup?.region)) return false;
   const category = routeTypeCategoryFor(route.routeType);
   if (category && liveryRouteTypeReason(liveryName, category)) return false;
   if (depotGroup) {
@@ -642,6 +920,38 @@ export function liveryCapReason(liveryName: string, currentVehicleCount: number)
   const max = LIVERY_MAX_VEHICLE_COUNT[liveryName];
   if (max === undefined) return null;
   return currentVehicleCount >= max ? `Only ${max} vehicle${max === 1 ? "" : "s"} can ever carry ${liveryName}.` : null;
+}
+
+// Private hire revival (T183, confirmed 2026-11-13, Q20/OPEN-ITEMS.md).
+// Per-DEPOT-GROUP, per-vehicle-class caps on the Lothian Coaches livery —
+// genuinely different in shape from LIVERY_MAX_VEHICLE_COUNT above (that
+// one is a single company-wide count; this is two independent counts,
+// scoped per depot group, one per eligible vehicle class), so it's its
+// own dedicated function rather than folded into liveryCapReason. Both
+// numbers are flat placeholders for now, not derived from anything real:
+// the coach cap is standing in for real demand/land-use scoring (Phase 4,
+// not built yet); the Sprinter cap is standing in for "scales with depot
+// size" (no depot-size/tier concept exists in this codebase at all yet).
+// Swap both for real formulas once those mechanics land.
+export const LOTHIAN_COACHES_CAP = { coach: 6, sprinter: 2 };
+
+export function lothianCoachesCapReason(
+  vehicleCategory: string,
+  vehicleId: string,
+  currentCoachCount: number,
+  currentSprinterCount: number,
+): string | null {
+  if (vehicleId === "evm-cityline") {
+    return currentSprinterCount >= LOTHIAN_COACHES_CAP.sprinter
+      ? `This depot group already has ${LOTHIAN_COACHES_CAP.sprinter} private-hire Sprinter${LOTHIAN_COACHES_CAP.sprinter === 1 ? "" : "s"} (the flat placeholder cap).`
+      : null;
+  }
+  if (vehicleCategory === "Coaches") {
+    return currentCoachCount >= LOTHIAN_COACHES_CAP.coach
+      ? `This depot group already has ${LOTHIAN_COACHES_CAP.coach} private-hire coaches (the flat placeholder cap).`
+      : null;
+  }
+  return null;
 }
 
 // Idempotent, matched by name — same pattern as dealer-reference-pins.ts's

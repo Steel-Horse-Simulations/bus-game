@@ -1,4 +1,4 @@
-use crate::boundary::{point_in_boundary, Ring};
+use crate::boundary::{point_in_boundary, to_e7, Ring};
 pub use game_data::OnewayDirection;
 use osmpbf::{Element, ElementReader};
 use std::collections::HashMap;
@@ -84,10 +84,6 @@ fn classify_junction_control<'a>(
         }
     }
     JunctionControl::None
-}
-
-fn to_e7(deg: f64) -> i32 {
-    (deg * 1e7).round() as i32
 }
 
 pub struct NodePassResult {
@@ -413,6 +409,21 @@ pub struct WayRecord {
     /// two-lane and a four-lane primary are the same class but very
     /// different roads.
     pub lanes: Option<u8>,
+    /// Parsed `maxweight` tag, in tonnes — a real legal weight limit (e.g. a
+    /// weak bridge), not inferred like `width_tag_m`'s fallback chain: a
+    /// missing tag means "no known limit," never a guessed default.
+    pub maxweight_tonnes: Option<f32>,
+    /// Parsed `maxheight` tag, in metres — a real legal height limit (e.g. a
+    /// low bridge or tunnel). Same "no tag = no known limit" rule.
+    pub maxheight_metres: Option<f32>,
+    /// Parsed `maxlength` tag, in metres — a real legal length limit (e.g. a
+    /// tight turn or narrow bridge). Same "no tag = no known limit" rule.
+    pub maxlength_metres: Option<f32>,
+    /// Parsed `maxwidth` tag, in metres — a real legal width limit, distinct
+    /// from `width_tag_m` (the road's own physical width, used for rendering)
+    /// — this is a posted restriction, not the carriageway's own measured
+    /// width. Same "no tag = no known limit" rule.
+    pub maxwidth_metres: Option<f32>,
     pub refs: Vec<i64>,
 }
 
@@ -458,6 +469,44 @@ fn parse_maxspeed_mph(raw: &str) -> Option<u16> {
     trimmed.parse::<u16>().ok()
 }
 
+/// Parses an OSM `maxweight` tag to tonnes — the tag's own documented
+/// default unit. Handles bare `"7.5"` (assumed tonnes) and an explicit `"7.5
+/// t"`/`"7.5t"` suffix. Other units (`lbs`, `st`) are rare enough on UK roads
+/// to skip, matching `parse_width_metres`'s own "imperial is rare, skip it"
+/// precedent.
+fn parse_maxweight_tonnes(raw: &str) -> Option<f32> {
+    let trimmed = raw.trim();
+    let numeric = trimmed.strip_suffix('t').map(str::trim).unwrap_or(trimmed);
+    numeric.parse::<f32>().ok()
+}
+
+/// Parses an OSM `maxheight` tag to metres — the tag's own documented
+/// default unit. Handles bare `"4.2"` (assumed metres) and an explicit `"4.2
+/// m"`/`"4.2m"` suffix. The feet-and-inches form (`"13'6\""`, common in
+/// older US-style imports) is rare enough on UK roads to skip, same
+/// reasoning as `parse_width_metres`.
+fn parse_maxheight_metres(raw: &str) -> Option<f32> {
+    let trimmed = raw.trim();
+    let numeric = trimmed.strip_suffix('m').map(str::trim).unwrap_or(trimmed);
+    numeric.parse::<f32>().ok()
+}
+
+/// Parses an OSM `maxlength` tag to metres — same shape as
+/// `parse_maxheight_metres`.
+fn parse_maxlength_metres(raw: &str) -> Option<f32> {
+    let trimmed = raw.trim();
+    let numeric = trimmed.strip_suffix('m').map(str::trim).unwrap_or(trimmed);
+    numeric.parse::<f32>().ok()
+}
+
+/// Parses an OSM `maxwidth` tag to metres. Reuses `parse_width_metres`'s own
+/// logic directly (plain/`m`-suffixed metres figure, with the same sanity
+/// range) — `maxwidth` is a posted restriction rather than the road's own
+/// physical width, but the tag's own value shape is identical.
+fn parse_maxwidth_metres(raw: &str) -> Option<f32> {
+    parse_width_metres(raw)
+}
+
 impl WayRecord {
     /// Width fallback settled 2026-09-03: the `width` tag where present,
     /// then `lanes` scaled by a typical lane width and margin, then the
@@ -492,6 +541,10 @@ pub struct WayStats {
     pub psv_yes: u64,
     pub bus_yes: u64,
     pub maxspeed_present: u64,
+    pub maxweight_present: u64,
+    pub maxheight_present: u64,
+    pub maxlength_present: u64,
+    pub maxwidth_present: u64,
 }
 
 impl WayStats {
@@ -506,6 +559,10 @@ impl WayStats {
         self.psv_yes += other.psv_yes;
         self.bus_yes += other.bus_yes;
         self.maxspeed_present += other.maxspeed_present;
+        self.maxweight_present += other.maxweight_present;
+        self.maxheight_present += other.maxheight_present;
+        self.maxlength_present += other.maxlength_present;
+        self.maxwidth_present += other.maxwidth_present;
     }
 }
 
@@ -588,6 +645,10 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                 let mut maxspeed_mph = None;
                 let mut width_tag_m = None;
                 let mut lanes = None;
+                let mut maxweight_tonnes = None;
+                let mut maxheight_metres = None;
+                let mut maxlength_metres = None;
+                let mut maxwidth_metres = None;
                 let mut is_bus_station = false;
                 let mut railway_station_kind = None;
                 let mut is_platform = false;
@@ -626,6 +687,10 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                         "maxspeed" => maxspeed_mph = parse_maxspeed_mph(v),
                         "width" => width_tag_m = parse_width_metres(v),
                         "lanes" => lanes = v.parse::<u8>().ok(),
+                        "maxweight" => maxweight_tonnes = parse_maxweight_tonnes(v),
+                        "maxheight" => maxheight_metres = parse_maxheight_metres(v),
+                        "maxlength" => maxlength_metres = parse_maxlength_metres(v),
+                        "maxwidth" => maxwidth_metres = parse_maxwidth_metres(v),
                         "amenity" if v == "bus_station" => is_bus_station = true,
                         "railway" if v == "station" => {
                             railway_station_kind = Some(game_data::RailwayStationKind::Station)
@@ -815,6 +880,18 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                 if maxspeed_mph.is_some() {
                     stats.maxspeed_present += 1;
                 }
+                if maxweight_tonnes.is_some() {
+                    stats.maxweight_present += 1;
+                }
+                if maxheight_metres.is_some() {
+                    stats.maxheight_present += 1;
+                }
+                if maxlength_metres.is_some() {
+                    stats.maxlength_present += 1;
+                }
+                if maxwidth_metres.is_some() {
+                    stats.maxwidth_present += 1;
+                }
 
                 for &id in &refs {
                     *node_ref_counts.entry(id).or_insert(0) += 1;
@@ -830,6 +907,10 @@ pub fn scan_ways_and_relations(pbf_path: &str, nodes: &NodeCoords) -> ScanResult
                     maxspeed_mph,
                     width_tag_m,
                     lanes,
+                    maxweight_tonnes,
+                    maxheight_metres,
+                    maxlength_metres,
+                    maxwidth_metres,
                     refs,
                 });
             }
@@ -1012,6 +1093,10 @@ mod tests {
             maxspeed_mph: None,
             width_tag_m,
             lanes,
+            maxweight_tonnes: None,
+            maxheight_metres: None,
+            maxlength_metres: None,
+            maxwidth_metres: None,
             refs: vec![1, 2],
         }
     }
@@ -1053,5 +1138,38 @@ mod tests {
         assert_eq!(parse_maxspeed_mph("48 km/h"), Some(30), "48 km/h rounds to 30 mph");
         assert_eq!(parse_maxspeed_mph("national"), None, "NSL needs road/vehicle context, not resolved here");
         assert_eq!(parse_maxspeed_mph("signals"), None);
+    }
+
+    #[test]
+    fn parse_maxweight_tonnes_handles_the_common_osm_forms() {
+        assert_eq!(parse_maxweight_tonnes("7.5"), Some(7.5), "bare number: tonnes is the tag's own default unit");
+        assert_eq!(parse_maxweight_tonnes("7.5 t"), Some(7.5));
+        assert_eq!(parse_maxweight_tonnes("7.5t"), Some(7.5));
+        assert_eq!(parse_maxweight_tonnes("none"), None);
+    }
+
+    #[test]
+    fn parse_maxheight_metres_handles_the_common_osm_forms() {
+        assert_eq!(parse_maxheight_metres("4.2"), Some(4.2), "bare number: metres is the tag's own default unit");
+        assert_eq!(parse_maxheight_metres("4.2 m"), Some(4.2));
+        assert_eq!(parse_maxheight_metres("4.2m"), Some(4.2));
+        assert_eq!(parse_maxheight_metres("none"), None);
+    }
+
+    #[test]
+    fn parse_maxlength_metres_handles_the_common_osm_forms() {
+        assert_eq!(parse_maxlength_metres("10"), Some(10.0), "bare number: metres is the tag's own default unit");
+        assert_eq!(parse_maxlength_metres("10 m"), Some(10.0));
+        assert_eq!(parse_maxlength_metres("10m"), Some(10.0));
+        assert_eq!(parse_maxlength_metres("none"), None);
+    }
+
+    #[test]
+    fn parse_maxwidth_metres_handles_the_common_osm_forms() {
+        assert_eq!(parse_maxwidth_metres("2"), Some(2.0));
+        assert_eq!(parse_maxwidth_metres("2.1 m"), Some(2.1));
+        assert_eq!(parse_maxwidth_metres("2.1m"), Some(2.1));
+        assert_eq!(parse_maxwidth_metres("not-a-number"), None);
+        assert_eq!(parse_maxwidth_metres("999"), None, "implausibly wide, rejected by the shared sanity range");
     }
 }

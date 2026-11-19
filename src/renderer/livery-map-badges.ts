@@ -33,15 +33,42 @@ export function liveryBadgeImageId(liveryName: string): string {
   return `livery-badge-${liveryName}`;
 }
 
-// Registers every real badge PNG as a map image, keyed by liveryBadgeImageId.
-// Safe to call more than once — skips any id already registered, same
-// pattern as registerSupportVehicleIcons.
+// Real bug report, 2026-11-14: rotating the badge's own artwork through the
+// "upside-down" half of the compass (the same half vehicles-badge-number
+// already clamps away from, for the same reason) made liveries read upside
+// down for any vehicle heading roughly west. A real bus doesn't drive
+// upside down when it turns around — the correct real-world picture is a
+// horizontal mirror of the same side-on livery, not a vertical flip. No
+// second badge asset is supplied for this (same art as the plain badge),
+// so a horizontally-flipped variant is generated once at registration time
+// via a canvas, not requested from the user as new art.
+export function liveryBadgeMirroredImageId(liveryName: string): string {
+  return `livery-badge-mirrored-${liveryName}`;
+}
+
+function horizontallyFlipped(img: HTMLImageElement): ImageData {
+  const canvas = document.createElement("canvas");
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.translate(img.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(img, 0, 0);
+  return ctx.getImageData(0, 0, img.width, img.height);
+}
+
+// Registers every real badge PNG as a map image, keyed by liveryBadgeImageId,
+// plus a horizontally-mirrored variant of each (liveryBadgeMirroredImageId)
+// for the upside-down-avoidance fix above. Safe to call more than once —
+// skips any id already registered, same pattern as registerSupportVehicleIcons.
 export async function registerLiveryBadgeIcons(map: maplibregl.Map): Promise<void> {
   const names = liveryBadgeNames();
   const images = await Promise.all(names.map((name) => loadImage(liveryBadgeUrl(name)!)));
   names.forEach((name, i) => {
     const id = liveryBadgeImageId(name);
     if (!map.hasImage(id)) map.addImage(id, images[i]);
+    const mirroredId = liveryBadgeMirroredImageId(name);
+    if (!map.hasImage(mirroredId)) map.addImage(mirroredId, horizontallyFlipped(images[i]));
   });
 }
 
@@ -70,8 +97,18 @@ export function pickLiveryForJourney(
   departureMinutes: number,
   liveries: Livery[],
   depotGroup: DepotGroup | undefined,
+  // Airlink 100's own last-resort fallback (2026-11-15) — see
+  // `airlinkLothianFallbackEligible`'s own doc comment (livery-seed-
+  // data.mts) for the full reasoning. The caller computes this from the
+  // real owned-vehicle list and real repaint/re-power away-bookings;
+  // omitted (the default) means "don't apply it," same as passing
+  // `false` — this function has no owned-vehicle/booking data of its
+  // own to compute it from.
+  airlinkLothianFallbackAvailable?: boolean,
 ): Livery | null {
-  const candidates = liveries.filter((l) => hasLiveryBadge(l.name) && liveryEligibleForRoute(l.name, route, depotGroup));
+  const candidates = liveries.filter(
+    (l) => hasLiveryBadge(l.name) && liveryEligibleForRoute(l.name, route, depotGroup, airlinkLothianFallbackAvailable),
+  );
   if (candidates.length === 0) return null;
   const index = Math.floor(seededUnitInterval(`${route.id}:${departureMinutes}`) * candidates.length);
   return candidates[index];

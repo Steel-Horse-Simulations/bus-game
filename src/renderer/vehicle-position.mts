@@ -8,7 +8,7 @@ export type LonLat = readonly [number, number];
 
 // Matches route-orientation.ts's own LonLat exactly (readonly tuple), the
 // same convention settlement-fallback.mts already follows.
-function approxDistanceM(a: LonLat, b: LonLat): number {
+export function approxDistanceM(a: LonLat, b: LonLat): number {
   const R = 6_371_000;
   const toRad = (d: number) => (d * Math.PI) / 180;
   const lat1 = toRad(a[1]);
@@ -27,9 +27,39 @@ function bearingDegrees(a: LonLat, b: LonLat): number {
   const lat1 = toRad(a[1]);
   const dLon = toRad(b[0] - a[0]);
   const x = dLon * Math.cos(lat1);
-  const y = b[1] - a[1];
+  // Real bug found live (2026-11-14, user report: "buses always face
+  // North-South ... do not follow the angle of the road at all anywhere" —
+  // confirmed against route 398's own real waypoints, which genuinely zig-
+  // zag N/E/N/W/S, not a straight line). `x` above is in radians (dLon was
+  // run through toRad), but `y` here was left in raw degrees — a unit
+  // mismatch, not a sign error. Radians are ~57x (180/π) smaller than the
+  // same angle in degrees, so the un-converted `y` was always ~57x too big
+  // relative to `x`, pulling atan2(x, y) toward the y-axis (north/south)
+  // for virtually any real road segment regardless of its true east-west
+  // component. `y` must be in the same unit as `x`.
+  const y = toRad(b[1] - a[1]);
   const deg = (Math.atan2(x, y) * 180) / Math.PI;
   return (deg + 360) % 360;
+}
+
+// How vehicle-simulation.ts's own map badge/number should actually be
+// drawn for a given true compass bearing — real bug report, 2026-11-14:
+// rotating the badge/number through the "upside-down" half of the compass
+// (same artwork-orientation correction as elsewhere: the badge's own
+// native unrotated artwork is landscape/east-pointing, map-icons.ts's
+// drawArrow, hence the -90) made liveries and route numbers read upside
+// down for any vehicle heading roughly west. A real bus mirrors, it
+// doesn't flip vertically, when it turns around, so the badge's own image
+// is swapped for a horizontally-flipped variant (vehicle-simulation.ts
+// picks liveryBadgeMirroredImageId when `needsMirror` is true) instead of
+// letting the rotation continue into the unreadable half. The arrow
+// layer deliberately does NOT use this — an arrow reads fine upside down,
+// unlike text or a livery pattern, so it keeps showing the true heading
+// through the full 360° via its own unclamped `bearing - 90`.
+export function badgeDisplayRotation(trueBearingDegrees: number): { badgeRotation: number; needsMirror: boolean } {
+  const artworkBearing = (((trueBearingDegrees - 90) % 360) + 360) % 360;
+  const needsMirror = artworkBearing > 90 && artworkBearing < 270;
+  return { badgeRotation: needsMirror ? artworkBearing - 180 : artworkBearing, needsMirror };
 }
 
 // A point `fraction` (0..1) of the way along `coords` by cumulative

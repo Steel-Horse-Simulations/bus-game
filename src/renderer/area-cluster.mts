@@ -1,26 +1,36 @@
-// Building-cluster boundary snap for zone drawing (T118, OPEN-ITEMS.md,
-// DESIGN.md — the UI/interaction shape was fully confirmed 2026-11-01
-// across two screenshot rounds): holding Ctrl while drawing a fare zone
-// replaces road-snapping with snapping onto a building cluster's own
-// outer edge instead. The player clicks a first and a last point on (or
-// near) the cluster, and the game fills in the detailed boundary trace
-// between them.
+// Area-cluster boundary snap for zone drawing (T118/T139, OPEN-ITEMS.md —
+// the UI/interaction shape was fully confirmed 2026-11-01 across two
+// screenshot rounds): holding Ctrl while drawing a fare zone replaces
+// road-snapping with snapping onto a real map area's own outer edge
+// instead. The player clicks a first and a last point on (or near) the
+// area, and the game fills in the detailed boundary trace between them.
+//
+// Renamed from building-cluster.mts (2026-11-13, live correction): T118/
+// T139 originally snapped onto individual building footprints (the
+// `building` source-layer), but a live report asked for the broader
+// landuse area instead — "it currently snaps to the buildings not the
+// coloured area around it," confirmed directly: the basemap's own
+// `landuse` source-layer (residential/commercial/retail/industrial,
+// basemap-style.json) is a real, separate polygon from individual
+// buildings, already rendered as that visible shaded area. None of the
+// geometry below is actually building-specific — it's plain polygon
+// union/snap/trace math that doesn't care what kind of area it's tracing
+// — so only the file's own name and the caller's query (fare-zone-
+// drawing.ts, now querying `landuse` instead of `building`) needed to
+// change; the real building footprints aren't read anywhere any more.
 //
 // Pure logic only — no maplibre-gl import, same split as
 // coastline-clip.mts/fare-zone-drawing.ts, since maplibre-gl has no
 // Node-compatible exports to unit-test against directly. The maplibre
-// side (fare-zone-drawing.ts) is responsible for querying the real
-// building polygons out of the basemap's own vector tiles (the
-// `building` source-layer, confirmed to already exist there —
-// OPEN-ITEMS.md T118's corrected entry — with no new pipeline work of
-// any kind) and handing their outer rings in here as plain
-// lon/lat points.
+// side (fare-zone-drawing.ts) is responsible for querying the real area
+// polygons out of the basemap's own vector tiles and handing their outer
+// rings in here as plain lon/lat points.
 //
 // Scope of this file, and what's deliberately simplified:
-// - A building's own holes (rare OSM courtyards) are ignored —
-//   out-of-scope for "snap to this cluster's outer edge," which only
-//   ever cares about the outside boundary. The caller passes outer
-//   rings only.
+// - An area's own holes (e.g. a landuse polygon with an excluded patch
+//   inside it) are ignored — out-of-scope for "snap to this area's outer
+//   edge," which only ever cares about the outside boundary. The caller
+//   passes outer rings only.
 // - Unioning uses the `polygon-clipping` library (installed 2026-11-05
 //   specifically for this) rather than hand-written polygon-boolean
 //   code: this project already avoids a geometry library for the
@@ -28,22 +38,23 @@
 //   ray-casting point-in-polygon, no buffering/offset library for the
 //   10m-offset feature that was deliberately deferred) but a robust,
 //   correct polygon UNION (merging several real, possibly
-//   barely-touching OSM building footprints into one outer boundary) is
+//   barely-touching OSM-derived polygons into one outer boundary) is
 //   a genuinely different scale of problem — floating-point edge/vertex
 //   coincidence is exactly where hand-rolled polygon-boolean code goes
 //   wrong, and a small, widely-used, dependency-light library
 //   (`robust-predicates` + `splaytree`, no native bindings) is the
 //   safer choice here, not a shortcut.
-// - A building spanning a vector-tile boundary can arrive as more than
+// - An area spanning a vector-tile boundary can arrive as more than
 //   one partial polygon fragment (tile clipping) — union handles this
 //   correctly as long as the fragments still share an edge/overlap at
-//   the tile seam, which real OpenMapTiles building tiles do (adjacent
-//   tiles share the exact same clipped boundary). Not independently
-//   proven against a real multi-tile case in this file's own tests
-//   (needs real tile data, not a synthetic one) — flagged, not assumed.
+//   the tile seam, which real OpenMapTiles tiles do (adjacent tiles
+//   share the exact same clipped boundary). Not independently proven
+//   against a real multi-tile case in this file's own tests (needs real
+//   tile data, not a synthetic one) — flagged, not assumed.
 import polygonClipping from "polygon-clipping";
 import type { Ring as ClippingRing, Polygon as ClippingPolygon } from "polygon-clipping";
 import { nearestPointOnPolylines, type GeoPoint } from "./polyline-geometry.mts";
+import { sameRealPoint } from "./coastline-clip.mts";
 
 export interface FareZonePoint {
   lon: number;
@@ -66,21 +77,21 @@ function pairsToRing(pairs: ClippingRing): FareZonePoint[] {
   return pairs.map(([lon, lat]) => ({ lon, lat }));
 }
 
-// Unions every given building OUTER ring (closeRing handles an
-// unclosed input) into one or more merged outer boundaries. Buildings
-// that don't touch/overlap any other simply come back as their own
-// unchanged boundary — union of one shape is a no-op, so a lone
-// building near the click works the same way as a genuine cluster, with
-// no special-casing needed by the caller.
-export function unionBuildingFootprints(footprints: readonly FareZonePoint[][]): FareZonePoint[][] {
+// Unions every given area OUTER ring (closeRing handles an unclosed
+// input) into one or more merged outer boundaries. An area that doesn't
+// touch/overlap any other simply comes back as its own unchanged boundary
+// — union of one shape is a no-op, so a lone polygon near the click works
+// the same way as a genuine cluster, with no special-casing needed by the
+// caller.
+export function unionAreaPolygons(footprints: readonly FareZonePoint[][]): FareZonePoint[][] {
   const closed = footprints.map(closeRing).filter((ring) => ring.length >= 4);
   if (closed.length === 0) return [];
   const polygons: ClippingPolygon[] = closed.map((ring) => [ringToPairs(ring)]);
   const [first, ...rest] = polygons;
   const result = rest.length > 0 ? polygonClipping.union(first, ...rest) : polygonClipping.union(first);
   // result is a MultiPolygon (Polygon[]); each Polygon's own ring 0 is
-  // its outer boundary — any hole a union could create (e.g. buildings
-  // arranged in a ring around an internal courtyard) is dropped, same
+  // its outer boundary — any hole a union could create (e.g. polygons
+  // arranged in a ring around an internal gap) is dropped, same
   // out-of-scope simplification as input holes above.
   return result.map((polygon) => pairsToRing(polygon[0]));
 }
@@ -95,7 +106,7 @@ export interface ClusterSnap {
   edgeIndex: number;
 }
 
-export function nearestPointOnBuildingBoundary(point: FareZonePoint, boundaries: readonly FareZonePoint[][], maxDistanceM: number): ClusterSnap | null {
+export function nearestPointOnAreaBoundary(point: FareZonePoint, boundaries: readonly FareZonePoint[][], maxDistanceM: number): ClusterSnap | null {
   const hit = nearestPointOnPolylines(point, boundaries, maxDistanceM);
   return hit && { point: hit.point, boundaryIndex: hit.polylineIndex, edgeIndex: hit.edgeIndex };
 }
@@ -106,7 +117,7 @@ const EARTH_RADIUS_M = 6_371_000;
 // Flat equirectangular distance, centred on the midpoint of the two
 // points — the same approximation used throughout this project
 // (polyline-geometry.mts, point_to_segment_closest in
-// rust/game-wasm/src/lib.rs); fine at the scale a single building or
+// rust/game-wasm/src/lib.rs); fine at the scale a single area or
 // cluster spans.
 function distanceM(a: GeoPoint, b: GeoPoint): number {
   const cosLat = Math.cos(((a.lat + b.lat) / 2) * DEG_TO_RAD);
@@ -122,14 +133,29 @@ function pathLengthM(points: readonly FareZonePoint[]): number {
 }
 
 // Whichever real VERTEX of a closed boundary ring is nearest a given
-// reference point — distinct from nearestPointOnBuildingBoundary above,
-// which can land anywhere along an edge, not necessarily at a corner.
-// DESIGN.md's own confirmed points (4)/(5): transitioning between a
-// building trace and a road/raw point connects via whichever corner of
-// the cluster is nearest the OTHER side's point, not an arbitrary
-// edge-interpolated spot.
-export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoint: FareZonePoint): FareZonePoint {
-  let best = ring[0];
+// reference point, as long as one is actually within maxDistanceM —
+// distinct from nearestPointOnAreaBoundary above, which can land
+// anywhere along an edge, not necessarily at a corner. DESIGN.md's own
+// confirmed points (4)/(5): transitioning between an area trace and a
+// road/raw point connects via whichever corner of the cluster is
+// nearest the OTHER side's point, not an arbitrary edge-interpolated
+// spot.
+//
+// The distance bound was added 2026-11-14 after a real live bug: for a
+// large landuse polygon whose own OSM geometry only records vertices at
+// its true corners (not evenly spaced along straight edges), the
+// globally-nearest vertex to a click made partway along a long edge can
+// be a distant, unrelated corner on the far side of the polygon rather
+// than anything sensibly "nearby" — producing a boundary that jumps far
+// away from the road and straight back, a visible spike. Bounding the
+// search to maxDistanceM (the caller passes the same LANDUSE_SNAP_
+// DISTANCE_M used for every other area-boundary snap in this feature)
+// means a corner is only ever inserted when a real one is actually
+// close to the reference point; otherwise this returns null and the
+// caller falls back to no bridging corner at all, the same "can't do it
+// sensibly, don't fake it" convention used throughout this feature.
+export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoint: FareZonePoint, maxDistanceM: number): FareZonePoint | null {
+  let best: FareZonePoint | null = null;
   let bestDist = Infinity;
   // ring[length-1] repeats ring[0] (closed) — stop one short so the
   // closing point isn't considered twice.
@@ -140,7 +166,7 @@ export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoi
       best = ring[i];
     }
   }
-  return best;
+  return best && bestDist <= maxDistanceM ? best : null;
 }
 
 // Walks a CLOSED ring (ring[0] === ring[ring.length-1]) from one edge to
@@ -149,6 +175,22 @@ export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoi
 // ringWalkShorterArc below to build both candidate paths before picking
 // the shorter one; not exported on its own since a caller choosing the
 // wrong direction by hand would defeat the point of "shortest arc."
+// Pushes `point` only if it isn't already an exact real-world duplicate
+// of whatever's currently last in `into` — mirrors coastlineWalkBetween's
+// own fix (coastline-clip.mts) for the exact same real bug: `toPoint` is
+// a snap ONTO an edge, which very often lands exactly on one of that
+// edge's own two real vertices (a click close to a corner clamps
+// straight to it) — pushing the walked vertex and then the snap point
+// right after it, unconditionally, produced a bit-identical duplicate at
+// the seam every time that happened (confirmed live, 2026-11-15: a real
+// saved zone came back 66% exact-duplicate points, directly explaining
+// the long-running "spike" reports — a duplicate/zero-length neighbour
+// breaks pushPointOffRoad's own local-direction calculation).
+function pushDedup(into: FareZonePoint[], point: FareZonePoint): void {
+  const last = into[into.length - 1];
+  if (!last || !sameRealPoint(last, point)) into.push(point);
+}
+
 function walkRingDirection(
   ring: readonly FareZonePoint[],
   fromEdge: number,
@@ -163,25 +205,26 @@ function walkRingDirection(
   if (forward) {
     while (i !== toEdge) {
       i = (i + 1) % n;
-      walked.push(ring[i]);
+      pushDedup(walked, ring[i]);
     }
   } else {
     while (i !== toEdge) {
-      walked.push(ring[i]);
+      pushDedup(walked, ring[i]);
       i = (i - 1 + n) % n;
     }
   }
-  walked.push(toPoint);
+  pushDedup(walked, toPoint);
   return walked;
 }
 
-// Walks a closed building-boundary ring between two of its own edge
+// Walks a closed area-boundary ring between two of its own edge
 // locations, choosing whichever of the two possible directions around
 // the ring is the shorter real distance — DESIGN.md's own "finding the
 // shortest/correct arc between two clicked points along it," genuinely
-// different from coastlineWalkBetween (coastline-clip.mts), which never
-// has this ambiguity since a coastline chain is an open polyline with
-// only one path between any two of its points.
+// different from coastlineWalkBetween (coastline-clip.mts), which only
+// resolves the same ambiguity for a chain that's EFFECTIVELY closed
+// (two ends that happen to sit close together), not one that's always a
+// true ring the way an area boundary always is.
 export function ringWalkShorterArc(ring: readonly FareZonePoint[], fromEdge: number, fromPoint: FareZonePoint, toEdge: number, toPoint: FareZonePoint): FareZonePoint[] {
   const forward = walkRingDirection(ring, fromEdge, fromPoint, toEdge, toPoint, true);
   const backward = walkRingDirection(ring, fromEdge, fromPoint, toEdge, toPoint, false);
@@ -195,10 +238,10 @@ export function ringWalkShorterArc(ring: readonly FareZonePoint[], fromEdge: num
 // candidate set covering both points before calling this, so a cluster
 // that really does connect the two is actually represented as one
 // boundary here), or returns null for a genuine gap (different
-// boundaries, or one/both too far from any building) — the caller then
+// boundaries, or one/both too far from any area) — the caller then
 // falls back to a plain straight line, same "big gap" treatment as
 // coastline-following and the original feature spec's own point (3).
-export function buildingClusterFollowBetween(from: ClusterSnap, to: ClusterSnap, boundaries: readonly FareZonePoint[][]): FareZonePoint[] | null {
+export function areaClusterFollowBetween(from: ClusterSnap, to: ClusterSnap, boundaries: readonly FareZonePoint[][]): FareZonePoint[] | null {
   if (from.boundaryIndex !== to.boundaryIndex) return null;
   return ringWalkShorterArc(boundaries[from.boundaryIndex], from.edgeIndex, from.point, to.edgeIndex, to.point);
 }

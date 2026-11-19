@@ -60,7 +60,9 @@ export function renderCatalogueScreen(container: HTMLElement, filters: Catalogue
   container.style.height = "100%";
   container.style.overflow = "hidden";
 
-  const sellable = VEHICLE_MODELS.filter((v) => v.basePriceGBP !== null);
+  // Discontinued (T179) — kept in VEHICLE_MODELS for real data/history,
+  // just never offered for new purchase.
+  const sellable = VEHICLE_MODELS.filter((v) => v.basePriceGBP !== null && !v.discontinued);
   const categories = [...new Set(sellable.map((v) => v.category))];
   const powers = [...new Set(sellable.flatMap((v) => v.powerOptions.map((p) => p.powerType)))];
   const manufacturers = [...new Set(sellable.map((v) => manufacturerOf(v.id)))];

@@ -1,7 +1,7 @@
 // Minimal livery settings (OPERATIONS.md §4): list and add liveries, and set
 // each support vehicle icon's black/white override per livery. "Automatic"
 // clears the override, so the icon goes back to the contrast pick.
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+
 const ICONS: { key: SupportIconKey; label: string }[] = [
   { key: "spanner", label: "Spanner" },
   { key: "person", label: "Person" },
@@ -9,24 +9,24 @@ const ICONS: { key: SupportIconKey; label: string }[] = [
   { key: "parcel", label: "Parcel" },
 ];
 
-export function mountLiveryPanel(): void {
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Liveries";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "1000px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
+// Shown/hidden by the Fleet section of the bottom bar (main-screen-
+// navigation.ts), not its own floating toggle button any more (2026-11-08,
+// live request: "get all menus working... instead of temporary ones").
+export const liveryPanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
+export function mountLiveryPanel(): void {
   const panel = document.createElement("div");
   panel.className = "panel";
-  panel.style.position = "absolute";
-  panel.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX + 36}px`;
-  panel.style.left = "1000px";
-  panel.style.zIndex = "2";
+  panel.style.position = "fixed";
+  panel.style.top = "72px";
+  panel.style.left = "50%";
+  panel.style.transform = "translateX(-50%)";
+  panel.style.zIndex = "1000";
   panel.style.width = "360px";
-  panel.style.maxHeight = "75vh";
+  panel.style.maxHeight = "80vh";
   panel.style.overflowY = "auto";
   panel.style.flexDirection = "column";
   panel.style.display = "none";
@@ -168,11 +168,11 @@ export function mountLiveryPanel(): void {
     }
   }
 
-  let panelOpen = false;
-  toggle.addEventListener("click", () => {
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) void render();
-  });
+  liveryPanelState.open = () => {
+    panel.style.display = "flex";
+    void render();
+  };
+  liveryPanelState.close = () => {
+    panel.style.display = "none";
+  };
 }

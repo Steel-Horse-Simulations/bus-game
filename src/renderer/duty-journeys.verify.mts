@@ -2,6 +2,7 @@
 // `node --experimental-strip-types src/renderer/duty-journeys.verify.mts`
 // — same pattern as route-timetable.verify.mts.
 import { journeysForRoute, journeysForDepotGroup, journeyKey } from "./duty-journeys.mts";
+import { MONDAY_FRIDAY_MASK, SATURDAY_MASK, WEEKDAY_BITS } from "./route-timetable.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -22,6 +23,7 @@ const route: Route = {
   colour: "#3b82f6",
   name: null,
   pickupDropoffOverrides: [],
+  timingPointIndexes: [],
   parentRouteId: null,
   variationLetter: null,
   composedFromRouteIds: [],
@@ -31,19 +33,24 @@ const route: Route = {
   isMinorVariation: false,
   assignedLiveryId: null,
   useBrandedColour: false,
+  vehicleRestrictions: { baseType: null, powerType: null, axleCount: null, liveryId: null },
 };
 
 const timetable: RouteTimetable = {
   id: 1,
   routeId: 1,
-  dayType: "monday_friday",
+  weekdayMask: MONDAY_FRIDAY_MASK,
   direction: "both",
   timeBands: [{ startMinutes: 480, endMinutes: 540, intervalMinutes: 30 }], // 08:00-09:00 every 30 min
   timingPoints: [],
   arrivalOffsetsSeconds: [0, 1800], // 30-minute run
   departureOffsetsSeconds: [0, 1800],
+  arrivalOffsetsSecondsPeak: [0, 1800],
+  departureOffsetsSecondsPeak: [0, 1800],
   excludedDepartureMinutes: [],
   customDepartureMinutes: [],
+  mirrorSourceTimetableId: null,
+  mirrorOffsetMinutes: null,
 };
 
 // --- journeysForRoute ---
@@ -104,7 +111,7 @@ const combined = journeysForDepotGroup(
   [route, otherRoute, wrongDepotRoute],
   [timetable, otherTimetable, wrongDepotTimetable],
   10,
-  "monday_friday",
+  MONDAY_FRIDAY_MASK,
 );
 assert(combined.length === 4, `3 from route 52 + 1 from route 53, depot group 99's route excluded — got ${combined.length}`);
 assert(
@@ -112,6 +119,64 @@ assert(
   "journeys from different routes are merged into one time-sorted list",
 );
 assert(combined[1].routeId === 2, "the 08:10 departure from route 53 sorts correctly between route 52's 08:00 and 08:30");
+
+// --- journeysForDepotGroup finds a Mon-Fri-only timetable while viewing a combined Mon-Sat day type (2026-11-14 live bug) ---
+const monSatMask = MONDAY_FRIDAY_MASK | SATURDAY_MASK;
+const monFriOnlyRouteViewedAsMonSat = journeysForDepotGroup([route], [timetable], 10, monSatMask);
+assert(
+  monFriOnlyRouteViewedAsMonSat.length === 3,
+  `a Mon-Fri-only timetable's journeys must still appear while viewing the combined Mon-Sat day type (they share Mon-Fri), got ${monFriOnlyRouteViewedAsMonSat.length}`,
+);
+// The mirror case: a Saturday-only timetable has no day in common with
+// Mon-Fri at all, so it correctly finds nothing.
+const saturdayOnlyTimetable: RouteTimetable = { ...timetable, weekdayMask: SATURDAY_MASK };
+const saturdayOnlyViewedAsMonFri = journeysForDepotGroup([route], [saturdayOnlyTimetable], 10, MONDAY_FRIDAY_MASK);
+assert(saturdayOnlyViewedAsMonFri.length === 0, "a Saturday-only timetable shares no day with Mon-Fri, so it correctly contributes nothing");
+// A single specific weekday bit (e.g. viewing just Wednesday) still finds
+// the Mon-Fri timetable too — confirms the fix isn't special-cased to
+// combined masks only.
+const wednesdayOnly = journeysForDepotGroup([route], [timetable], 10, WEEKDAY_BITS.wednesday);
+assert(wednesdayOnly.length === 3, `viewing a single day (Wednesday) still matches a Mon-Fri timetable covering it, got ${wednesdayOnly.length}`);
+
+// --- a split (outbound/inbound) timetable component reads its own leg's
+// offsets, not the route's point 0 / very last point (2026-11-14 live
+// bug: "duties keep getting the first stop twice" — a round-trip route
+// split into outbound/inbound components has its own last point back at
+// the SAME physical stop as point 0, and computeOffsetsForDirection only
+// ever fills in a component's own leg, leaving the other leg's offsets at
+// their default 0 — reading point 0/the very last point unconditionally
+// produced a bogus "same stop to itself, 0 minutes" journey) ---
+const splitRoute: Route = {
+  ...route,
+  points: [
+    { kind: "stop", osmId: 100, lon: -6.2, lat: 57.4 }, // 0: outbound start
+    { kind: "waypoint", lon: -6.18, lat: 57.38 }, // 1
+    { kind: "stop", osmId: 200, lon: -6.15, lat: 57.35 }, // 2: terminus
+    { kind: "waypoint", lon: -6.18, lat: 57.38 }, // 3
+    { kind: "stop", osmId: 100, lon: -6.2, lat: 57.4 }, // 4: back at the same physical stop as point 0
+  ],
+  terminusIndex: 2,
+  startIndex: 2,
+};
+const outboundOnlyTimetable: RouteTimetable = {
+  ...timetable,
+  direction: "outbound",
+  // Only indices 0..2 (the outbound leg) have real offsets —
+  // computeOffsetsForDirection's own convention leaves 3/4 at 0. Peak
+  // arrays set to the same values (this fixture's own generated
+  // departures — 08:00/08:30/09:00 — all fall inside the AM peak window,
+  // so journeysForRoute's own peak pick is genuinely exercised here, not
+  // just the standard arrays by coincidence).
+  departureOffsetsSeconds: [0, 600, 1200, 0, 0],
+  arrivalOffsetsSeconds: [0, 600, 1200, 0, 0],
+  departureOffsetsSecondsPeak: [0, 600, 1200, 0, 0],
+  arrivalOffsetsSecondsPeak: [0, 600, 1200, 0, 0],
+};
+const splitJourneys = journeysForRoute(splitRoute, outboundOnlyTimetable);
+assert(splitJourneys.length === 3, `3 generated departures for the split-route fixture — got ${splitJourneys.length}`);
+assert(splitJourneys[0].endClockMinutes - splitJourneys[0].startClockMinutes === 20, `outbound leg duration must be 20 minutes (its own real terminus offset), got ${splitJourneys[0].endClockMinutes - splitJourneys[0].startClockMinutes}`);
+assert(splitJourneys[0].endStopOsmId === 200, `outbound leg must end at its own real terminus (osmId 200), not loop back to point 0's stop — got ${splitJourneys[0].endStopOsmId}`);
+assert(splitJourneys[0].endPoint.lon === -6.15, "outbound leg's end point is the terminus, not the route's very last point");
 
 // --- journeyKey ---
 assert(journeyKey(1, 480) === "1:480", "journeyKey is a stable, readable composite of route id and departure minute");

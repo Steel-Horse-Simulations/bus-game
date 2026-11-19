@@ -11,12 +11,15 @@ import {
   type VehicleModel,
   type LengthVariant,
   type PowerType,
+  type VehicleCategory,
   type GeneralOption,
 } from "./vehicle-catalogue.mts";
 import { createDropdown } from "./dropdown";
 import { liveryBadgeUrl } from "./livery-badges.mts";
-import { liveryRestrictionForArea, liveryUnavailableReason, longDistanceNationLockReason, nationForRegion } from "./livery-seed-data.mts";
+import { liveryRestrictionForArea, liveryUnavailableReason, longDistanceNationLockReason, nationForRegion, lothianCoachesCapReason } from "./livery-seed-data.mts";
 import { bulkDiscountPercent, leaseMonthlyGBP, leaseToOwnMonthlyGBP, type PaymentMethod } from "./vehicle-buy-pricing.mts";
+import { vehicleRestrictionReason } from "./route-vehicle-eligibility.mts";
+import type { Router } from "./wasm/game_wasm.js";
 
 const POWER_LABELS: Record<PowerType, string> = { diesel: "Diesel", electric: "Electric", hybrid: "Hybrid", hydrogen: "Hydrogen" };
 
@@ -33,13 +36,22 @@ interface ConfigureContext {
   // (liveryCapReason, livery-seed-data.mts). Optional so a caller that
   // genuinely has no such list yet just skips the cap check, same
   // "undefined means not checked" convention liveryUnavailableReason
-  // already uses for depotGroup.
-  ownedVehicles?: { liveryId: number | null }[];
+  // already uses for depotGroup. Widened (T183) to carry depotGroupId and
+  // modelId too, both of which the real runtime `Vehicle` objects already
+  // have (the caller was just narrowing them away) — needed for the
+  // Lothian Coaches private-hire cap below, which is per-depot-group and
+  // per-vehicle-class, unlike Lothian Girraffe's plain company-wide count.
+  ownedVehicles?: { liveryId: number | null; depotGroupId: number; modelId: string }[];
   // Every route in the save (T153, confirmed 2026-11-07) — "buying for
   // a specific route" filters this by the selected depot GROUP (not
   // depot specifically, your own call when asked) to populate its
   // dropdown.
   routes: Route[];
+  // The loaded road router (Q18/Q19, OPEN-ITEMS.md Q18+Q19 plan) — needed
+  // to re-resolve a route's own real OSM maxweight/maxheight/maxlength/
+  // maxwidth limits at buy time (§B's getters), since a route stores no
+  // cached figure of its own; see routeOsmLimits() below.
+  router: Router;
   onAddedToBasket: () => void;
   onBack: () => void;
 }
@@ -156,10 +168,27 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     return ctx.ownedVehicles.filter((v) => v.liveryId === liveryId).length;
   }
 
+  // Private hire revival (T183): per-depot-group counts of each eligible
+  // class already carrying Lothian Coaches, scoped to the depot group
+  // currently selected in this screen — unlike currentVehicleCountForLivery
+  // above (Lothian Girraffe's cap), which is deliberately company-wide.
+  // Bucketed by modelId alone, not vehicle.category, since the owned
+  // Vehicle rows carry no category field of their own — safe because the
+  // vehicle lock above only ever lets a coach or an evm-cityline carry
+  // this livery in the first place.
+  function lothianCoachesCounts(): { coach: number; sprinter: number } {
+    if (!ctx.ownedVehicles) return { coach: 0, sprinter: 0 };
+    const livery = ctx.liveries.find((l) => l.name === "Lothian Coaches");
+    if (!livery) return { coach: 0, sprinter: 0 };
+    const inGroup = ctx.ownedVehicles.filter((v) => v.depotGroupId === selectedDepotGroupId && v.liveryId === livery.id);
+    const sprinter = inGroup.filter((v) => v.modelId === "evm-cityline").length;
+    return { coach: inGroup.length - sprinter, sprinter };
+  }
+
   function liveryLockReason(name: string): string | null {
     const livery = ctx.liveries.find((l) => l.name === name);
     const route = boughtForRouteId === null ? undefined : ctx.routes.find((r) => r.id === boughtForRouteId);
-    return liveryUnavailableReason(
+    const baseReason = liveryUnavailableReason(
       name,
       vehicle,
       currentDepotGroup(),
@@ -167,10 +196,68 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       selectedPower,
       route,
     );
+    if (baseReason) return baseReason;
+    if (name === "Lothian Coaches") {
+      const counts = lothianCoachesCounts();
+      return lothianCoachesCapReason(vehicle.category, vehicle.id, counts.coach, counts.sprinter);
+    }
+    return null;
   }
 
   function liveryIsAccepted(name: string): boolean {
     return liveryLockReason(name) === null;
+  }
+
+  // Re-resolves `route`'s own most-restrictive real OSM maxweight/
+  // maxheight/maxlength/maxwidth figures (Q18, OPEN-ITEMS.md Q18+Q19 plan)
+  // by replaying its points through the router — the same
+  // `find_route_through` + §B-getters technique route-draw.ts's own
+  // `rebuildRoute()` uses while drawing, since a route stores no cached
+  // figure of its own (computed live, not persisted). `Infinity` (the
+  // getters' own "no restriction found" sentinel) for a route with fewer
+  // than 2 points or no resolvable path at all.
+  function routeOsmLimits(route: Route): { maxweightTonnes: number; maxheightM: number; maxlengthM: number; maxwidthM: number } {
+    const none = { maxweightTonnes: Infinity, maxheightM: Infinity, maxlengthM: Infinity, maxwidthM: Infinity };
+    if (route.points.length < 2) return none;
+    const flat: number[] = [];
+    for (const p of route.points) flat.push(p.lon, p.lat);
+    const path = ctx.router.find_route_through(new Float64Array(flat));
+    if (path.length === 0) return none;
+    return {
+      maxweightTonnes: ctx.router.last_route_min_maxweight_tonnes(),
+      maxheightM: ctx.router.last_route_min_maxheight_m(),
+      maxlengthM: ctx.router.last_route_min_maxlength_m(),
+      maxwidthM: ctx.router.last_route_min_maxwidth_m(),
+    };
+  }
+
+  // Combines Q19's manual axes (base type/power type/axle count/livery)
+  // and Q18's automatic OSM axis into the one reason the currently
+  // configured vehicle (this model, at its selected power/length/livery)
+  // can't run `boughtForRouteId`'s route — or null if it's fully eligible
+  // or no route is selected at all. Same hard-block treatment as
+  // liveryLockReason just above; see route-vehicle-eligibility.mts.
+  function routeVehicleRestrictionReason(): string | null {
+    if (boughtForRouteId === null) return null;
+    const route = ctx.routes.find((r) => r.id === boughtForRouteId);
+    if (!route) return null;
+    const limits = routeOsmLimits(route);
+    return vehicleRestrictionReason(
+      route,
+      {
+        category: vehicle.category as VehicleCategory,
+        powerType: selectedPower,
+        lengthM: selectedLength.lengthM,
+        liveryId: selectedLiveryId,
+        heightM: selectedLength.heightM,
+        weightTonnes: selectedLength.weightTonnes,
+        widthM: selectedLength.widthM,
+      },
+      limits.maxweightTonnes,
+      limits.maxheightM,
+      limits.maxlengthM,
+      limits.maxwidthM,
+    );
   }
 
   // Plain white is reserved for used vehicles (the Used screen's own flow
@@ -295,7 +382,7 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       lockNote.style.fontSize = "11px";
       lockNote.style.color = "var(--text-warning)";
       lockNote.style.marginTop = "4px";
-      lockNote.textContent = `${group?.name} only accepts: ${restriction.accepted.join(", ")} (preferred: ${restriction.preferred})${group && longDistanceNationLockReason("Citylink", group.region) === null ? " — Citylink and Ember are always allowed too." : ""}`;
+      lockNote.textContent = `${group?.name} only accepts: ${restriction.accepted.join(", ")} (preferred: ${restriction.preferred})${group && longDistanceNationLockReason("Citylink", group.region) === null ? " — Citylink is always allowed too." : ""}`;
       col1.appendChild(lockNote);
     }
 
@@ -305,7 +392,7 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       longDistanceNote.style.color = "var(--text-muted)";
       longDistanceNote.style.marginTop = "4px";
       longDistanceNote.textContent = nationForRegion(group.region) === "scotland"
-        ? "Citylink and Ember are allowed in every Scottish depot but are long-distance only (not enforced yet). Citylink needs a coach; Ember needs the Yutong coach specifically. Citylink/West Coast Motors is the same but Glasgow and Oban depots only."
+        ? "Citylink is allowed in every Scottish depot but is long-distance only (not enforced yet) and needs a coach. Citylink/West Coast Motors is the same but Glasgow and Oban depots only."
         : "MegaBus and National Express are allowed in every England/Wales depot but are long-distance only (not enforced yet). Both need a coach.";
       col1.appendChild(longDistanceNote);
     }
@@ -444,6 +531,11 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       powerDropdown.el.style.marginTop = "4px";
       col1.appendChild(powerDropdown.el);
     }
+    // Livery/route/power can all flip route-vehicle eligibility (Q18/Q19,
+    // OPEN-ITEMS.md) and every one of those choices lives in this column
+    // — refreshed here, once, rather than re-adding this same call at each
+    // of col1's own several change handlers individually.
+    renderPaymentSection();
   }
 
   function rerenderCol2(): void {
@@ -751,13 +843,27 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
     bulkHint.textContent = quantity > 1 ? `This order's own bulk discount (by manufacturer, applied in the basket): ${bulkDiscountPercent(quantity)}% for ${quantity} from ${manufacturerOf(vehicle.id)}.` : "";
     paymentSection.appendChild(bulkHint);
 
+    // Q18/Q19 (OPEN-ITEMS.md Q18+Q19 plan): a hard block, same treatment
+    // as a livery lock — the vehicle this screen is configuring (this
+    // model, at its selected power/length/livery) simply cannot be bought
+    // for the selected route at all when this is non-null.
+    const restrictionReason = routeVehicleRestrictionReason();
+    if (restrictionReason) {
+      const restrictionBlockEl = document.createElement("div");
+      restrictionBlockEl.style.fontSize = "11px";
+      restrictionBlockEl.style.color = "var(--text-warning)";
+      restrictionBlockEl.style.marginTop = "6px";
+      restrictionBlockEl.textContent = restrictionReason;
+      paymentSection.appendChild(restrictionBlockEl);
+    }
+
     const addButton = document.createElement("button");
     addButton.className = "btn";
     addButton.style.marginTop = "10px";
     addButton.textContent = `Add to basket — ${quantity} × ${formatGBP(unit)}`;
-    addButton.disabled = selectedDepotGroupId === null || selectedDepotId === null;
+    addButton.disabled = selectedDepotGroupId === null || selectedDepotId === null || restrictionReason !== null;
     addButton.addEventListener("click", async () => {
-      if (selectedDepotGroupId === null || selectedDepotId === null) return;
+      if (selectedDepotGroupId === null || selectedDepotId === null || restrictionReason !== null) return;
       addButton.disabled = true;
       try {
         await window.basket.add(

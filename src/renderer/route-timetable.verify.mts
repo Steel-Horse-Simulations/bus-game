@@ -17,6 +17,18 @@ import {
   mergeCustomDepartures,
   validateNightWindow,
   validateNightFinishTime,
+  validateWeekdayMask,
+  weekdayMasksOverlap,
+  describeWeekdayMask,
+  isPeakMinute,
+  AM_PEAK_START_MINUTES,
+  PM_PEAK_END_MINUTES,
+  MONDAY_FRIDAY_MASK,
+  SATURDAY_MASK,
+  SUNDAY_MASK,
+  WEEKEND_MASK,
+  EVERY_DAY_MASK,
+  WEEKDAY_BITS,
   type TimeBand,
 } from "./route-timetable.mts";
 
@@ -57,44 +69,129 @@ assert(
 const stopStopWaypoint = [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "waypoint" as const }];
 assert(validateTimingPoints(stopStopWaypoint, []) === null, "no timing points is always valid");
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: 0 }]) === null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: 8, dwellMinutes: 0 }]) === null,
   "a timing point on a real stop is valid",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 2, legMinutes: 5, dwellMinutes: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 2, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }]) !== null,
   "a timing point on a waypoint is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 5, legMinutes: 5, dwellMinutes: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 5, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }]) !== null,
   "an out-of-range timing point index is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 0, legMinutes: 5, dwellMinutes: 0 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 0, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }]) !== null,
   "point 0 can't be flagged as a timing point — it's always the journey's own departure",
 );
 assert(
   validateTimingPoints(stopStopWaypoint, [
-    { pointIndex: 1, legMinutes: 5, dwellMinutes: 0 },
-    { pointIndex: 1, legMinutes: 8, dwellMinutes: 0 },
+    { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 },
+    { pointIndex: 1, standardPaddingMinutes: 8, peakPaddingMinutes: null, dwellMinutes: 0 },
   ]) !== null,
   "the same stop flagged twice as a timing point is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: -1, dwellMinutes: 0 }]) !== null,
-  "a negative leg time is rejected",
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: -1, peakPaddingMinutes: null, dwellMinutes: 0 }]) !== null,
+  "a negative standard padding is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 1.5, dwellMinutes: 0 }]) !== null,
-  "a fractional leg time is rejected — published times are whole minutes",
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 1.5, peakPaddingMinutes: null, dwellMinutes: 0 }]) !== null,
+  "a fractional standard padding is rejected — published times are whole minutes",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: -1 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: -1, dwellMinutes: 0 }]) !== null,
+  "a negative peak padding is rejected",
+);
+assert(
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: 1.5, dwellMinutes: 0 }]) !== null,
+  "a fractional peak padding is rejected",
+);
+assert(
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: -1 }]) !== null,
   "a negative dwell is rejected",
 );
 assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, legMinutes: 5, dwellMinutes: 1.5 }]) !== null,
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 1.5 }]) !== null,
   "a fractional dwell is rejected — timetables run on minutes, not seconds",
 );
+
+// --- island restriction (2026-11-15, corrected 2026-11-19) ---
+assert(
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }], true, [1]) === null,
+  "an island route with exactly one OPTIONAL timing point and no peak figure is valid",
+);
+assert(
+  validateTimingPoints(
+    [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "stop" as const }],
+    [
+      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 },
+      { pointIndex: 2, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 },
+    ],
+    true,
+    [1, 2],
+  ) !== null,
+  "an island route with more than one OPTIONAL timing point is rejected",
+);
+assert(
+  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: 8, dwellMinutes: 0 }], true, [1]) !== null,
+  "an island route's timing point can't carry a separate peak figure",
+);
+assert(
+  validateTimingPoints(
+    [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "stop" as const }],
+    [
+      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 },
+      { pointIndex: 2, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 },
+    ],
+    false,
+  ) === null,
+  "the same two timing points are fine for a non-island route — isIslandRoute defaults to false, unchanged behaviour",
+);
+
+// Real bug, fixed 2026-11-19: "Island routes can only have 1 timing point
+// time for whole route not 1 per timing point like it should be" — the
+// old code counted a route's own MANDATORY terminus/forced-by-stop
+// entries against the island cap. These two prove the actual bug
+// scenario and its fix: a mandatory entry (index 2, NOT in
+// routeTimingPointIndexes — exactly how route-panel.ts's own terminus/
+// forced-by-stop blocks behave, they never write to timingPointIndexes)
+// coexists with one real optional entry (index 1, IS in
+// routeTimingPointIndexes) without tripping the cap; a second optional
+// entry still correctly fails.
+const threeStops = [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "stop" as const }];
+assert(
+  validateTimingPoints(
+    threeStops,
+    [
+      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }, // optional, flagged
+      { pointIndex: 2, standardPaddingMinutes: 3, peakPaddingMinutes: null, dwellMinutes: 0 }, // mandatory terminus, NOT flagged
+    ],
+    true,
+    [1],
+  ) === null,
+  "a mandatory terminus entry plus one real optional entry is valid on an island route — the bug this fix addresses",
+);
+assert(
+  validateTimingPoints(
+    threeStops,
+    [
+      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }, // optional, flagged
+      { pointIndex: 2, standardPaddingMinutes: 3, peakPaddingMinutes: null, dwellMinutes: 0 }, // ALSO optional, flagged this time
+    ],
+    true,
+    [1, 2],
+  ) !== null,
+  "two genuinely optional flagged entries still correctly fails on an island route",
+);
+
+// --- isPeakMinute (2026-11-15) ---
+assert(isPeakMinute(AM_PEAK_START_MINUTES) === true, "the AM peak window's own start minute counts as peak");
+assert(isPeakMinute(AM_PEAK_START_MINUTES - 1) === false, "one minute before the AM peak window is not peak");
+assert(isPeakMinute(PM_PEAK_END_MINUTES - 1) === true, "the last minute of the PM peak window counts as peak");
+assert(isPeakMinute(PM_PEAK_END_MINUTES) === false, "the PM peak window's own end minute is exclusive, not peak");
+assert(isPeakMinute(12 * 60) === false, "midday (inter-peak) is not peak");
+assert(isPeakMinute(23 * 60) === false, "late evening is not peak");
 
 // --- computeOffsets ---
 // Three points, two legs of 100s and 200s, no timing points at all: pure
@@ -115,23 +212,23 @@ assert(
   );
 }
 
-// Same shape, but point 1 is a timing point published 3 minutes (180s)
-// from departure — slower than the natural 100s, so real padding is
-// added; point 1 stops being an estimate.
+// Same shape, but point 1 is a timing point with 80s (just over a
+// minute, rounds to whole minutes on the input side but the maths here
+// works in raw seconds) of standard padding on top of the natural 100s —
+// point 1 stops being an estimate.
 {
-  const { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints } = computeOffsets(
+  const { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated } = computeOffsets(
     3,
     [100, 200],
-    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 0 }],
+    [{ pointIndex: 1, standardPaddingMinutes: 80 / 60, peakPaddingMinutes: null, dwellMinutes: 0 }],
   );
-  assert(arrivalOffsetsSeconds[1] === 180, "arrival at the timing point matches its published leg time, not the natural running time");
-  assert(departureOffsetsSeconds[1] === 180, "departure equals arrival when there's no dwell");
-  assert(arrivalOffsetsSeconds[2] === 380, "the padding carries forward into the next leg's arrival (180 + 200)");
+  assert(Math.abs(arrivalOffsetsSeconds[1] - 180) < 1e-9, "arrival at the timing point is the natural time PLUS its own padding (100 + 80), not a replacement for it");
+  assert(departureOffsetsSeconds[1] === arrivalOffsetsSeconds[1], "departure equals arrival when there's no dwell");
+  assert(Math.abs(arrivalOffsetsSeconds[2] - 380) < 1e-9, "the padding carries forward into the next leg's arrival (180 + 200)");
   assert(
     JSON.stringify(estimated) === JSON.stringify([false, false, false]),
     "the timing point itself is no longer an estimate, and the terminus (also point 2 here) is always non-estimated regardless",
   );
-  assert(infeasibleTimingPoints.length === 0, "a published time slower than natural running is perfectly feasible");
 }
 
 // A dwell (layover) makes departure later than arrival at that one point,
@@ -141,9 +238,9 @@ assert(
   const { arrivalOffsetsSeconds, departureOffsetsSeconds } = computeOffsets(
     3,
     [100, 200],
-    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 1 }],
+    [{ pointIndex: 1, standardPaddingMinutes: 80 / 60, peakPaddingMinutes: null, dwellMinutes: 1 }],
   );
-  assert(arrivalOffsetsSeconds[1] === 180 && departureOffsetsSeconds[1] === 240, "a dwell adds to departure without moving arrival (180 + 60)");
+  assert(Math.abs(departureOffsetsSeconds[1] - (arrivalOffsetsSeconds[1] + 60)) < 1e-9, "a dwell adds to departure without moving arrival");
 }
 
 // An intermediate stop between two timing points is estimated
@@ -151,38 +248,50 @@ assert(
 // that stretch, not split evenly by stop count.
 {
   // 4 points, 3 legs: 100s, 300s, 100s (total 500s natural). Timing point
-  // at index 3 published as 10 minutes (600s) — 100s of real padding
-  // spread across the 500s of natural running time before it. Point 1 is
-  // 100/500 of the way through (natural time), so should get 100/500 of
-  // the 600s budget = 120s; point 2 is 400/500 through, so 480s.
+  // at index 3 given 100s (100/60 minutes) of padding on top of the 500s
+  // natural time = 600s target — 100s of real padding spread across the
+  // 500s of natural running time before it. Point 1 is 100/500 of the way
+  // through (natural time), so should get 100/500 of the 600s budget =
+  // 120s; point 2 is 400/500 through, so 480s.
   const { arrivalOffsetsSeconds, estimated } = computeOffsets(
     4,
     [100, 300, 100],
-    [{ pointIndex: 3, legMinutes: 10, dwellMinutes: 0 }],
+    [{ pointIndex: 3, standardPaddingMinutes: 100 / 60, peakPaddingMinutes: null, dwellMinutes: 0 }],
   );
-  assert(arrivalOffsetsSeconds[1] === 120, "an intermediate stop's estimate reflects its own share of natural running time (120/600)");
-  assert(arrivalOffsetsSeconds[2] === 480, "same for the next intermediate stop (480/600)");
-  assert(arrivalOffsetsSeconds[3] === 600, "the timing point itself lands exactly on its published time");
+  assert(Math.abs(arrivalOffsetsSeconds[1] - 120) < 1e-9, "an intermediate stop's estimate reflects its own share of natural running time (120/600)");
+  assert(Math.abs(arrivalOffsetsSeconds[2] - 480) < 1e-9, "same for the next intermediate stop (480/600)");
+  assert(Math.abs(arrivalOffsetsSeconds[3] - 600) < 1e-9, "the timing point itself lands exactly on natural time plus its own padding");
   assert(JSON.stringify(estimated) === JSON.stringify([false, true, true, false]), "only the actual timing points are non-estimates");
 }
 
-// A published leg time faster than the route can actually be driven is
-// infeasible — scheduled at the fastest achievable time instead of a
-// negative/zero wait, and flagged rather than silently accepted.
+// Zero padding (2026-11-15) means the published time is EXACTLY the real
+// fastest achievable time — the old "infeasible, clamp up" case is now
+// structurally impossible (padding can never be negative), proven here
+// rather than just asserted: there is no separate infeasibleTimingPoints
+// field on the result any more at all.
 {
-  const { arrivalOffsetsSeconds, infeasibleTimingPoints } = computeOffsets(
-    2,
-    [200],
-    [{ pointIndex: 1, legMinutes: 1, dwellMinutes: 0 }], // 60s published, 200s natural
-  );
-  assert(arrivalOffsetsSeconds[1] === 200, "an infeasible timing point falls back to the fastest achievable time");
-  assert(
-    infeasibleTimingPoints.length === 1 &&
-      infeasibleTimingPoints[0].pointIndex === 1 &&
-      infeasibleTimingPoints[0].publishedMinutes === 1 &&
-      infeasibleTimingPoints[0].fastestMinutes === 4,
-    "the infeasible timing point is flagged with the published and fastest-achievable minutes, not silently accepted",
-  );
+  const { arrivalOffsetsSeconds } = computeOffsets(2, [200], [{ pointIndex: 1, standardPaddingMinutes: 0, peakPaddingMinutes: null, dwellMinutes: 0 }]);
+  assert(arrivalOffsetsSeconds[1] === 200, "zero padding means the published time equals the real natural/fastest time exactly");
+}
+
+// The "peak" variant uses peakPaddingMinutes instead of
+// standardPaddingMinutes for the same timing point — and falls back to
+// the standard figure when peakPaddingMinutes is null (every island-route
+// timing point, by construction, and any ordinary one the player hasn't
+// given a distinct peak figure).
+{
+  const tp = { pointIndex: 1, standardPaddingMinutes: 1, peakPaddingMinutes: 5, dwellMinutes: 0 };
+  const standard = computeOffsets(2, [100], [tp], "standard");
+  const peak = computeOffsets(2, [100], [tp], "peak");
+  assert(standard.arrivalOffsetsSeconds[1] === 160, "the standard variant uses standardPaddingMinutes (100 + 60)");
+  assert(peak.arrivalOffsetsSeconds[1] === 400, "the peak variant uses peakPaddingMinutes instead (100 + 300)");
+
+  const tpNoPeak = { pointIndex: 1, standardPaddingMinutes: 1, peakPaddingMinutes: null, dwellMinutes: 0 };
+  const peakFallback = computeOffsets(2, [100], [tpNoPeak], "peak");
+  assert(peakFallback.arrivalOffsetsSeconds[1] === 160, "with peakPaddingMinutes unset, the peak variant falls back to the standard figure, same result both ways");
+
+  const defaultVariant = computeOffsets(2, [100], [tp]);
+  assert(defaultVariant.arrivalOffsetsSeconds[1] === 160, "omitting the variant argument defaults to 'standard'");
 }
 
 // Anything after the last explicit timing point keeps pure natural running
@@ -194,9 +303,9 @@ assert(
   const { arrivalOffsetsSeconds, estimated } = computeOffsets(
     4,
     [100, 200, 50],
-    [{ pointIndex: 1, legMinutes: 3, dwellMinutes: 0 }],
+    [{ pointIndex: 1, standardPaddingMinutes: 80 / 60, peakPaddingMinutes: null, dwellMinutes: 0 }],
   );
-  assert(arrivalOffsetsSeconds[2] === arrivalOffsetsSeconds[1] + 200, "the trailing leg after the last explicit timing point is unpadded natural running time");
+  assert(Math.abs(arrivalOffsetsSeconds[2] - (arrivalOffsetsSeconds[1] + 200)) < 1e-9, "the trailing leg after the last explicit timing point is unpadded natural running time");
   assert(estimated[2] === true, "a genuinely intermediate trailing stop (not the terminus) is still an estimate");
   assert(estimated[3] === false, "but the terminus itself is never an estimate, even with no explicit timing point flagged there");
 }
@@ -383,6 +492,41 @@ assert(
 assert(
   validateNightFinishTime([1425], 20 * 60) === null,
   "a lone 23:45 departure with a 20-minute run finishes at 00:05, well inside the window",
+);
+
+// --- validateWeekdayMask / weekdayMasksOverlap / describeWeekdayMask
+// (2026-11-07, the custom day-type picker) ---
+assert(validateWeekdayMask(MONDAY_FRIDAY_MASK) === null, "Mon-Fri's own mask is valid");
+assert(validateWeekdayMask(EVERY_DAY_MASK) === null, "every day selected is valid");
+assert(validateWeekdayMask(WEEKDAY_BITS.wednesday) === null, "a single day is valid");
+assert(validateWeekdayMask(0) !== null, "zero days selected is rejected");
+assert(validateWeekdayMask(128) !== null, "a mask with a bit beyond Sunday is rejected");
+assert(validateWeekdayMask(1.5) !== null, "a non-integer mask is rejected");
+
+assert(weekdayMasksOverlap(MONDAY_FRIDAY_MASK, SATURDAY_MASK) === false, "Mon-Fri and Saturday share no day");
+assert(weekdayMasksOverlap(MONDAY_FRIDAY_MASK, WEEKDAY_BITS.wednesday) === true, "Wednesday alone overlaps Mon-Fri");
+assert(weekdayMasksOverlap(SATURDAY_MASK, SUNDAY_MASK) === false, "Saturday and Sunday don't overlap each other");
+assert(weekdayMasksOverlap(WEEKEND_MASK, SUNDAY_MASK) === true, "the weekend mask overlaps Sunday alone");
+
+assert(describeWeekdayMask(MONDAY_FRIDAY_MASK) === "Mon-Fri", "Mon-Fri describes as a single range");
+assert(describeWeekdayMask(WEEKEND_MASK) === "Weekend", "Saturday+Sunday gets the friendlier 'Weekend' label, not 'Sat-Sun'");
+assert(describeWeekdayMask(EVERY_DAY_MASK) === "Every day", "all 7 days gets 'Every day', not 'Mon-Sun'");
+assert(describeWeekdayMask(SATURDAY_MASK) === "Sat", "a lone Saturday describes as just 'Sat'");
+assert(
+  describeWeekdayMask(WEEKDAY_BITS.tuesday | WEEKDAY_BITS.thursday) === "Tue, Thu",
+  "non-adjacent days list separately, comma-joined",
+);
+assert(
+  describeWeekdayMask(WEEKDAY_BITS.monday | WEEKDAY_BITS.wednesday | WEEKDAY_BITS.friday) === "Mon, Wed, Fri",
+  "three non-adjacent days each stay their own single-day run",
+);
+assert(
+  describeWeekdayMask(WEEKDAY_BITS.thursday | WEEKDAY_BITS.friday) === "Thu-Fri",
+  "two adjacent days (not the Mon-Fri/weekend specials) still collapse into a range",
+);
+assert(
+  describeWeekdayMask(WEEKDAY_BITS.sunday | WEEKDAY_BITS.monday) === "Mon, Sun",
+  "Sunday and Monday are adjacent on the calendar but NOT treated as a wrapping run — this is two separate single-day entries, in Mon-first order",
 );
 
 console.log("\nAll checks passed.");

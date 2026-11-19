@@ -31,8 +31,10 @@ twin-axle; over 12.9m must be tri-axle by law.
 say whether they're included in published seat counts, so don't add tip-ups
 to a vehicle unless explicitly stated. Confirmed cases only:
 - ADL Enviro500: 3 tip-ups
-- Yutong E10: 4 tip-ups
-- Yutong E12: 5 tip-ups
+
+(The Yutong E10/E12's own tip-up figures — 4 and 5 respectively — moved to
+§4, "Dropped from the catalogue," alongside the rest of their specs, now
+that both models are fully removed from the game.)
 
 **Max-seating / max-standing configurator mode.** Several vehicles (the
 StreetDeck family, the Wrightbus GB Kite family) publish a **max capacity**
@@ -50,12 +52,6 @@ Example (StreetDeck Ultroliner at 11.5m, max capacity 100): max-seating =
 **Battery units.** Always **kWh** (energy capacity), never kW (which is
 power, the wrong unit for battery size).
 
-**School run capacity.** On a school contract, capacity is **seated capacity
-only** — no standing passengers permitted at all, since every student must
-have a seatbelt. This overrides the normal seated+standing model specifically
-for school work, and is what the council's minimum capacity requirement is
-checked against.
-
 **Seats and luggage racks are shippable inventory**, not just fitted parts:
 - Fitting/removing seats is **free** — just engineering staff time (a fitter,
   specifically).
@@ -72,28 +68,25 @@ checked against.
   (bought new or taken from storage); converting back adds seats and returns
   the luggage racks to storage.
 
-**Private hire vehicles** have **2 extra seats** compared to an otherwise
-identical vehicle. These are removed (following the seat system above) if a
-wheelchair user is booked onto that specific hire, then refitted once the
-hire is complete.
-
 **Toilets** are not a configurable option:
 - **Standard on every coach**, already included in the coach capacity figures
   below — no separate seat deduction.
 - **Never available on the EVM Cityline minibus.** Instead: if the total
   journey is **over 4 hours**, the Cityline must stop after **3 hours** for a
   toilet break. If the journey is **under 4 hours**, it can run straight
-  through with no stop at all. A duty-planning constraint for long private
-  hire and tour work, not a repeating "every 4 hours" cycle.
-- Required (not optional) for: any private hire longer than 2 hours without a
-  stop at a venue, and all long distance journeys.
+  through with no stop at all. A duty-planning constraint for long tour work,
+  not a repeating "every 4 hours" cycle.
+- Required (not optional) for: all long distance journeys.
 
 ---
 
 **Open-top conversion.** An existing vehicle can be converted to open-top
 for **£10,000**, and this **cannot be undone**. Only available on vehicles
 that have a defined open-top variant in the catalogue — currently the
-ADL Enviro400 (diesel and electric) only.
+Wrightbus StreetDeck (diesel, electric and hydrogen) only. The ADL
+Enviro400 open-top (diesel and electric) that used to fill this slot is
+dropped entirely (2026-11-13, the user's own call — it only existed
+because no real open-top vehicle was known yet).
 
 ## 2. Options — selection type, price and general effect
 
@@ -119,8 +112,7 @@ twice) unless the option's own row says otherwise.
 | Larger hydrogen tank (dropdown) | Hydrogen only | **£1,000 per extra kg** above the base tank — see §3 (Kite and StreetDeck Hydroliners already have their tank tiers recorded there) | Per-vehicle range boost — see §3 |
 | Pantograph charging | Electric only | **£20,000** on the vehicle itself | Enables opportunity charging during layovers, reducing overnight depot charging need. Separate from the depot-side infrastructure: **£3,500 per stop**; at a bus station/interchange, **one per stance**, not one for the whole site |
 | Low floor conversion | EVM Cityline only | £18,000 | Purely functional — satisfies accessibility requirements, avoids the stepped-vehicle accessibility penalty |
-| Seatbelts | All | **£90 per seat** (seated capacity only) on non-coaches; **standard and free on coaches** | Standard on coaches. On other vehicle types, a functional option satisfying school contract eligibility — no satisfaction effect |
-| Foldable school signs | All | £600 flat | Purely functional, satisfies school contract requirements, shown/hidden per journey |
+| Seatbelts | All | **£90 per seat** (seated capacity only) on non-coaches; **standard and free on coaches** | Standard on coaches. On other vehicle types, a purely cosmetic option with no in-game effect |
 | Instructor mirrors | All | £400 flat | Training vehicles only. Purely functional — lets the instructor see properly. Not available/relevant on any non-training vehicle |
 | Adding seats beyond the standard layout | All | **£120 per added seat** | New, confirmed 2026-10-18 — not yet given a passenger-facing effect beyond raising capacity |
 | New luggage racks (vehicles without them) | All | **£1,500 per vehicle**, flat | New, confirmed 2026-10-18 |
@@ -283,25 +275,26 @@ fundamental distinction). Fuel: one tank size in Scotland, 690L. Range:
 13m = 1080 miles, 14.8m = 980 miles. **Airlink 100 requires the 13m
 version specifically.**
 
-**Yutong coach** — one buying menu entry with a length dropdown selecting
-between two real models:
-- **T12E** (12m, twin-axle): battery 399kWh/320mi or 465kWh/370mi
-- **T15E** (15m, tri-axle): battery 621kWh/335mi or 704kWh/380mi
-
-Also covered by Yutong through-charging — see the E10/E12 entry below and
-OPERATIONS.md §15.
+*(Dropped from the catalogue: the Yutong coach — see §4.)*
 
 ---
 
 ### Category 4 — open-top double-deckers (sightseeing only)
 
-**ADL Enviro400 open-top** — both power variants **reuse their donor
-vehicle's stats entirely** (base capacity, fuel/battery, chassis), except for
-tour-specific options (tour audio + PA, languages):
-- **Diesel** (10.9m): reuses the Enviro400 MMC's 10.9m figures — 82 seated,
-  18 standing, 275L/475mi, Volvo B5TL chassis
-- **Electric** (11.1m): reuses the Enviro400EV's figures — 80 seated, 18
-  standing, 354kWh/215mi or 472kWh/285mi
+**Wrightbus StreetDeck open-top** (replaces the ADL Enviro400 open-top,
+dropped 2026-11-13) — all three powers **reuse their donor StreetDeck's
+own stats entirely** (fuel/battery/hydrogen tank, chassis) at the length
+below, except for tour-specific options (tour audio + PA, languages) and
+standing capacity, which open-top removes (max capacity becomes max
+seated):
+- **Diesel** (10.6m, not the Ultroliner's own shortest-by-default length —
+  picked because its 74 seated sits closest to the electric/hydrogen
+  seated counts below): 74 seated, 0 standing, 245L/425mi standard tank
+  (190L/330mi smaller tank option)
+- **Electric** (10.7m): reuses the Electroliner's figures — 73 seated, 0
+  standing, 442kWh/275mi
+- **Hydrogen** (10.9m): reuses the Hydroliner's figures — 69 seated, 0
+  standing, 27kg hydrogen tank + 111kWh buffer battery, 295mi
 
 ---
 
@@ -354,17 +347,9 @@ from the diesel MMC).
 
 Battery: one size, 400kWh. Range: 9.9m=300mi, 10.9m=285mi, 11.7m=270mi.
 
-**Yutong E10** (10.9m): 29 seats + 4 tip-ups, standing 37 (worked out from
-max capacity 70 minus seats+tip-ups). Battery: 350kWh/230mi or 422kWh/275mi.
-
-**Yutong E12** (12.2m): 34 seats + 5 tip-ups, standing 31 (worked out from
-max capacity 70 minus seats+tip-ups). Battery: 350kWh/225mi or 422kWh/275mi
-(same battery options as the E10, different range).
-
-**Yutong through-charging** (confirmed 2026-11-01): Yutong's electric
-models can be plugged into each other, daisy-chaining up to 4 vehicles off
-a single charger connection with power shared dynamically between them —
-see OPERATIONS.md §15 for the full mechanic.
+*(Dropped from the catalogue: Yutong E10/E12 — see §4. Yutong's electric
+through-charging mechanic, OPERATIONS.md §15, no longer has any in-game
+vehicle to apply to now that both Yutong electric models are gone.)*
 
 ---
 
@@ -427,6 +412,36 @@ training bus if fitted out as one:
   dropped by choice.
 - **Plain diesel Volvo 7900, and the 7900 at 10.6m or articulated** — don't
   exist in the Scottish fleet.
+- **Yutong E10/E12** (electric single-deckers, category 3e) — soft-removed
+  as `discontinued` in T179 (2026-11-13: every manufacturer can now offer
+  electric via the re-power programme, removing Yutong's one
+  differentiator), then fully removed from the catalogue in T181 the same
+  day, per the user's own confirmation. Real figures, kept for the record:
+  one merged buying-menu entry, base price **£300,000**.
+  - **E10** (10.9m): 29 seated + 4 tip-ups, 37 standing (worked out from a
+    max capacity of 70 minus seats+tip-ups). Battery: 350kWh/230mi or
+    422kWh/275mi.
+  - **E12** (12.2m): 34 seated + 5 tip-ups, 31 standing (same method).
+    Battery: 350kWh/225mi or 422kWh/275mi (same options as the E10,
+    different range). Priced at the E10 base **+£19,500** (length-pricing
+    formula, confirmed 2026-10-18).
+- **Yutong coach** (category 6/7, twin-/tri-axle by length) — soft-removed
+  as `discontinued` in T179 alongside the E10/E12 above, then fully removed
+  in T181. Real models are **GTe12/GTe14** — corrected from the originally
+  recorded "T12E"/"T15E" names, with GTe14's real length confirmed as
+  **14m**, not the 15m first recorded (see OPEN-ITEMS.md T99/T101 for the
+  correction). Real figures, kept for the record: one merged buying-menu
+  entry, base price **£310,000**.
+  - **GTe12** (12m, twin-axle): 50 seated. Battery: 399kWh/320mi or
+    465kWh/370mi.
+  - **GTe14** (14m, tri-axle): 57 seated. Battery: 621kWh/335mi or
+    704kWh/380mi. Priced at the GTe12 base **+£31,000** raw length delta,
+    plus the standard twin→tri-axle crossing charge.
+  - Was also the only vehicle covered by **Yutong through-charging**
+    (confirmed 2026-11-01, daisy-chaining up to 4 electric vehicles off one
+    charger connection, power shared dynamically — OPERATIONS.md §15); that
+    mechanic now has no in-game vehicle left to apply to, since the E10/E12
+    above are gone too.
 
 ## 3b. Depot energy infrastructure
 
@@ -459,16 +474,17 @@ premium on top, not yet worked out.
 | Sprinter/EVM Cityline (electric) | £125,000 |
 | Volvo 9700 | £290,000 |
 | Volvo 9700DD | £420,000 |
-| Yutong coach (T12E/T15E) | £310,000 |
-| ADL Enviro400 open-top | Priced as its donor vehicle (Enviro400 MMC or Enviro400EV) |
+| Wrightbus StreetDeck open-top | Priced as its donor vehicle (Ultroliner/Electroliner/Hydroliner) |
 | Wrightbus GB Kite Hydroliner | £420,000 |
 | Wrightbus StreetDeck Hydroliner | £550,000 |
 | Volvo 7900 Electric (NCA base) | £320,000 |
 | Wrightbus GB Kite Electroliner | £350,000 |
 | ADL Enviro200EV | £290,000 |
-| Yutong E10/E12 | £300,000 |
 | ADL Enviro400EV | £380,000 |
 | Wrightbus StreetDeck Electroliner | £560,000 |
+
+(Yutong coach and Yutong E10/E12 dropped from this table — both fully
+removed from the catalogue, §4 above.)
 
 ## 5. Open gaps — need real figures, don't estimate
 

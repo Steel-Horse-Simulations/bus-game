@@ -115,6 +115,18 @@ export function gameDateTimeFromSeconds(totalGameSeconds: number): GameDateTime 
   return { year, month, day, hour, minute, second, weekday, weekNumber, dayOfYear };
 }
 
+// Inverse of gameDateTimeFromSeconds' own year/month/day half — turns a
+// real calendar date back into a whole gameDay index (the same day-count-
+// since-epoch convention boughtGameDay/repaint_bookings.game_day/
+// finance_transactions.game_day all already use). Added for T183 (private
+// hire revival, Q20/OPEN-ITEMS.md): private-hire-income.mts needs to turn
+// a randomly-picked day within a given calendar month back into a real
+// gameDay for its finance transactions, and civilFromDays/daysFromCivil
+// above were private to this file.
+export function gameDayFromCivil(year: number, month: number, day: number): number {
+  return daysFromCivil(year, month, day) - GAME_EPOCH_DAYS_SINCE_1970;
+}
+
 // "Wages are paid every Thursday (weekly)" — weekday 3 (0=Monday).
 export function isWageDay(dt: GameDateTime): boolean {
   return dt.weekday === 3;

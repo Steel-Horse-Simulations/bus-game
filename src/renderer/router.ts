@@ -49,5 +49,17 @@ export async function loadRouter(onProgress: (fraction: number) => void = () => 
     fetchBytes("http://127.0.0.1:38271/road_graph.bin", onProgress),
     loadPsvOverrideWayIds(),
   ]);
+  // Real bug report, 2026-11-14: the caller's onProgress switches the
+  // loading label to "Processing road network…" right as the download
+  // finishes, but `new Router(...)` below is a long, synchronous, CPU-bound
+  // WASM decode (tens of seconds for the real 969MB UK+Ireland+IoM graph)
+  // with no `await` of its own — nothing yields back to the browser's
+  // render loop between setting that label and blocking on the decode, so
+  // the page never actually repaints it; the player keeps seeing the last
+  // frame painted before the block, the stale "100%" text. A double
+  // rAF (one frame to schedule the repaint, one to confirm it actually
+  // happened before blocking) is the standard way to force a real paint
+  // before synchronous work, not a single one which can still race it.
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   return new Router(bytes, Float64Array.from(psvOverrideWayIds));
 }

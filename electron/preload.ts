@@ -9,11 +9,11 @@ import type {
   RouteType,
   TicketMachineTier,
   LongDistanceSection,
-  DayType,
   TimingPoint,
   TimeBand,
   RouteTimetable,
   RouteTimetableDirection,
+  VehicleRestrictions,
   PlayerStop,
   Depot,
   DepotEntrance,
@@ -30,6 +30,8 @@ import type {
   RepaintShopEntrance,
   RepaintBooking,
   RepaintType,
+  RepowerBooking,
+  RepowerPowerType,
   DeadMileageRoute,
   DeadMileageDirection,
   DeadMileageBranch,
@@ -105,6 +107,7 @@ contextBridge.exposeInMainWorld("routes", {
     segments: RouteSegment[],
     routeType: RouteType,
     isMinorVariation: boolean,
+    timingPointIndexes: number[],
   ) =>
     ipcRenderer.invoke(
       "routes:create",
@@ -123,6 +126,7 @@ contextBridge.exposeInMainWorld("routes", {
       segments,
       routeType,
       isMinorVariation,
+      timingPointIndexes,
     ) as Promise<Route>,
   list: () => ipcRenderer.invoke("routes:list") as Promise<Route[]>,
   depotGroupHasRouteType: (depotGroupId: number, routeType: RouteType) =>
@@ -144,6 +148,7 @@ contextBridge.exposeInMainWorld("routes", {
     segments: RouteSegment[],
     routeType: RouteType,
     isMinorVariation: boolean,
+    timingPointIndexes: number[],
   ) =>
     ipcRenderer.invoke(
       "routes:update",
@@ -163,6 +168,7 @@ contextBridge.exposeInMainWorld("routes", {
       segments,
       routeType,
       isMinorVariation,
+      timingPointIndexes,
     ) as Promise<Route>,
   refreshComposedPoints: (id: number, points: RoutePoint[]) =>
     ipcRenderer.invoke("routes:refreshComposedPoints", id, points) as Promise<void>,
@@ -173,8 +179,15 @@ contextBridge.exposeInMainWorld("routes", {
     value: "pickup_only" | "setdown_only" | "skip" | null,
   ) =>
     ipcRenderer.invoke("routes:setPickupDropoffOverride", routeId, pointIndex, value) as Promise<void>,
+  setTimingPoint: (routeId: number, pointIndex: number, isTimingPoint: boolean) =>
+    ipcRenderer.invoke("routes:setTimingPoint", routeId, pointIndex, isTimingPoint) as Promise<void>,
   setBranding: (routeId: number, assignedLiveryId: number | null, useBrandedColour: boolean) =>
     ipcRenderer.invoke("routes:setBranding", routeId, assignedLiveryId, useBrandedColour) as Promise<void>,
+  setColour: (routeId: number, colour: string) => ipcRenderer.invoke("routes:setColour", routeId, colour) as Promise<void>,
+  setOrientation: (routeId: number, orientation: "inbound" | "outbound") =>
+    ipcRenderer.invoke("routes:setOrientation", routeId, orientation) as Promise<void>,
+  setVehicleRestrictions: (routeId: number, restrictions: VehicleRestrictions) =>
+    ipcRenderer.invoke("routes:setVehicleRestrictions", routeId, restrictions) as Promise<void>,
 });
 
 // Shared long-distance sections (live design discussion, 2026-10-31) — see
@@ -198,26 +211,34 @@ contextBridge.exposeInMainWorld("longDistanceSections", {
 contextBridge.exposeInMainWorld("routeTimetables", {
   upsert: (
     routeId: number,
-    dayType: DayType,
+    weekdayMask: number,
     direction: RouteTimetableDirection,
     timeBands: TimeBand[],
     timingPoints: TimingPoint[],
     arrivalOffsetsSeconds: number[],
     departureOffsetsSeconds: number[],
+    arrivalOffsetsSecondsPeak: number[],
+    departureOffsetsSecondsPeak: number[],
     excludedDepartureMinutes: number[],
     customDepartureMinutes: number[],
+    mirrorSourceTimetableId: number | null,
+    mirrorOffsetMinutes: number | null,
   ) =>
     ipcRenderer.invoke(
       "routeTimetables:upsert",
       routeId,
-      dayType,
+      weekdayMask,
       direction,
       timeBands,
       timingPoints,
       arrivalOffsetsSeconds,
       departureOffsetsSeconds,
+      arrivalOffsetsSecondsPeak,
+      departureOffsetsSecondsPeak,
       excludedDepartureMinutes,
       customDepartureMinutes,
+      mirrorSourceTimetableId,
+      mirrorOffsetMinutes,
     ) as Promise<RouteTimetable>,
   listForRoute: (routeId: number) =>
     ipcRenderer.invoke("routeTimetables:listForRoute", routeId) as Promise<RouteTimetable[]>,
@@ -232,6 +253,7 @@ contextBridge.exposeInMainWorld("playerStops", {
     ipcRenderer.invoke("playerStops:create", lon, lat, busLegal) as Promise<PlayerStop>,
   list: () => ipcRenderer.invoke("playerStops:list") as Promise<PlayerStop[]>,
   delete: (osmId: number) => ipcRenderer.invoke("playerStops:delete", osmId) as Promise<void>,
+  createForDepot: (depotId: number) => ipcRenderer.invoke("playerStops:createForDepot", depotId) as Promise<PlayerStop>,
 });
 
 // Depots (OPERATIONS.md §2 "Placement and entrances") — road-snapped
@@ -267,6 +289,7 @@ contextBridge.exposeInMainWorld("dealers", {
   deleteEntrance: (id: number) => ipcRenderer.invoke("dealers:deleteEntrance", id) as Promise<void>,
   delete: (id: number) => ipcRenderer.invoke("dealers:delete", id) as Promise<void>,
   setEntrancesComplete: (id: number, isComplete: boolean) => ipcRenderer.invoke("dealers:setEntrancesComplete", id, isComplete) as Promise<void>,
+  setRepowerSite: (id: number, isRepowerSite: boolean) => ipcRenderer.invoke("dealers:setRepowerSite", id, isRepowerSite) as Promise<void>,
 });
 
 // Stop groups (DESIGN.md §4) — player-created only (2026-09-27: dropped the
@@ -277,6 +300,14 @@ contextBridge.exposeInMainWorld("dealers", {
 contextBridge.exposeInMainWorld("stopGroups", {
   create: () => ipcRenderer.invoke("stopGroups:create") as Promise<{ id: number }>,
   list: () => ipcRenderer.invoke("stopGroups:list") as Promise<number[]>,
+});
+
+// Player-created bus stations — same "mints only an id" shape as stopGroups
+// above, see player_bus_stations' own SCHEMA comment (electron/db.mts) for
+// why this exists as a separate table rather than reusing stop_groups.
+contextBridge.exposeInMainWorld("playerBusStations", {
+  create: () => ipcRenderer.invoke("playerBusStations:create") as Promise<{ id: number }>,
+  list: () => ipcRenderer.invoke("playerBusStations:list") as Promise<number[]>,
 });
 
 // Liveries (OPERATIONS.md §4, minimal) — name and colours, plus each
@@ -340,6 +371,48 @@ contextBridge.exposeInMainWorld("repaintBookings", {
   delete: (id: number) => ipcRenderer.invoke("repaintBookings:delete", id) as Promise<void>,
 });
 
+// Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9 redesign:
+// stop ownership dropped...", 2026-11-16).
+contextBridge.exposeInMainWorld("stopUpgrades", {
+  listAll: () => ipcRenderer.invoke("stopUpgrades:listAll") as Promise<StopUpgradeState[]>,
+  get: (stopOsmId: number) => ipcRenderer.invoke("stopUpgrades:get", stopOsmId) as Promise<StopUpgradeState | null>,
+  install: (stopOsmId: number, upgradeType: StopUpgradeType, gameDay: number) =>
+    ipcRenderer.invoke("stopUpgrades:install", stopOsmId, upgradeType, gameDay) as Promise<StopUpgradeState>,
+});
+
+// Route advertising (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+// dropped...", confirmed 2026-11-16) — player-bought only, never
+// council-triggered.
+contextBridge.exposeInMainWorld("routeAdvertising", {
+  listAll: () => ipcRenderer.invoke("routeAdvertising:listAll") as Promise<RouteAdvertisingBooking[]>,
+  listForStop: (stopOsmId: number) => ipcRenderer.invoke("routeAdvertising:listForStop", stopOsmId) as Promise<RouteAdvertisingBooking[]>,
+  create: (
+    stopOsmId: number,
+    depotGroupId: number,
+    mode: RouteAdvertisingMode,
+    routeId: number | null,
+    operatorName: string | null,
+    bookedGameDay: number,
+    liveFromGameDay: number,
+  ) =>
+    ipcRenderer.invoke("routeAdvertising:create", stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay) as Promise<RouteAdvertisingBooking>,
+  delete: (id: number) => ipcRenderer.invoke("routeAdvertising:delete", id) as Promise<void>,
+  listGeneratedMonths: (bookingId: number) => ipcRenderer.invoke("routeAdvertising:listGeneratedMonths", bookingId) as Promise<string[]>,
+  recordMonthsBilled: (bookingId: number, monthKeys: string[]) => ipcRenderer.invoke("routeAdvertising:recordMonthsBilled", bookingId, monthKeys) as Promise<void>,
+});
+
+// Re-power bookings (T179, OPEN-ITEMS.md) — same capacity/scheduling
+// storage shape as repaintBookings above, plus collect() to actually
+// apply the conversion once a booking's completion day has passed (see
+// collectRepowerBooking's own comment in db.mts).
+contextBridge.exposeInMainWorld("repowerBookings", {
+  listAll: () => ipcRenderer.invoke("repowerBookings:listAll") as Promise<RepowerBooking[]>,
+  create: (vehicleId: number, dealerId: number, toPowerType: RepowerPowerType, finalPriceGBP: number, bookedGameDay: number, startGameDay: number, completionGameDay: number) =>
+    ipcRenderer.invoke("repowerBookings:create", vehicleId, dealerId, toPowerType, finalPriceGBP, bookedGameDay, startGameDay, completionGameDay) as Promise<RepowerBooking>,
+  collect: (id: number) => ipcRenderer.invoke("repowerBookings:collect", id) as Promise<Vehicle>,
+  delete: (id: number) => ipcRenderer.invoke("repowerBookings:delete", id) as Promise<void>,
+});
+
 // Dead mileage routes (DESIGN.md "Dead mileage routes") — saved per depot entrance pair, with waypoints the player added.
 contextBridge.exposeInMainWorld("deadMileage", {
   listForDepot: (depotId: number) => ipcRenderer.invoke("deadMileage:listForDepot", depotId) as Promise<DeadMileageRoute[]>,
@@ -359,16 +432,28 @@ contextBridge.exposeInMainWorld("deadMileage", {
 // pattern for a depot group + day type, built from the day's already-
 // published journeys (see db.mts's own "duties"/"duty_pieces" comments).
 contextBridge.exposeInMainWorld("duties", {
-  listForDepotGroup: (depotGroupId: number, dayType: DayType) =>
-    ipcRenderer.invoke("duties:listForDepotGroup", depotGroupId, dayType) as Promise<Duty[]>,
-  create: (depotGroupId: number, depotId: number, dayType: DayType) =>
-    ipcRenderer.invoke("duties:create", depotGroupId, depotId, dayType) as Promise<Duty>,
+  listForDepotGroup: (depotGroupId: number, weekdayMask: number) =>
+    ipcRenderer.invoke("duties:listForDepotGroup", depotGroupId, weekdayMask) as Promise<Duty[]>,
+  create: (depotGroupId: number, depotId: number, weekdayMask: number) =>
+    ipcRenderer.invoke("duties:create", depotGroupId, depotId, weekdayMask) as Promise<Duty>,
   delete: (dutyId: number) => ipcRenderer.invoke("duties:delete", dutyId) as Promise<void>,
   setLocked: (dutyId: number, locked: boolean) => ipcRenderer.invoke("duties:setLocked", dutyId, locked) as Promise<void>,
   rename: (dutyId: number, dutyNumber: string) => ipcRenderer.invoke("duties:rename", dutyId, dutyNumber) as Promise<void>,
   addPiece: (dutyId: number, routeId: number, departureMinutes: number) =>
     ipcRenderer.invoke("duties:addPiece", dutyId, routeId, departureMinutes) as Promise<DutyPiece>,
   removePiece: (pieceId: number) => ipcRenderer.invoke("duties:removePiece", pieceId) as Promise<void>,
+  setDriver: (dutyId: number, driverId: number | null) => ipcRenderer.invoke("duties:setDriver", dutyId, driverId) as Promise<void>,
+});
+
+// Drivers (OPERATIONS.md §6), schema v57->v58 — see db.mts's own
+// "drivers" SCHEMA comment for this increment's deliberate scope.
+contextBridge.exposeInMainWorld("drivers", {
+  listForDepotGroup: (depotGroupId: number) => ipcRenderer.invoke("drivers:listForDepotGroup", depotGroupId) as Promise<Driver[]>,
+  create: (depotGroupId: number, depotId: number, name: string, score: DriverScore) =>
+    ipcRenderer.invoke("drivers:create", depotGroupId, depotId, name, score) as Promise<Driver>,
+  rename: (driverId: number, name: string) => ipcRenderer.invoke("drivers:rename", driverId, name) as Promise<void>,
+  setScore: (driverId: number, score: DriverScore) => ipcRenderer.invoke("drivers:setScore", driverId, score) as Promise<void>,
+  delete: (driverId: number) => ipcRenderer.invoke("drivers:delete", driverId) as Promise<void>,
 });
 
 // Owned vehicles (OPERATIONS.md §3). Direct buying moved to the basket
@@ -488,4 +573,21 @@ contextBridge.exposeInMainWorld("finance", {
   record: (amountGBPPence: number, category: string, depotGroupId: number | null, description: string, gameDay: number) =>
     ipcRenderer.invoke("finance:record", amountGBPPence, category, depotGroupId, description, gameDay) as Promise<FinanceTransaction>,
   list: (depotGroupId?: number) => ipcRenderer.invoke("finance:list", depotGroupId) as Promise<FinanceTransaction[]>,
+});
+
+// Private hire income tracking (T183 — private hire revival, Q20/OPEN-
+// ITEMS.md) — plain storage only, see private_hire_income_months' own
+// SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("privateHireIncome", {
+  listGeneratedMonths: (vehicleId: number) => ipcRenderer.invoke("privateHireIncome:listGeneratedMonths", vehicleId) as Promise<string[]>,
+  markMonthsGenerated: (vehicleId: number, monthKeys: string[]) =>
+    ipcRenderer.invoke("privateHireIncome:markMonthsGenerated", vehicleId, monthKeys) as Promise<void>,
+});
+
+// Lease billing tracking (T185, follow-up to T184) — plain storage only,
+// see lease_billing_months' own SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("leaseBilling", {
+  listGeneratedMonths: (vehicleId: number) => ipcRenderer.invoke("leaseBilling:listGeneratedMonths", vehicleId) as Promise<string[]>,
+  recordMonthsBilled: (vehicleId: number, monthKeys: string[], flipToOutright: boolean) =>
+    ipcRenderer.invoke("leaseBilling:recordMonthsBilled", vehicleId, monthKeys, flipToOutright) as Promise<void>,
 });

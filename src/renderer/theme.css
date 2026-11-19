@@ -329,6 +329,140 @@ body .maplibregl-popup-anchor-right .maplibregl-popup-tip {
   flex: none;
 }
 
+/* A clickable swatch (route-panel.ts's per-row colour input) is the same
+   <input type="color">, stripped of its native chrome so it still just
+   reads as the rounded square above — cursor:pointer is the only visual
+   hint it's interactive, same restraint as every other icon-only button
+   in this panel. */
+input.swatch {
+  padding: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+input.swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input.swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 1px;
+}
+
+/* Custom colour picker — see colour-picker.ts. Replaces native
+   <input type="color">, whose own popup is OS/Chromium-rendered chrome
+   that can land on the wrong monitor or get clipped on a multi-monitor
+   setup with mixed DPI scaling. Same trigger+portaled-popup shape as
+   .dropdown above. */
+.colour-picker {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.colour-picker-trigger {
+  appearance: none;
+  padding: 0;
+  cursor: pointer;
+}
+.colour-picker-trigger.is-active {
+  outline: 2px solid var(--border-accent);
+  outline-offset: 1px;
+}
+.colour-picker-trigger:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+/* `display: flex` must stay scoped to :not([hidden]) — setting it
+   directly on the class (as originally shipped, T169) overrides the
+   browser's own `[hidden] { display: none }` UA rule, since an author
+   stylesheet always wins that conflict regardless of specificity. That
+   shipped every colour picker's popup permanently visible and unclosable
+   the moment its row rendered, not just while actually open (live bug
+   report, 2026-11-08, screenshot showing every route row's own picker
+   stuck open from app launch). .dropdown-menu never hit this because it
+   never sets `display` at all — left to the element's own block default,
+   which happens to need no flex layout; this one does, so it has to be
+   conditional instead. */
+.colour-picker-popup {
+  position: fixed;
+  /* Portaled to document.body (see colour-picker.ts), so this has to
+     clear every overlay's own z-index, same reasoning/value as
+     .dropdown-menu above. */
+  z-index: 1100;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+  flex-direction: column;
+  gap: 8px;
+  width: 180px;
+}
+.colour-picker-popup:not([hidden]) {
+  display: flex;
+}
+/* Saturation (x)/value (y) square for the current hue — two gradient
+   layers over a solid `background-color: hsl(hue, 100%, 50%)` (set in JS,
+   since it changes with the hue slider): white-to-transparent left to
+   right lays saturation over the hue, black-to-transparent bottom to top
+   lays value over that. Classic two-layer trick, no canvas needed. */
+.colour-picker-sv {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  border-radius: 4px;
+  cursor: crosshair;
+  touch-action: none;
+  background-image:
+    linear-gradient(to top, #000000, rgba(0, 0, 0, 0)),
+    linear-gradient(to right, #ffffff, rgba(255, 255, 255, 0));
+}
+.colour-picker-sv-cursor {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.colour-picker-hue {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  touch-action: none;
+  background-image: linear-gradient(
+    to right,
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+}
+.colour-picker-hue-cursor {
+  position: absolute;
+  top: -2px;
+  width: 14px;
+  height: 18px;
+  margin-left: -7px;
+  border-radius: 3px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.colour-picker-hex {
+  width: 100%;
+  box-sizing: border-box;
+  text-align: center;
+  font-family: monospace;
+}
+
 /* Status badges — 15% opacity background of the status colour, full
    opacity text. */
 .badge {

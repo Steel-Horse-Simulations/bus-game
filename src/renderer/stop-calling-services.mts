@@ -1,4 +1,4 @@
-import { generateDepartureMinutesForBands } from "./route-timetable.mts";
+import { generateDepartureMinutesForBands, isPeakMinute } from "./route-timetable.mts";
 
 // Read-only "which services call here" computation (T29, OPEN-ITEMS.md) —
 // pure logic, no DOM, so it can be unit tested independently of the popup
@@ -11,7 +11,7 @@ export interface StopCallingService {
   routeId: number;
   routeNumber: string;
   routeColour: string;
-  dayType: DayType;
+  weekdayMask: number;
   // Clock minutes past midnight, sorted ascending. Can exceed 1439 for a
   // service whose last departure runs past midnight — formatClockMinutes
   // wraps these back into 00:00-23:59 for display, the same as a plain
@@ -19,8 +19,6 @@ export interface StopCallingService {
   // refinement, not needed for this first read-only slice.
   departureClockMinutes: number[];
 }
-
-const DAY_TYPE_ORDER: Record<DayType, number> = { monday_friday: 0, saturday: 1, sunday: 2 };
 
 export function computeStopCallingServices(
   osmId: number,
@@ -53,8 +51,12 @@ export function computeStopCallingServices(
       }
       const times = new Set<number>();
       for (const pointIndex of pointIndexes) {
-        const offsetMinutes = tt.departureOffsetsSeconds[pointIndex] / 60;
+        // Peak/standard picked per DEPARTURE by its own real clock time
+        // (2026-11-15, same reasoning as buildRouteTimetableGrid) — can't
+        // be hoisted outside the departure loop, since the same point's
+        // own offset can differ between an off-peak and a peak working.
         for (const d of departureMinutes) {
+          const offsetMinutes = (isPeakMinute(d) ? tt.departureOffsetsSecondsPeak : tt.departureOffsetsSeconds)[pointIndex] / 60;
           times.add(Math.round(d + offsetMinutes));
         }
       }
@@ -63,15 +65,18 @@ export function computeStopCallingServices(
         routeId: route.id,
         routeNumber: route.number,
         routeColour: route.colour,
-        dayType: tt.dayType,
+        weekdayMask: tt.weekdayMask,
         departureClockMinutes: [...times].sort((a, b) => a - b),
       });
     }
   }
+  // Grouped per route, then by ascending weekday mask — a stable order
+  // that happens to put Mon-Fri before Saturday before Sunday for the 3
+  // original presets, the same order they always showed in before the
+  // day-type picker let a route have any mask at all.
   return services.sort(
     (a, b) =>
-      a.routeNumber.localeCompare(b.routeNumber, undefined, { numeric: true }) ||
-      DAY_TYPE_ORDER[a.dayType] - DAY_TYPE_ORDER[b.dayType],
+      a.routeNumber.localeCompare(b.routeNumber, undefined, { numeric: true }) || a.weekdayMask - b.weekdayMask,
   );
 }
 
@@ -82,8 +87,3 @@ export function formatClockMinutes(minutes: number): string {
   return `${h}:${m}`;
 }
 
-export const DAY_TYPE_SHORT_LABELS: Record<DayType, string> = {
-  monday_friday: "Mon-Fri",
-  saturday: "Sat",
-  sunday: "Sun",
-};

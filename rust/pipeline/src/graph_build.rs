@@ -153,6 +153,10 @@ pub fn build_graph(
                 psv_yes: way.psv_yes,
                 bus_yes: way.bus_yes,
                 maxspeed_mph: way.maxspeed_mph,
+                maxweight_tonnes: way.maxweight_tonnes,
+                maxheight_metres: way.maxheight_metres,
+                maxlength_metres: way.maxlength_metres,
+                maxwidth_metres: way.maxwidth_metres,
                 geometry_start,
                 geometry_len,
             });
@@ -296,6 +300,10 @@ mod tests {
             maxspeed_mph: None,
             width_tag_m: None,
             lanes: None,
+            maxweight_tonnes: None,
+            maxheight_metres: None,
+            maxlength_metres: None,
+            maxwidth_metres: None,
             refs: refs.to_vec(),
         }
     }

@@ -180,10 +180,8 @@ network (Volvo, Alexander Dennis, Western Commercial, and the Wrightbus/Yutong
 nearest-depot collection rule) and remote parts logistics. Remote depots,
 lifeline contracts, community transport and scoped road closures.
 
-**Sightseeing and private hire** also land here. Private hire cannot come earlier
-than phase 7 regardless, since it depends on drivers, duties and legal hours
-being in place. Both matter to the economy, so if phase 5 tuning feels thin,
-that is expected — the premium revenue arrives with these.
+**Sightseeing** also lands here. It matters to the economy, so if phase 5
+tuning feels thin, that is expected — premium revenue arrives with this.
 
 This phase is a grab-bag and will want splitting once you reach it.
 
@@ -257,7 +255,7 @@ badly-run route losing money. Margin follows from that; do not set a margin
 directly.
 
 The margin comes from **premium work**, not from inflating the scheduled network:
-council and event contracts, sightseeing, and private hire. Passenger numbers and
+council and event contracts, and sightseeing. Passenger numbers and
 running costs stay realistic — earlier drafts inflated both and that was dropped.
 
 The target applies to a well-run **depot group**, not to every route. A plain

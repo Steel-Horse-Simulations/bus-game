@@ -3,9 +3,127 @@ import {
   applyExcludedDepartures,
   mergeCustomDepartures,
   computeOffsets,
+  weekdayMasksOverlap,
+  isPeakMinute,
   type TimingPoint,
   type ComputedOffsets,
+  type TimingPointVariant,
 } from "./route-timetable.mts";
+
+// A mirroring timetable component's own reference, resolved to the real
+// route+timetable pair it points at (DESIGN.md §7, 2026-11-15 — "a
+// button to set a timetable to have a service after a settable time
+// after one arrives"). Injected rather than looked up globally
+// (makeTimetableReferenceResolver below), so generateBaseDepartureMinutes
+// stays pure/testable with synthetic data.
+export interface ResolvedTimetableReference {
+  route: Route;
+  timetable: RouteTimetable;
+}
+
+// Builds a resolver from a full routes+timetables list — every real
+// caller with access to the game's own full lists (journey-planner-data.
+// mts, duty-journeys.mts's journeysForDepotGroup, route-timetable-panel.
+// ts) builds this once and passes it down, rather than threading a
+// lookup map through every function individually. A mirror can reference
+// ANY route's timetable, not just a sibling/family one, so this is built
+// from the FULL lists, not a family-scoped subset.
+export function makeTimetableReferenceResolver(
+  routes: readonly Route[],
+  timetables: readonly RouteTimetable[],
+): (timetableId: number) => ResolvedTimetableReference | null {
+  const timetableById = new Map(timetables.map((t) => [t.id, t]));
+  const routeById = new Map(routes.map((r) => [r.id, r]));
+  return (timetableId) => {
+    const timetable = timetableById.get(timetableId);
+    if (!timetable) return null;
+    const route = routeById.get(timetable.routeId);
+    return route ? { route, timetable } : null;
+  };
+}
+
+// The real clock-minutes (from midnight) a service genuinely arrives at
+// its own end, for one of its own real departures — using
+// routeDirectionRanges so a split (outbound/inbound) referenced
+// component mirrors its own real leg's terminus, not a different leg's
+// or the whole route's last point (the same care journeysForRoute's own
+// T200 fix already takes: a component's own offsets only cover its own
+// leg). Returns null only if this timetable's own offsets array doesn't
+// actually reach that point index (stale/mismatched data, same "can't
+// find it, don't fake it" convention as everywhere else in this file).
+function arrivalMinutesAtServiceEnd(route: Route, timetable: RouteTimetable, departureMinutes: number): number | null {
+  const segment = timetable.direction === "both" ? undefined : routeDirectionRanges(route).find((r) => r.label === timetable.direction);
+  const toPointIndex = segment?.toPointIndex ?? route.points.length - 1;
+  // Peak/standard picked by THIS departure's own clock time (2026-11-15) —
+  // a mirrored service's own arrival time must respect whichever variant
+  // its own source departure actually ran under, same as any other
+  // journey (buildRouteTimetableGrid below).
+  const offsets = isPeakMinute(departureMinutes) ? timetable.arrivalOffsetsSecondsPeak : timetable.arrivalOffsetsSeconds;
+  const arrivalOffsetSeconds = offsets[toPointIndex];
+  if (arrivalOffsetSeconds === undefined) return null;
+  return departureMinutes + arrivalOffsetSeconds / 60;
+}
+
+// A timetable component's own departures BEFORE its own exclude/custom
+// overlay — either the ordinary time-band generator, or (when
+// mirrorSourceTimetableId is set) every real departure+exclude+custom-
+// resolved departure of the referenced service, each turned into this
+// component's own departure at `mirrorOffsetMinutes` minutes after that
+// service's own real arrival at its end. Kept as its own step, not
+// folded into buildRouteTimetableGrid/journeysForRoute directly, so both
+// of those keep their own existing exclude-then-merge-custom pipeline
+// completely unchanged, just fed from a different source — the one
+// place either of them needs to change is swapping
+// generateDepartureMinutesForBands(timetable.timeBands) for a call here.
+//
+// A LIVE link, not a one-time copy (user-confirmed, 2026-11-15: "can the
+// auto timetable bit then automatically update whenever the other
+// timetable is updated") — this recomputes the referenced service's own
+// real departures fresh every call from whatever its CURRENT timeBands/
+// excluded/custom state is, the same "merged view is a projection, not a
+// copy" principle buildMergedFamilyGrid already follows. Deliberately
+// does NOT support mirroring a mirror (the referenced timetable's own
+// time_bands are always read directly here, never recursed through this
+// same function) — prevented at save time (route-timetable-panel.ts),
+// not by cycle-detection here, so a reference can never be a chain.
+//
+// A referenced timetable that no longer resolves (deleted, or
+// resolveReference not wired up by this particular caller) or whose own
+// weekday mask no longer overlaps this component's produces zero
+// departures — the safe default, not a thrown error or a stale copy.
+export function generateBaseDepartureMinutes(
+  timetable: Pick<RouteTimetable, "mirrorSourceTimetableId" | "mirrorOffsetMinutes" | "weekdayMask" | "timeBands">,
+  resolveReference: (timetableId: number) => ResolvedTimetableReference | null,
+): number[] {
+  if (timetable.mirrorSourceTimetableId == null) {
+    try {
+      return generateDepartureMinutesForBands(timetable.timeBands);
+    } catch {
+      return [];
+    }
+  }
+  const ref = resolveReference(timetable.mirrorSourceTimetableId);
+  if (!ref) return [];
+  if (!weekdayMasksOverlap(ref.timetable.weekdayMask, timetable.weekdayMask)) return [];
+
+  let sourceGenerated: number[];
+  try {
+    sourceGenerated = generateDepartureMinutesForBands(ref.timetable.timeBands);
+  } catch {
+    sourceGenerated = [];
+  }
+  const sourceExcluded = applyExcludedDepartures(sourceGenerated, ref.timetable.excludedDepartureMinutes);
+  const sourceDepartures = mergeCustomDepartures(sourceExcluded, ref.timetable.customDepartureMinutes);
+
+  const offsetMinutes = timetable.mirrorOffsetMinutes ?? 0;
+  const mirrored: number[] = [];
+  for (const departureMinutes of sourceDepartures) {
+    const arrivalMinutes = arrivalMinutesAtServiceEnd(ref.route, ref.timetable, departureMinutes);
+    if (arrivalMinutes === null) continue;
+    mirrored.push(Math.round(arrivalMinutes + offsetMinutes) % 1440);
+  }
+  return [...new Set(mirrored)].sort((a, b) => a - b);
+}
 
 // Builds a route+day-type's full printed-timetable-shaped grid (DESIGN.md
 // §7 "The grid": "stops down and journeys across, the traditional printed
@@ -72,6 +190,14 @@ export function buildRouteTimetableGrid(
   route: Route,
   timetable: RouteTimetable,
   options: BuildRouteTimetableGridOptions = {},
+  // Resolves a mirroring component's own reference (2026-11-15) — only
+  // needed when `timetable.mirrorSourceTimetableId` is actually set.
+  // Optional, defaulting to "nothing resolves," so every pre-existing
+  // caller keeps compiling and behaving exactly as before for an
+  // ordinary (non-mirroring) timetable; a caller that wants mirroring to
+  // actually work for its own view passes a real one (e.g.
+  // makeTimetableReferenceResolver(allRoutes, allTimetables)).
+  resolveReference: (timetableId: number) => ResolvedTimetableReference | null = () => null,
 ): RouteTimetableGrid {
   const skippedIndexes = new Set(
     route.pickupDropoffOverrides.filter((o) => o.value === "skip").map((o) => o.pointIndex),
@@ -90,27 +216,24 @@ export function buildRouteTimetableGrid(
     }
   });
 
-  let allGeneratedMinutes: number[] = [];
-  try {
-    allGeneratedMinutes = generateDepartureMinutesForBands(timetable.timeBands);
-  } catch {
-    // An invalid/empty band set produces no *generated* journeys, not an
-    // error here — same as a degenerate zero-interval day type always
-    // has. Outside the try, not inside: a custom departure should still
-    // show even when the bands themselves are broken or empty, since it
-    // was never the bands' own journey to begin with.
-  }
+  const allGeneratedMinutes = generateBaseDepartureMinutes(timetable, resolveReference);
   const excludedMinutes = new Set(timetable.excludedDepartureMinutes);
   const baseMinutes = options.includeExcluded ? allGeneratedMinutes : applyExcludedDepartures(allGeneratedMinutes, timetable.excludedDepartureMinutes);
   const departureMinutes = mergeCustomDepartures(baseMinutes, timetable.customDepartureMinutes);
-  const journeys: (number | null)[][] = departureMinutes.map((d) =>
-    rows.map((row) => {
+  // Peak/standard picked per JOURNEY by its own real departure clock time
+  // (2026-11-15) — the same physical timing point can publish a longer
+  // leg for an 08:00 working than an 11:00 one of the exact same saved
+  // timetable, so this can't be decided once for the whole grid.
+  const journeys: (number | null)[][] = departureMinutes.map((d) => {
+    const peak = isPeakMinute(d);
+    const arrivalOffsets = peak ? timetable.arrivalOffsetsSecondsPeak : timetable.arrivalOffsetsSeconds;
+    const departureOffsets = peak ? timetable.departureOffsetsSecondsPeak : timetable.departureOffsetsSeconds;
+    return rows.map((row) => {
       if (skippedIndexes.has(row.pointIndex)) return null;
-      const offsetSeconds =
-        row.linePart === "arrival" ? timetable.arrivalOffsetsSeconds[row.pointIndex] : timetable.departureOffsetsSeconds[row.pointIndex];
+      const offsetSeconds = row.linePart === "arrival" ? arrivalOffsets[row.pointIndex] : departureOffsets[row.pointIndex];
       return Math.round(d + offsetSeconds / 60);
-    }),
-  );
+    });
+  });
   const excluded = departureMinutes.map((d) => excludedMinutes.has(d));
 
   return { rows, journeys, excluded, departureMinutes };
@@ -188,10 +311,11 @@ export function computeOffsetsForDirection(
   direction: "both" | "outbound" | "inbound",
   legTimesSecondsFullRoute: readonly number[],
   timingPoints: readonly TimingPoint[],
+  variant: TimingPointVariant = "standard",
 ): ComputedOffsets {
   const segment = direction === "both" ? undefined : routeDirectionRanges(route).find((r) => r.label === direction);
   if (!segment) {
-    return computeOffsets(route.points.length, legTimesSecondsFullRoute, timingPoints);
+    return computeOffsets(route.points.length, legTimesSecondsFullRoute, timingPoints, variant);
   }
   const { fromPointIndex, toPointIndex } = segment;
   const localPointCount = toPointIndex - fromPointIndex + 1;
@@ -199,7 +323,7 @@ export function computeOffsetsForDirection(
   const localTimingPoints = timingPoints
     .filter((tp) => tp.pointIndex > fromPointIndex && tp.pointIndex <= toPointIndex)
     .map((tp) => ({ ...tp, pointIndex: tp.pointIndex - fromPointIndex }));
-  const local = computeOffsets(localPointCount, localLegTimesSeconds, localTimingPoints);
+  const local = computeOffsets(localPointCount, localLegTimesSeconds, localTimingPoints, variant);
 
   const arrivalOffsetsSeconds = new Array(route.points.length).fill(0);
   const departureOffsetsSeconds = new Array(route.points.length).fill(0);
@@ -209,11 +333,7 @@ export function computeOffsetsForDirection(
     departureOffsetsSeconds[fromPointIndex + j] = local.departureOffsetsSeconds[j];
     estimated[fromPointIndex + j] = local.estimated[j];
   }
-  const infeasibleTimingPoints = local.infeasibleTimingPoints.map((tp) => ({
-    ...tp,
-    pointIndex: tp.pointIndex + fromPointIndex,
-  }));
-  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated, infeasibleTimingPoints };
+  return { arrivalOffsetsSeconds, departureOffsetsSeconds, estimated };
 }
 
 // The rows (and each journey's matching entries) whose own pointIndex
@@ -316,7 +436,30 @@ export function mergeStopSequences<T>(sequences: readonly (readonly T[])[]): Mer
   rowIndexInMerged[longestIndex] = merged.map((_, i) => i);
 
   for (const seqIndex of restIndexes) {
-    let insertAt = 0; // Nothing matched yet — nothing to anchor to but the very start.
+    // Real live bug, 2026-11-14 ("why is Lonmore at the top in the wrong
+    // place?"): a sequence's own LEADING unmatched run (stops it has
+    // before its first stop that's already in `merged`) used to default
+    // straight to insertAt=0, no matter where that first real match
+    // actually sits — a branch route's own stop at the junction (not yet
+    // anywhere in the longer backbone sequence) landed ahead of the
+    // ENTIRE merged corridor instead of right next to the real junction
+    // it attaches at. Every OTHER unmatched run already anchors
+    // correctly off the match immediately before it (insertAt tracks
+    // that through the loop below) — only the very first run, before
+    // this sequence has matched anything at all, had no such anchor.
+    // Scanning ahead for this sequence's own first already-merged stop
+    // gives it one: the leading run then lands immediately before that
+    // real junction, not at the front of the whole list. A sequence with
+    // no stop in common with `merged` at all still has nothing to anchor
+    // to, so it keeps the same front-of-list fallback as before.
+    let insertAt = 0;
+    for (const id of sequences[seqIndex]) {
+      const firstMatch = merged.indexOf(id);
+      if (firstMatch !== -1) {
+        insertAt = firstMatch;
+        break;
+      }
+    }
     const localMapping: number[] = [];
     for (const osmId of sequences[seqIndex]) {
       const existingIndex = merged.indexOf(osmId, insertAt);

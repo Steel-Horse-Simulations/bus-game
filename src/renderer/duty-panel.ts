@@ -4,10 +4,15 @@
 // auto-complete won't touch it, and auto-complete the rest for lowest
 // total dead mileage.
 //
-// Deliberately vehicle-only for this first increment, decided with the
-// user (2026-10-17): no driver, no duty-length/hours validation — those
-// are Phase 6's own concern once drivers (who can swap vehicles mid-duty,
-// genuinely a separate layer) and the GB/EU hours regime actually exist.
+// Deliberately vehicle-only for its first increment, decided with the
+// user (2026-10-17): no duty-length/hours validation — that's Phase 6's
+// own concern once the GB/EU hours regime actually exists. A driver roster
+// and per-duty assignment (schema v57->v58, T161/T164) is now built: one
+// driver permanently assigned per duty, no daily rotation, no cross-depot
+// swapping (staff cars/walking/swap points — CLAUDE.md's own "Crew as
+// physical entities" hard part — are a separate, later increment), so the
+// per-duty driver dropdown below only ever offers drivers whose own home
+// depot matches the duty's.
 //
 // Every duty is anchored to one physical depot within its own group — a
 // group can have more than one depot, and a duty always starts and ends
@@ -21,9 +26,20 @@ import type { Router } from "./wasm/game_wasm.js";
 import { journeysForDepotGroup, journeyKey, type Journey } from "./duty-journeys.mts";
 import { stopsPanelState } from "./stops-layer";
 import { createDropdown, type Dropdown } from "./dropdown";
+import { describeWeekdayMask, MONDAY_FRIDAY_MASK } from "./route-timetable.mts";
+import { randomDriverName } from "./driver-names.mts";
+import { routeRestrictionsCompatible } from "./route-vehicle-eligibility.mts";
 
-const DAY_TYPES: DayType[] = ["monday_friday", "saturday", "sunday"];
-const DAY_TYPE_LABELS: Record<DayType, string> = { monday_friday: "Mon-Fri", saturday: "Sat", sunday: "Sun" };
+// OPERATIONS.md §6's own 5-level driver score, in progression order —
+// labelled here since the DB only ever stores the raw enum value.
+const DRIVER_SCORES: DriverScore[] = ["trainee", "novice", "competent", "professional", "fleet_elite"];
+const DRIVER_SCORE_LABELS: Record<DriverScore, string> = {
+  trainee: "Trainee",
+  novice: "Novice",
+  competent: "Competent",
+  professional: "Professional",
+  fleet_elite: "Fleet elite",
+};
 
 // Lets depot-groups-panel.ts (which has no router/map access — it mounts
 // before either exists, see main.ts's own boot order) open this screen for
@@ -31,8 +47,13 @@ const DAY_TYPE_LABELS: Record<DayType, string> = { monday_friday: "Mon-Fri", sat
 // mutable-state pattern stopsPanelState/routeDrawState already use.
 export const dutyPanelState: {
   openForDepotGroup: ((depotGroupId: number, depotGroupName: string) => void) | null;
+  // Lets an external caller (duties-screen.ts's own depot-group picker)
+  // close this overlay without needing a reference to its internal DOM —
+  // same reasoning as openForDepotGroup above.
+  close: (() => void) | null;
 } = {
   openForDepotGroup: null,
+  close: null,
 };
 
 function formatClockMinutes(minutes: number): string {
@@ -86,7 +107,16 @@ function deadRun(router: Router, from: { lon: number; lat: number }, to: { lon: 
 // complete cost comparison) or null if infeasible for either reason.
 const MIN_LAYOVER_MINUTES = 5;
 
-function canFollow(router: Router, last: Journey, next: Journey): { distanceM: number; timeS: number } | null {
+// `routes` (Q18/Q19, OPEN-ITEMS.md Q18+Q19 plan) is the depot group's own
+// loaded route list, needed to resolve `last`/`next`'s own `routeId` into
+// the real `Route` objects `routeRestrictionsCompatible` compares — a
+// route missing from the list (shouldn't happen; every journey's own
+// routeId comes from this same list) is treated as "nothing known,"
+// never blocking a chain over missing data.
+function canFollow(router: Router, last: Journey, next: Journey, routes: Route[]): { distanceM: number; timeS: number } | null {
+  const lastRoute = routes.find((r) => r.id === last.routeId);
+  const nextRoute = routes.find((r) => r.id === next.routeId);
+  if (lastRoute && nextRoute && !routeRestrictionsCompatible(lastRoute, nextRoute)) return null;
   if (next.startClockMinutes < last.endClockMinutes) return null;
   const dr = deadRun(router, last.endPoint, next.startPoint);
   if (!dr) return null;
@@ -125,10 +155,16 @@ function journeyLabel(journey: Journey): string {
 export async function mountDutyPanel(router: Router): Promise<void> {
   let depotGroupId: number | null = null;
   let depotGroupName = "";
-  let dayType: DayType = "monday_friday";
+  // Tracks the depot group's own routes' patterns (confirmed 2026-11-07:
+  // duties don't get an independent day picker) rather than a fixed 3 —
+  // availableWeekdayMasks is whatever distinct weekday masks this group's
+  // routes actually have a timetable for, rebuilt by refresh() below.
+  let weekdayMask: number = MONDAY_FRIDAY_MASK;
+  let availableWeekdayMasks: number[] = [];
   let journeys: Journey[] = [];
   let duties: Duty[] = [];
   let routes: Route[] = [];
+  let drivers: Driver[] = [];
   let depots: Depot[] = []; // this depot group's own depots, ordered by id (rank order — id order is "main depot first")
   let selectedDepotId: number | null = null; // which depot a newly-created duty is assigned to
   let activeDutyId: number | null = null; // the one duty box currently expanded, and the add-journey target
@@ -159,20 +195,33 @@ export async function mountDutyPanel(router: Router): Promise<void> {
   const dayTypeBar = document.createElement("div");
   dayTypeBar.style.display = "flex";
   dayTypeBar.style.gap = "4px";
-  const dayTypeButtons = new Map<DayType, HTMLButtonElement>();
-  for (const dt of DAY_TYPES) {
-    const btn = document.createElement("button");
-    btn.className = "btn";
-    btn.textContent = DAY_TYPE_LABELS[dt];
-    btn.addEventListener("click", () => {
-      dayType = dt;
-      activeDutyId = null;
-      void refresh();
-    });
-    dayTypeButtons.set(dt, btn);
-    dayTypeBar.appendChild(btn);
-  }
   header.appendChild(dayTypeBar);
+
+  // Rebuilt by refresh() every time, since which day types exist can
+  // change as routes gain or lose timetable components — one button per
+  // distinct weekday mask this depot group's own routes actually use.
+  function renderDayTypeBar(): void {
+    dayTypeBar.innerHTML = "";
+    if (availableWeekdayMasks.length === 0) {
+      const none = document.createElement("span");
+      none.className = "label-muted";
+      none.textContent = "No timetabled routes yet";
+      dayTypeBar.appendChild(none);
+      return;
+    }
+    for (const mask of availableWeekdayMasks) {
+      const btn = document.createElement("button");
+      btn.className = "btn";
+      btn.textContent = describeWeekdayMask(mask);
+      btn.classList.toggle("is-active", mask === weekdayMask);
+      btn.addEventListener("click", () => {
+        weekdayMask = mask;
+        activeDutyId = null;
+        void refresh();
+      });
+      dayTypeBar.appendChild(btn);
+    }
+  }
 
   // "A way to see different depots in a group" (2026-10-17): every duty
   // belongs to exactly one depot, so this picks which depot a newly
@@ -247,6 +296,17 @@ export async function mountDutyPanel(router: Router): Promise<void> {
   // makes the measurement stable and correct every time.
   dutiesColumn.style.scrollbarGutter = "stable";
   body.appendChild(dutiesColumn);
+
+  // Drivers on the right (T164) — mirrors the journeys column's own fixed
+  // width on the left, so the duties column stays the one that actually
+  // grows with the window.
+  const driversColumn = document.createElement("div");
+  driversColumn.style.width = "260px";
+  driversColumn.style.flexShrink = "0";
+  driversColumn.style.borderLeft = "1px solid var(--border)";
+  driversColumn.style.overflowY = "auto";
+  driversColumn.style.padding = "8px";
+  body.appendChild(driversColumn);
 
   const dutyLastJourney = (duty: Duty): Journey | null => {
     if (duty.pieces.length === 0) return null;
@@ -412,6 +472,14 @@ export async function mountDutyPanel(router: Router): Promise<void> {
 
       const badges = dutyRouteBadges(duty);
       if (!expanded) {
+        const assignedDriver = duty.driverId !== null ? drivers.find((d) => d.id === duty.driverId) ?? null : null;
+        const driverNote = document.createElement("div");
+        driverNote.className = "label-muted";
+        driverNote.style.fontSize = "11px";
+        driverNote.style.marginBottom = "2px";
+        driverNote.textContent = assignedDriver ? `\u{1F464} ${assignedDriver.name}` : "\u{1F464} Unassigned";
+        card.appendChild(driverNote);
+
         const badgeRow = document.createElement("div");
         badgeRow.style.display = "flex";
         badgeRow.style.flexWrap = "wrap";
@@ -450,6 +518,28 @@ export async function mountDutyPanel(router: Router): Promise<void> {
         await refresh();
       });
       card.appendChild(numberInput);
+
+      // Driver assignment (T164) — only this duty's own depot's drivers
+      // are offered (see this file's own header comment for why), plus
+      // whoever's currently assigned even if they've since moved depot,
+      // so the dropdown never silently misrepresents a real assignment.
+      const UNASSIGNED_LABEL = "Unassigned";
+      const driverLabelFor = (d: Driver) => `${d.name} (${DRIVER_SCORE_LABELS[d.score]})`;
+      const depotDrivers = drivers.filter((d) => d.depotId === duty.depotId);
+      const labelToDriverId = new Map<string, number | null>([[UNASSIGNED_LABEL, null]]);
+      for (const d of depotDrivers) labelToDriverId.set(driverLabelFor(d), d.id);
+      const currentDriver = duty.driverId !== null ? drivers.find((d) => d.id === duty.driverId) ?? null : null;
+      if (currentDriver && !depotDrivers.some((d) => d.id === currentDriver.id)) {
+        labelToDriverId.set(`${driverLabelFor(currentDriver)} — different depot`, currentDriver.id);
+      }
+      const currentLabel =
+        [...labelToDriverId.entries()].find(([, id]) => id === duty.driverId)?.[0] ?? UNASSIGNED_LABEL;
+      const driverDropdown = createDropdown([...labelToDriverId.keys()], currentLabel, (label) => {
+        const id = labelToDriverId.get(label) ?? null;
+        void window.duties.setDriver(duty.id, id).then(() => refresh());
+      });
+      driverDropdown.el.style.marginBottom = "6px";
+      card.appendChild(driverDropdown.el);
 
       if (duty.pieces.length === 0) {
         const empty = document.createElement("div");
@@ -635,7 +725,7 @@ export async function mountDutyPanel(router: Router): Promise<void> {
       row.style.padding = "4px 6px";
       row.style.borderBottom = "1px solid var(--border)";
 
-      const canAdd = !!activeDuty && !activeDuty.locked && (!activeLast || !!canFollow(router, activeLast, journey));
+      const canAdd = !!activeDuty && !activeDuty.locked && (!activeLast || !!canFollow(router, activeLast, journey, routes));
       row.style.cursor = canAdd ? "pointer" : "default";
       row.style.opacity = activeDuty && !canAdd ? "0.4" : "1";
 
@@ -665,6 +755,114 @@ export async function mountDutyPanel(router: Router): Promise<void> {
     }
   };
 
+  // Drivers column (T164): hire/rename/score/delete, grouped by home
+  // depot — same "rank order" convention (lowest depot id, main depot
+  // first) the duties column already groups by.
+  const renderDrivers = (): void => {
+    driversColumn.innerHTML = "";
+
+    const headerRow = document.createElement("div");
+    headerRow.style.display = "flex";
+    headerRow.style.alignItems = "center";
+    headerRow.style.gap = "6px";
+    headerRow.style.marginBottom = "8px";
+    const headerLabel = document.createElement("span");
+    headerLabel.style.fontWeight = "600";
+    headerLabel.style.flex = "1";
+    headerLabel.textContent = "Drivers";
+    headerRow.appendChild(headerLabel);
+    const hireButton = document.createElement("button");
+    hireButton.className = "btn";
+    hireButton.textContent = "+ Hire driver";
+    hireButton.disabled = depots.length === 0;
+    hireButton.title = 'Hires at whichever depot "New duties at" above is currently set to';
+    hireButton.addEventListener("click", async () => {
+      if (depotGroupId === null || selectedDepotId === null) return;
+      await window.drivers.create(depotGroupId, selectedDepotId, randomDriverName(), "trainee");
+      await refresh();
+    });
+    headerRow.appendChild(hireButton);
+    driversColumn.appendChild(headerRow);
+
+    if (drivers.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "label-muted";
+      empty.textContent = "No drivers yet.";
+      driversColumn.appendChild(empty);
+      return;
+    }
+
+    let lastDepotId: number | null = null;
+    for (const driver of [...drivers].sort((a, b) => a.depotId - b.depotId || a.name.localeCompare(b.name))) {
+      if (driver.depotId !== lastDepotId) {
+        const sectionHeader = document.createElement("div");
+        sectionHeader.className = "label-muted";
+        sectionHeader.style.fontWeight = "600";
+        sectionHeader.style.borderBottom = "1px solid var(--border)";
+        sectionHeader.style.marginTop = lastDepotId === null ? "0" : "10px";
+        sectionHeader.style.paddingBottom = "2px";
+        sectionHeader.textContent = depotById(driver.depotId)?.name ?? `Depot ${driver.depotId}`;
+        driversColumn.appendChild(sectionHeader);
+        lastDepotId = driver.depotId;
+      }
+
+      const row = document.createElement("div");
+      row.className = "panel";
+      row.style.padding = "6px";
+      row.style.marginTop = "4px";
+      row.style.display = "flex";
+      row.style.flexDirection = "column";
+      row.style.gap = "4px";
+
+      const topRow = document.createElement("div");
+      topRow.style.display = "flex";
+      topRow.style.alignItems = "center";
+      topRow.style.gap = "4px";
+
+      const nameInput = document.createElement("input");
+      nameInput.className = "field";
+      nameInput.value = driver.name;
+      nameInput.style.flex = "1";
+      nameInput.addEventListener("change", async () => {
+        await window.drivers.rename(driver.id, nameInput.value);
+        await refresh();
+      });
+      topRow.appendChild(nameInput);
+
+      const deleteButton = document.createElement("button");
+      deleteButton.className = "btn btn-icon btn-danger";
+      deleteButton.textContent = "×";
+      deleteButton.title = "Delete driver — unassigns them from any duty first";
+      deleteButton.addEventListener("click", async () => {
+        await window.drivers.delete(driver.id);
+        await refresh();
+      });
+      topRow.appendChild(deleteButton);
+      row.appendChild(topRow);
+
+      const scoreDropdown = createDropdown(
+        DRIVER_SCORES.map((s) => DRIVER_SCORE_LABELS[s]),
+        DRIVER_SCORE_LABELS[driver.score],
+        (label) => {
+          const score = DRIVER_SCORES.find((s) => DRIVER_SCORE_LABELS[s] === label);
+          if (score) void window.drivers.setScore(driver.id, score).then(() => refresh());
+        },
+      );
+      row.appendChild(scoreDropdown.el);
+
+      const assignedDutyNumbers = duties.filter((d) => d.driverId === driver.id).map((d) => d.dutyNumber);
+      if (assignedDutyNumbers.length > 0) {
+        const assignedNote = document.createElement("div");
+        assignedNote.className = "label-muted";
+        assignedNote.style.fontSize = "11px";
+        assignedNote.textContent = `Assigned: ${assignedDutyNumbers.join(", ")}`;
+        row.appendChild(assignedNote);
+      }
+
+      driversColumn.appendChild(row);
+    }
+  };
+
   const refreshDepotDropdown = (): void => {
     depotDropdownContainer.innerHTML = "";
     if (depots.length === 0) {
@@ -687,18 +885,26 @@ export async function mountDutyPanel(router: Router): Promise<void> {
   const refresh = async (): Promise<void> => {
     if (depotGroupId === null) return;
     title.textContent = `Duties — ${depotGroupName}`;
-    for (const [dt, btn] of dayTypeButtons) btn.classList.toggle("is-active", dt === dayType);
 
-    const [allDepots, fetchedRoutes, timetables, fetchedDuties] = await Promise.all([
+    const [allDepots, fetchedRoutes, timetables, fetchedDrivers] = await Promise.all([
       window.depots.list(),
       window.routes.list(),
       window.routeTimetables.listAll(),
-      window.duties.listForDepotGroup(depotGroupId, dayType),
+      window.drivers.listForDepotGroup(depotGroupId),
     ]);
     depots = allDepots.filter((d) => d.depotGroupId === depotGroupId).sort((a, b) => a.id - b.id);
     routes = fetchedRoutes;
-    journeys = journeysForDepotGroup(fetchedRoutes, timetables, depotGroupId, dayType);
-    duties = fetchedDuties;
+    drivers = fetchedDrivers;
+
+    const groupRouteIds = new Set(routes.filter((r) => r.depotGroupId === depotGroupId).map((r) => r.id));
+    availableWeekdayMasks = [...new Set(timetables.filter((t) => groupRouteIds.has(t.routeId)).map((t) => t.weekdayMask))].sort(
+      (a, b) => a - b,
+    );
+    if (!availableWeekdayMasks.includes(weekdayMask)) weekdayMask = availableWeekdayMasks[0] ?? MONDAY_FRIDAY_MASK;
+    renderDayTypeBar();
+
+    journeys = journeysForDepotGroup(fetchedRoutes, timetables, depotGroupId, weekdayMask);
+    duties = await window.duties.listForDepotGroup(depotGroupId, weekdayMask);
     if (activeDutyId !== null && !duties.some((d) => d.id === activeDutyId)) activeDutyId = null;
 
     noDepotsNotice.style.display = depots.length === 0 ? "block" : "none";
@@ -708,11 +914,12 @@ export async function mountDutyPanel(router: Router): Promise<void> {
     refreshDepotDropdown();
     renderDuties();
     renderJourneys();
+    renderDrivers();
   };
 
   newDutyButton.addEventListener("click", async () => {
     if (depotGroupId === null || selectedDepotId === null || busy) return;
-    const created = await window.duties.create(depotGroupId, selectedDepotId, dayType);
+    const created = await window.duties.create(depotGroupId, selectedDepotId, weekdayMask);
     activeDutyId = created.id;
     await refresh();
   });
@@ -756,6 +963,14 @@ export async function mountDutyPanel(router: Router): Promise<void> {
         return result;
       };
       const cachedCanFollow = (last: Journey, next: Journey) => {
+        // Q18/Q19 (OPEN-ITEMS.md Q18+Q19 plan) — same route-to-route
+        // compatibility check as the module-level canFollow above, mirrored
+        // here since this is auto-complete's own separately cached
+        // feasibility check, not a call through that function. `routes` is
+        // this closure's own already-loaded depot-group route list.
+        const lastRoute = routes.find((r) => r.id === last.routeId);
+        const nextRoute = routes.find((r) => r.id === next.routeId);
+        if (lastRoute && nextRoute && !routeRestrictionsCompatible(lastRoute, nextRoute)) return null;
         if (next.startClockMinutes < last.endClockMinutes) return null;
         const dr = cachedDeadRun(last.endPoint, next.startPoint);
         if (!dr) return null;
@@ -797,7 +1012,7 @@ export async function mountDutyPanel(router: Router): Promise<void> {
         if (best.kind === "existing") {
           targetId = best.dutyId;
         } else {
-          const created = await window.duties.create(depotGroupId, best.depotId, dayType);
+          const created = await window.duties.create(depotGroupId, best.depotId, weekdayMask);
           open.push({ id: created.id, depotId: best.depotId, lastJourney: null });
           targetId = created.id;
         }
@@ -818,5 +1033,8 @@ export async function mountDutyPanel(router: Router): Promise<void> {
     activeDutyId = null;
     overlay.style.display = "flex";
     void refresh();
+  };
+  dutyPanelState.close = () => {
+    overlay.style.display = "none";
   };
 }

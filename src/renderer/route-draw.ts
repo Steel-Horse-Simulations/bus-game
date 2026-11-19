@@ -15,6 +15,8 @@ import type { GeoJSON } from "geojson";
 import { Router, decode_settlements } from "./wasm/game_wasm.js";
 import { findFallbackSettlement, type DecodedSettlement } from "./settlement-fallback.mts";
 import { stopsPanelState, busStationsState } from "./stops-layer";
+import { showFareZonesOverlay, hideFareZonesOverlay } from "./fare-zone-drawing";
+import { createColourPicker } from "./colour-picker";
 import { computeRouteOrientation, validateStartTerminus, type LonLat } from "./route-orientation";
 import { createDropdown, type Dropdown } from "./dropdown";
 import { startTerminusColour } from "./start-terminus-colours";
@@ -32,7 +34,21 @@ import { resolveSegments, type RouteSegment as ResolvedRouteSegment, type Sectio
 // builds the route instead of opening its usual assignment popup. A plain
 // mutable object rather than an event emitter — there's only ever one
 // reader and it only needs the current value at click time.
-export const routeDrawState = { isDrawing: false };
+// "draftRouteType" (schema v57->v58, live request 2026-11-08: a depot's
+// own staff-route-only stop) mirrors the draft's own routeType while
+// isDrawing is true, null otherwise — stops-layer.ts reads it to decide
+// whether a depot's own stop should be visible/clickable at all (only
+// when drawing a "staff" route). Set once, in setDrawing below, at the
+// moment drawing starts — every real entry point (startDrawing/
+// startEditing/startVariation) always sets the draft's own routeType
+// before calling setDrawing(true), so it's already current by then; a
+// staff route is never reached by any in-draft type toggle (the
+// variation-type dropdown only ever flips ordinary<->night), so nothing
+// else needs to refresh this while already drawing.
+export const routeDrawState: { isDrawing: boolean; draftRouteType: RouteType | null } = {
+  isDrawing: false,
+  draftRouteType: null,
+};
 
 // Shared long-distance sections (live design discussion, 2026-10-31) — the
 // draft UI tracks section usage as a flat list of "a section's own points
@@ -252,6 +268,20 @@ export async function mountRouteDrawTool(
   // between them independently drew a different line than the route the
   // overlay is meant to be highlighting a stretch of.
   let legEndIndices: number[] = [];
+  // The most restrictive real OSM maxweight/maxheight/maxlength/maxwidth
+  // figure found along the route drawn so far (Q18, OPEN-ITEMS.md Q18+Q19
+  // plan) — `Infinity` (the router's own "no restriction found" sentinel,
+  // never a real figure) means nothing tagged has been found on this axis
+  // yet. `rebuildRoute()` overwrites these directly from the §B getters
+  // (it recomputes the whole route via `find_route_through`, so the result
+  // is already authoritative for every edge); `appendLeg()` instead folds
+  // each new leg's own figures into the running minimum, since a single
+  // `find_route` call only re-populates the router's `last_edges` with that
+  // one leg, not the whole route so far.
+  let drawnMinMaxweightTonnes = Infinity;
+  let drawnMinMaxheightM = Infinity;
+  let drawnMinMaxlengthM = Infinity;
+  let drawnMinMaxwidthM = Infinity;
   // Set by clicking a stop in the list (not the map): the next map click(s)
   // insert after this position instead of appending at the end, and the
   // insertion point advances to each newly-inserted point in turn so a run
@@ -278,6 +308,18 @@ export async function mountRouteDrawTool(
   // clicks, not one).
   let hailRideSections: RouteHailAndRideSection[] = [];
   let hailRideArmedStart: number | null = null;
+  // Which of draftPoints are timing points (schema v56->v57, routes.
+  // timing_point_indexes) — a live user request, 2026-11-07: "when making
+  // a route there is no way to set a timing point," since the only place
+  // that existed before was route-panel.ts's own locked stop list, reached
+  // only once a route already exists and its timetable editor is opened.
+  // Draft-only like hailRideSections above; persisted on Save via
+  // createRoute/updateRoute's own new timingPointIndexes parameter, not a
+  // live setRouteTimingPoint call per toggle (this route may not even
+  // have a real id yet). Seeded from the parent's own list by
+  // startVariation below — "timing points should also be copied between
+  // variations," the same live request.
+  let draftTimingPointIndexes: number[] = [];
   // Set by startEditing(), null for a genuinely new route — the save
   // handler branches on this to update the existing route rather than
   // creating a duplicate.
@@ -294,7 +336,7 @@ export async function mountRouteDrawTool(
   // though its starting draft is a copy of the parent's own points.
   let variationParentRoute: Route | null = null;
   // Minor variation (DESIGN.md §6, confirmed 2026-11-01 — the real Skye
-  // 56 example, skipping Bernisdale on certain school runs): shares the
+  // 56 example, skipping Bernisdale on certain workings): shares the
   // parent's exact number with no letter at all, and is always
   // live-linked to the parent's current path (route-combine-
   // variations.mts's own resolveRoutePoints already handles this once
@@ -405,6 +447,23 @@ export async function mountRouteDrawTool(
     });
   };
 
+  // Updates the persistent restrictionInfoEl from whatever
+  // drawnMinMaxweightTonnes/drawnMinMaxheightM/drawnMinMaxlengthM/
+  // drawnMinMaxwidthM currently hold — called at the end of both
+  // appendLeg and rebuildRoute, so the line always reflects the route as
+  // currently drawn. Omits any axis still at the `Infinity` sentinel (no
+  // real OSM figure found on that axis yet), and hides itself entirely
+  // when none are set.
+  const updateVehicleRestrictionInfo = () => {
+    const parts: string[] = [];
+    if (Number.isFinite(drawnMinMaxweightTonnes)) parts.push(`max weight ${drawnMinMaxweightTonnes}t`);
+    if (Number.isFinite(drawnMinMaxheightM)) parts.push(`max height ${drawnMinMaxheightM}m`);
+    if (Number.isFinite(drawnMinMaxlengthM)) parts.push(`max length ${drawnMinMaxlengthM}m`);
+    if (Number.isFinite(drawnMinMaxwidthM)) parts.push(`max width ${drawnMinMaxwidthM}m`);
+    restrictionInfoEl.hidden = parts.length === 0;
+    restrictionInfoEl.textContent = parts.length > 0 ? `Real road restriction(s) on this route: ${parts.join(", ")}.` : "";
+  };
+
   // Routes one leg (previous point -> next point) and appends it to
   // routeCoords, or sets `warning` if no road route exists between them.
   // Shared by both the fast-path single append and a full rebuild after a
@@ -423,6 +482,15 @@ export async function mountRouteDrawTool(
     // last point (both are the same point's snapped node).
     routeCoords.push(...points.slice(1));
     legEndIndices.push(routeCoords.length - 1);
+    // Folded into the running minimum, not overwritten — this single
+    // `find_route` call only re-populated the router's own `last_edges`
+    // with this one new leg, not the whole route so far (see this file's
+    // own drawnMinMaxweightTonnes doc comment above).
+    drawnMinMaxweightTonnes = Math.min(drawnMinMaxweightTonnes, router.last_route_min_maxweight_tonnes());
+    drawnMinMaxheightM = Math.min(drawnMinMaxheightM, router.last_route_min_maxheight_m());
+    drawnMinMaxlengthM = Math.min(drawnMinMaxlengthM, router.last_route_min_maxlength_m());
+    drawnMinMaxwidthM = Math.min(drawnMinMaxwidthM, router.last_route_min_maxwidth_m());
+    updateVehicleRestrictionInfo();
   };
 
   // Recomputes the whole route from the current draftPoints order — used
@@ -442,10 +510,23 @@ export async function mountRouteDrawTool(
     routeCoords = [];
     legEndIndices = [];
     warning = null;
-    if (draftPoints.length === 0) return;
+    // Reset, not folded — unlike appendLeg, this recomputes the WHOLE
+    // route from scratch in one `find_route_through` call below, so
+    // whatever that call's own getters report afterward is already
+    // authoritative for every edge, with nothing from before it to carry
+    // forward.
+    drawnMinMaxweightTonnes = Infinity;
+    drawnMinMaxheightM = Infinity;
+    drawnMinMaxlengthM = Infinity;
+    drawnMinMaxwidthM = Infinity;
+    if (draftPoints.length === 0) {
+      updateVehicleRestrictionInfo();
+      return;
+    }
     if (draftPoints.length === 1) {
       const snapped = router.snap_to_road(draftPoints[0].lon, draftPoints[0].lat);
       routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [draftPoints[0].lon, draftPoints[0].lat]);
+      updateVehicleRestrictionInfo();
       return;
     }
     const flat: number[] = [];
@@ -455,12 +536,18 @@ export async function mountRouteDrawTool(
       warning = "No road route found through this sequence of stops.";
       const snapped = router.snap_to_road(draftPoints[0].lon, draftPoints[0].lat);
       routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [draftPoints[0].lon, draftPoints[0].lat]);
+      updateVehicleRestrictionInfo();
       return;
     }
     const points: [number, number][] = [];
     for (let i = 0; i < path.length; i += 2) points.push([path[i], path[i + 1]]);
     routeCoords = points;
     legEndIndices = Array.from(router.last_route_leg_end_point_indices());
+    drawnMinMaxweightTonnes = router.last_route_min_maxweight_tonnes();
+    drawnMinMaxheightM = router.last_route_min_maxheight_m();
+    drawnMinMaxlengthM = router.last_route_min_maxlength_m();
+    drawnMinMaxwidthM = router.last_route_min_maxwidth_m();
+    updateVehicleRestrictionInfo();
   };
 
   const addPoint = (point: DraftPoint) => {
@@ -484,14 +571,22 @@ export async function mountRouteDrawTool(
         fromIndex: s.fromIndex >= insertedAt ? s.fromIndex + 1 : s.fromIndex,
         toIndex: s.toIndex >= insertedAt ? s.toIndex + 1 : s.toIndex,
       }));
+      draftTimingPointIndexes = draftTimingPointIndexes.map((idx) => (idx >= insertedAt ? idx + 1 : idx));
       rebuildRoute();
     } else if (!last) {
       // Snap the very first point onto the road too, the same as every
       // later point already is via find_route — otherwise the first leg
-      // visibly starts from the raw position instead of the road.
+      // visibly starts from the raw position instead of the road. No edge
+      // exists yet at all, so any restriction figures left over from a
+      // previous route are reset here too.
       const snapped = router.snap_to_road(point.lon, point.lat);
       routeCoords.push(snapped.length === 2 ? [snapped[0], snapped[1]] : [point.lon, point.lat]);
       draftPoints.push(point);
+      drawnMinMaxweightTonnes = Infinity;
+      drawnMinMaxheightM = Infinity;
+      drawnMinMaxlengthM = Infinity;
+      drawnMinMaxwidthM = Infinity;
+      updateVehicleRestrictionInfo();
     } else {
       appendLeg(last, point);
       draftPoints.push(point);
@@ -507,11 +602,17 @@ export async function mountRouteDrawTool(
     routeCoords = [];
     legEndIndices = [];
     warning = null;
+    drawnMinMaxweightTonnes = Infinity;
+    drawnMinMaxheightM = Infinity;
+    drawnMinMaxlengthM = Infinity;
+    drawnMinMaxwidthM = Infinity;
+    updateVehicleRestrictionInfo();
     insertAfterIndex = null;
     terminusIndex = null;
     startIndex = null;
     hailRideSections = [];
     hailRideArmedStart = null;
+    draftTimingPointIndexes = [];
     editingRouteId = null;
     variationParentRoute = null;
     parentSiblingRoutes = [];
@@ -519,6 +620,7 @@ export async function mountRouteDrawTool(
     minorVariationCheckbox.checked = false;
     numberInput.disabled = false;
     variationLetterInput.disabled = false;
+    colourInput.disabled = false;
     numberInput.value = "";
     nameInput.value = "";
     colourInput.value = DEFAULT_ROUTE_COLOUR;
@@ -591,6 +693,19 @@ export async function mountRouteDrawTool(
   warningEl.hidden = true;
   body.appendChild(warningEl);
 
+  // Persistent (not overwritten by the next warning/action, unlike
+  // warningEl above) info line showing any real OSM maxweight/maxheight/
+  // maxlength/maxwidth restriction found along the route drawn so far
+  // (Q18, OPEN-ITEMS.md Q18+Q19 plan) — a hard block at vehicle-buy/duty
+  // time (route-vehicle-eligibility.mts), surfaced here too so the player
+  // sees it while still drawing, not only once it blocks a purchase. Same
+  // "persistent, revisited" treatment as stops-layer.ts's bus-legal badge.
+  const restrictionInfoEl = document.createElement("div");
+  restrictionInfoEl.style.color = "var(--text-secondary)";
+  restrictionInfoEl.style.fontSize = "11px";
+  restrictionInfoEl.hidden = true;
+  body.appendChild(restrictionInfoEl);
+
   const controls = document.createElement("div");
   controls.style.display = "flex";
   controls.style.gap = "6px";
@@ -643,18 +758,13 @@ export async function mountRouteDrawTool(
   // swatch everywhere else (route-panel.ts). Defaults to the same blue the
   // draft line always used before this existed.
   const DEFAULT_ROUTE_COLOUR = "#3b82f6";
-  const colourInput = document.createElement("input");
-  colourInput.type = "color";
-  colourInput.value = DEFAULT_ROUTE_COLOUR;
-  colourInput.title = "Route colour";
-  colourInput.style.width = "40px";
-  colourInput.style.padding = "0";
-  colourInput.addEventListener("input", () => {
-    map.setPaintProperty("route-draft-line", "line-color", colourInput.value);
+  const colourInput = createColourPicker(DEFAULT_ROUTE_COLOUR, (hex) => {
+    map.setPaintProperty("route-draft-line", "line-color", hex);
   });
+  colourInput.el.title = "Route colour";
 
   numberRow.appendChild(numberInput);
-  numberRow.appendChild(colourInput);
+  numberRow.appendChild(colourInput.el);
 
   // The EyeDropper API (not yet in TypeScript's bundled DOM lib) samples a
   // pixel from anywhere on screen, not just this window — including a
@@ -717,7 +827,10 @@ export async function mountRouteDrawTool(
     brandingContainer.innerHTML = "";
     const group = depotGroups.find((g) => g.id === selectedDepotGroupId);
     const number = numberInput.value.trim() || "?";
-    const eligible = liveries.filter((l) => liveryEligibleForRoute(l.name, { routeType: draftRouteType, number }, group));
+    // points: draftPoints (T190, 2026-11-14) — National Express Scottish's
+    // own terminus check needs real coordinates to check against; every
+    // other livery's own checks ignore this field.
+    const eligible = liveries.filter((l) => liveryEligibleForRoute(l.name, { routeType: draftRouteType, number, points: draftPoints }, group));
     // Live bug report (2026-11-07): "I cant set a branding to none, it
     // defaults to first training and if i set it to none and save it
     // jumps back." Root cause was this auto-defaulting itself — it ran
@@ -873,8 +986,12 @@ export async function mountRouteDrawTool(
       return;
     }
 
-    const outboundEndIndex = terminusIndex ?? draftPoints.length - 1;
-    const orientation = computeRouteOrientation(coords, referencePoint, outboundEndIndex);
+    // Pass terminusIndex through as-is (undefined when there's no terminus
+    // loop) rather than pre-defaulting to the last point — computeRouteOrientation
+    // needs to tell "no terminus loop at all" apart from "terminus loop whose
+    // far end happens to be the last point", since only the former falls
+    // back to the plain-circular winding rule.
+    const orientation = computeRouteOrientation(coords, referencePoint, terminusIndex ?? undefined);
     const savedPoints: RoutePoint[] = draftPoints.map((p) =>
       p.kind === "stop"
         ? { kind: "stop", osmId: p.osmId, lon: p.lon, lat: p.lat }
@@ -894,6 +1011,31 @@ export async function mountRouteDrawTool(
     const directionNote = usedFallbackSettlement
       ? ` — no bus station set, direction used the nearest settlement instead (${usedFallbackSettlement.name ?? "unnamed"})`
       : "";
+
+    // Stop-level "always a timing point" (DESIGN.md §4; live request,
+    // 2026-11-08) — a bus station, or a stop manually flagged as an
+    // airport or always-shared (stops-layer.ts's own popup checkboxes), is
+    // folded into the saved timing_point_indexes here, at save time, same
+    // as any route-level flag the player ticked directly. route-timetable.
+    // mts (the actual offset computation) is pure synchronous logic with
+    // no access to the async override layer, so this is where the two
+    // meet — baked into the persisted list rather than re-derived on every
+    // read.
+    const forcedIndexes: number[] = [];
+    for (let fi = 0; fi < savedPoints.length; fi++) {
+      const fp = savedPoints[fi];
+      if (fp.kind !== "stop" || fp.osmId === undefined) continue;
+      if (stopsPanelState.kindFor?.(fp.osmId) === "bus_station") {
+        forcedIndexes.push(fi);
+        continue;
+      }
+      const [alwaysShared, isAirport] = await Promise.all([
+        window.overrides.get<boolean>("stop", fp.osmId, "always_timing_point"),
+        window.overrides.get<boolean>("stop", fp.osmId, "is_airport"),
+      ]);
+      if (alwaysShared === true || isAirport === true) forcedIndexes.push(fi);
+    }
+    const finalTimingPointIndexes = [...new Set([...draftTimingPointIndexes, ...forcedIndexes])].sort((a, b) => a - b);
 
     let savedRouteId: number;
     if (editingRouteId !== null) {
@@ -917,6 +1059,7 @@ export async function mountRouteDrawTool(
         savedSegments,
         draftRouteType,
         isMinorVariation,
+        finalTimingPointIndexes,
       );
       savedRouteId = editingRouteId;
       saveStatusEl.style.color = "var(--text-secondary)";
@@ -938,6 +1081,7 @@ export async function mountRouteDrawTool(
         savedSegments,
         draftRouteType,
         isMinorVariation,
+        finalTimingPointIndexes,
       );
       savedRouteId = created.id;
       // A second Save click without leaving drawing mode now updates this
@@ -1135,9 +1279,16 @@ export async function mountRouteDrawTool(
     if (draftIsMinorVariation) {
       numberInput.value = draftRouteType === "night" ? `N${variationParentRoute.number}` : variationParentRoute.number;
       variationLetterInput.value = "";
+      // A minor variation always follows its parent's colour, live
+      // (2026-11-08, route-combine-variations.mts's effectiveRouteColour)
+      // — shown here too, not just on the saved route's own list row, so
+      // the draft line on the map matches what it'll look like once saved.
+      colourInput.value = variationParentRoute.colour;
+      map.setPaintProperty("route-draft-line", "line-color", variationParentRoute.colour);
     }
     numberInput.disabled = draftIsMinorVariation;
     variationLetterInput.disabled = draftIsMinorVariation;
+    colourInput.disabled = draftIsMinorVariation;
   });
 
   // Varying an Ordinary route can also make a Night-service variation
@@ -1183,6 +1334,7 @@ export async function mountRouteDrawTool(
     sectionInsertions = [];
     if (terminusIndex !== null && terminusIndex >= cutFrom) terminusIndex = null;
     if (startIndex !== null && startIndex >= cutFrom) startIndex = null;
+    draftTimingPointIndexes = draftTimingPointIndexes.filter((idx) => idx < cutFrom);
     rebuildRoute();
     refresh();
     renderStopList();
@@ -1190,9 +1342,9 @@ export async function mountRouteDrawTool(
   });
 
   // A different start point (DESIGN.md §6 "A different start", Q13,
-  // resolved 2026-11-05: Skye's real "some services start at the High
-  // School, not the Square" case) — the mirror image of "Diverge from
-  // here" above, but discarding the WHOLE cloned draft rather than just
+  // resolved 2026-11-05: a real case where some variations of the same
+  // service start from a different stop entirely) — the mirror image of
+  // "Diverge from here" above, but discarding the WHOLE cloned draft rather than just
   // the tail, since there's no "last shared stop" to diverge from when
   // the parent's own start point isn't shared at all. The player draws
   // their own fresh lead-in from the map as normal, then uses "Rejoin
@@ -1535,6 +1687,9 @@ export async function mountRouteDrawTool(
         fromIndex: s.fromIndex > index ? s.fromIndex - 1 : s.fromIndex,
         toIndex: s.toIndex > index ? s.toIndex - 1 : s.toIndex,
       }));
+    draftTimingPointIndexes = draftTimingPointIndexes
+      .filter((idx) => idx !== index)
+      .map((idx) => (idx > index ? idx - 1 : idx));
     rebuildRoute();
     refresh();
     renderStopList();
@@ -1638,6 +1793,33 @@ export async function mountRouteDrawTool(
       if (i === insertAfterIndex) nameText.style.color = "var(--text-accent)";
       row.appendChild(nameText);
 
+      // The route's own start and terminus are always timing points, with
+      // no way to disable it (live user request, 2026-11-08) — point 0/
+      // the route's own last point (route-timetable.mts's computeOffsets
+      // treats them this way regardless) and, for a terminus-loop route,
+      // its own interior startIndex/terminusIndex too, so none of the
+      // four gets a checkbox here — same convention route-panel.ts's own
+      // locked stop list already uses.
+      if (point.kind === "stop" && i !== 0 && i !== draftPoints.length - 1 && i !== startIdx && i !== terminusIdx) {
+        const tpLabel = document.createElement("label");
+        tpLabel.style.display = "flex";
+        tpLabel.style.alignItems = "center";
+        tpLabel.style.gap = "4px";
+        tpLabel.title = "Timing point — the times at it are set per day type in this route's own Timetable editor.";
+        const tpCheckbox = document.createElement("input");
+        tpCheckbox.type = "checkbox";
+        tpCheckbox.checked = draftTimingPointIndexes.includes(i);
+        tpCheckbox.addEventListener("click", (e) => e.stopPropagation());
+        tpCheckbox.addEventListener("change", () => {
+          draftTimingPointIndexes = tpCheckbox.checked
+            ? [...draftTimingPointIndexes, i].sort((a, b) => a - b)
+            : draftTimingPointIndexes.filter((idx) => idx !== i);
+        });
+        tpLabel.appendChild(tpCheckbox);
+        tpLabel.appendChild(document.createTextNode("T"));
+        row.appendChild(tpLabel);
+      }
+
       if (point.kind === "stop") {
         const stop = point;
         const editButton = document.createElement("button");
@@ -1703,8 +1885,15 @@ export async function mountRouteDrawTool(
 
   const setDrawing = (drawing: boolean) => {
     routeDrawState.isDrawing = drawing;
+    routeDrawState.draftRouteType = drawing ? draftRouteType : null;
+    stopsPanelState.refreshDepotStopVisibility?.();
     if (!drawing) insertAfterIndex = null;
     if (drawing) void refreshDepotGroupOptions();
+    // Confirmed 2026-11-12: fare zone boundaries should be visible while
+    // drawing/editing a route, not only while the Fare Zones panel itself
+    // is open — outline only (see showFareZonesOverlay's own comment).
+    if (drawing) void showFareZonesOverlay(map);
+    else hideFareZonesOverlay(map);
     updateHeader();
     updateStatus();
     renderStopList();
@@ -1815,6 +2004,7 @@ export async function mountRouteDrawTool(
       startIndex = route.startIndex;
       hailRideSections = route.hailAndRideSections.map((s) => ({ ...s }));
       hailRideArmedStart = null;
+      draftTimingPointIndexes = [...route.timingPointIndexes];
       editingRouteId = route.id;
       draftRouteType = route.routeType;
       updateSectionInsertVisibility();
@@ -1842,8 +2032,13 @@ export async function mountRouteDrawTool(
       warning = null;
       numberInput.value = route.number;
       nameInput.value = route.name ?? "";
-      colourInput.value = route.colour;
-      map.setPaintProperty("route-draft-line", "line-color", route.colour);
+      // A minor variation shows (and edits) its parent's own colour, live —
+      // see the minorVariationCheckbox handler below for the same rule
+      // applied when checking the box on a fresh variation.
+      const editColour = draftIsMinorVariation && parent ? parent.colour : route.colour;
+      colourInput.value = editColour;
+      colourInput.disabled = draftIsMinorVariation;
+      map.setPaintProperty("route-draft-line", "line-color", editColour);
       selectedDepotGroupId = route.depotGroupId;
       selectedBrandingLiveryId = route.assignedLiveryId;
       useBrandedColour = route.useBrandedColour;
@@ -1863,6 +2058,13 @@ export async function mountRouteDrawTool(
       startIndex = parent.startIndex;
       hailRideSections = parent.hailAndRideSections.map((s) => ({ ...s }));
       hailRideArmedStart = null;
+      // Live request, 2026-11-07: "timing points should also be copied
+      // between variations" — a variation starts as a copy of the
+      // parent's own points, so its timing points carry over the same way
+      // every other per-point flag here does (terminusIndex/startIndex/
+      // hailRideSections above), not left empty for the player to
+      // re-flag from scratch.
+      draftTimingPointIndexes = [...parent.timingPointIndexes];
       editingRouteId = null;
       draftRouteType = parent.routeType;
       updateSectionInsertVisibility();
@@ -1873,6 +2075,7 @@ export async function mountRouteDrawTool(
       warning = null;
       nameInput.value = "";
       colourInput.value = parent.colour;
+      colourInput.disabled = false;
       map.setPaintProperty("route-draft-line", "line-color", parent.colour);
       selectedDepotGroupId = parent.depotGroupId;
       // A variation inherits its parent's branding by default (same

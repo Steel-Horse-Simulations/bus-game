@@ -31,15 +31,27 @@ import * as maplibregl from "maplibre-gl";
 import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
-import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type CoastlineSnap } from "./coastline-clip.mts";
-import { unionBuildingFootprints, nearestPointOnBuildingBoundary, buildingClusterFollowBetween, nearestVertexOfRing } from "./building-cluster.mts";
+import { createColourPicker } from "./colour-picker";
+import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, type CoastlineSnap } from "./coastline-clip.mts";
+import { computeZoneLetters } from "./fare-journey.mts";
+import { unionAreaPolygons, nearestPointOnAreaBoundary, areaClusterFollowBetween, nearestVertexOfRing } from "./area-cluster.mts";
+import { pushOutRoadSnappedPoints } from "./fare-zone-road-pushout.mts";
+import { islandAreaForPoint } from "./island-detection.mts";
 import { routeDrawState } from "./route-draw";
 import { placeStopState } from "./stops-layer";
 import { placeDepotState } from "./depot-placement";
 import { placeDealerState } from "./dealer-placement";
-import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
+import { setMenuOpen } from "./menu-visibility";
 
 export const fareZoneDrawState = { isDrawing: false };
+
+// Shown/hidden by the Fares section of the bottom bar (fares-screen.ts),
+// not its own floating toggle button any more (T165 — same "get all menus
+// working" conversion T162 already did for Fleet's three sub-screens).
+export const fareZonePanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
 const ZONES_SOURCE_ID = "fare-zones";
 const ZONES_FILL_LAYER_ID = "fare-zones-fill";
@@ -82,22 +94,26 @@ const SNAP_RADIUS_PX = 14;
 // unrelated stretch of coast.
 const COASTLINE_SNAP_DISTANCE_M = 200;
 
-// Building-cluster boundary snap (T118, OPEN-ITEMS.md, DESIGN.md's own
+// Area-cluster boundary snap (T118/T139, OPEN-ITEMS.md, DESIGN.md's own
 // "holding Ctrl replaces road-snapping entirely while held") — same
 // order of magnitude as COASTLINE_SNAP_DISTANCE_M above: wide enough to
-// catch "I clicked slightly off the building's own edge," not so wide it
-// reaches a genuinely separate, unrelated building. BUILDING_QUERY_RADIUS_M
+// catch "I clicked slightly off the area's own edge," not so wide it
+// reaches a genuinely separate, unrelated area. LANDUSE_QUERY_RADIUS_M
 // is deliberately wider than the snap distance itself — it decides which
-// loaded building features are even considered before unioning, so it
+// loaded landuse features are even considered before unioning, so it
 // needs enough margin to pull in the REST of a cluster the click landed
-// on the edge of, not just the one building nearest the pointer.
-const BUILDING_SNAP_DISTANCE_M = 60;
-const BUILDING_QUERY_RADIUS_M = 150;
+// on the edge of, not just the one polygon nearest the pointer. Kept at
+// the same figures building footprints used — genuinely untested against
+// landuse's own much larger scale (a residential block vs a single
+// building), flagged as a live-tuning candidate, not re-derived from
+// nothing.
+const LANDUSE_SNAP_DISTANCE_M = 60;
+const LANDUSE_QUERY_RADIUS_M = 150;
 
 // Flat equirectangular distance, consistent with the same approximation
 // polyline-geometry.mts/coastline-clip.mts already use — this one stays
 // local (glue code only, not pure logic worth unit-testing on its own)
-// since it's only ever used as a cheap "is this building even worth
+// since it's only ever used as a cheap "is this polygon even worth
 // including in the union" prefilter, not the actual snap-distance maths.
 function roughDistanceM(a: FareZonePoint, b: FareZonePoint): number {
   const cosLat = Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
@@ -106,29 +122,63 @@ function roughDistanceM(a: FareZonePoint, b: FareZonePoint): number {
   return Math.hypot(dLon, dLat);
 }
 
-// Pulls every real building footprint out of the basemap's own already-
-// loaded vector tiles (OPEN-ITEMS.md T118's corrected entry — the
-// `building` source-layer, minzoom 13/maxzoom 16, needs no pipeline work
-// at all) that's within BUILDING_QUERY_RADIUS_M of any of the given
-// reference points (the click itself, plus the previous draft point
-// when there is one, so a union spanning both is possible). Returns
-// plain outer rings — holes and any MultiPolygon part beyond the first
-// are dropped, per building-cluster.mts's own documented scope.
-// `querySourceFeatures` only sees tiles already loaded for the current
-// view, so this silently finds nothing if the player is zoomed out below
-// the building layer's own minzoom 13, or panned somewhere not yet
+// Classes this project treats as "a real developed area with buildings
+// in it" — residential/commercial/retail/industrial, the OpenMapTiles
+// `landuse` classes basemap-style.json actually renders as a distinct
+// shaded area (confirmed directly against its own filters, not guessed).
+// Originally just residential/commercial/retail/industrial — widened
+// 2026-11-14 to every other coloured landuse class the basemap itself
+// renders (basemap-style.json's own fill layers), after a live report
+// where Ctrl-snapping along a road that bordered an uncovered class
+// (school) silently fell back to raw clicks instead of snapping to that
+// area's boundary. Class strings match basemap-style.json exactly
+// (`railway`/`industrial` share one fill layer there, `cemetery`/
+// `grave_yard` share another — both landuse classes, not two different
+// features).
+const AREA_SNAP_LANDUSE_CLASSES: ReadonlySet<string> = new Set([
+  "residential",
+  "commercial",
+  "retail",
+  "industrial",
+  "railway",
+  "cemetery",
+  "grave_yard",
+  "school",
+  "university",
+  "college",
+  "construction",
+  "military",
+  "quarry",
+]);
+
+// Pulls every real landuse area polygon out of the basemap's own already-
+// loaded vector tiles (the `landuse` source-layer, same tiles the
+// `building` source-layer used before this) that's within
+// LANDUSE_QUERY_RADIUS_M of any of the given reference points (the click
+// itself, plus the previous draft point when there is one, so a union
+// spanning both is possible). Renamed/corrected 2026-11-13 from a live
+// report: Ctrl-snap originally traced individual building footprints
+// (T118/T139) — "it currently snaps to the buildings not the coloured
+// area around it" — the real `landuse` layer is what renders that
+// broader shaded area, a genuinely separate polygon from any one
+// building. Returns plain outer rings — holes and any MultiPolygon part
+// beyond the first are dropped, per area-cluster.mts's own documented
+// scope. `querySourceFeatures` only sees tiles already loaded for the
+// current view, so this silently finds nothing if the player is zoomed
+// out below the landuse layer's own minzoom, or panned somewhere not yet
 // fetched — same honest "falls back to the raw click" behaviour as every
 // other snap in this file when nothing is close enough, not a crash.
-function queryNearbyBuildingFootprints(map: maplibregl.Map, referencePoints: readonly FareZonePoint[]): FareZonePoint[][] {
-  const features = map.querySourceFeatures("openmaptiles", { sourceLayer: "building" });
+function queryNearbyLandusePolygons(map: maplibregl.Map, referencePoints: readonly FareZonePoint[]): FareZonePoint[][] {
+  const features = map.querySourceFeatures("openmaptiles", { sourceLayer: "landuse" });
   const footprints: FareZonePoint[][] = [];
   for (const feature of features) {
+    if (!AREA_SNAP_LANDUSE_CLASSES.has(feature.properties?.class)) continue;
     const geometry = feature.geometry;
     const outerRings: [number, number][][] =
       geometry.type === "Polygon" ? [geometry.coordinates[0] as [number, number][]] : geometry.type === "MultiPolygon" ? geometry.coordinates.map((part) => part[0] as [number, number][]) : [];
     for (const ring of outerRings) {
       const points = ring.map(([lon, lat]) => ({ lon, lat }));
-      const isNear = points.some((p) => referencePoints.some((ref) => roughDistanceM(p, ref) <= BUILDING_QUERY_RADIUS_M));
+      const isNear = points.some((p) => referencePoints.some((ref) => roughDistanceM(p, ref) <= LANDUSE_QUERY_RADIUS_M));
       if (isNear) footprints.push(points);
     }
   }
@@ -248,6 +298,20 @@ function eligibleTownParents(zones: FareZone[], excludeId?: number): FareZone[] 
 // shows C's fill through it, and that whole B-with-a-C-hole shape is what
 // shows through A's own hole for B.
 function zonesToGeojson(zones: FareZone[]): GeoJSON.FeatureCollection {
+  // `zones` here spans every depot group (reloadZones' own comment — "the
+  // map is one shared geography"), but a letter is a per-depot-group
+  // concept (T175 follow-up) — computed once per group, lazily, and
+  // cached across this one call.
+  const lettersByDepotGroup = new Map<number, Map<number, string>>();
+  const letterFor = (z: FareZone): string | undefined => {
+    let letters = lettersByDepotGroup.get(z.depotGroupId);
+    if (!letters) {
+      letters = computeZoneLetters(zones.filter((o) => o.depotGroupId === z.depotGroupId));
+      lettersByDepotGroup.set(z.depotGroupId, letters);
+    }
+    return letters.get(z.id);
+  };
+
   return {
     type: "FeatureCollection",
     features: zones.map((z) => {
@@ -270,9 +334,11 @@ function zonesToGeojson(zones: FareZone[]): GeoJSON.FeatureCollection {
       const isDuplicateLabel = zones.some(
         (other) => other.id < z.id && other.depotGroupId === z.depotGroupId && other.name === z.name && other.zoneType === z.zoneType,
       );
+      const letter = letterFor(z);
+      const displayName = isDuplicateLabel ? "" : letter !== undefined ? `${z.name} (${letter})` : z.name;
       return {
         type: "Feature",
-        properties: { id: z.id, name: isDuplicateLabel ? "" : z.name, zoneType: z.zoneType, colour: z.colour },
+        properties: { id: z.id, name: displayName, zoneType: z.zoneType, colour: z.colour },
         geometry: { type: "Polygon", coordinates: [ring, ...holes] },
       };
     }),
@@ -331,6 +397,34 @@ function draftPointsGeojson(points: FareZonePoint[]): GeoJSON.FeatureCollection 
     type: "FeatureCollection",
     features: points.map((p) => ({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
   };
+}
+
+// Populates the shared zone-boundary source for any other map-tool module
+// that wants zone boundaries visible while it's active (route-draw.ts,
+// confirmed 2026-11-12) — reuses the exact same data load as the Fare
+// Zones panel's own reloadZones() below (listAll(), not
+// listForDepotGroup, so cross-depot-group boundaries are visible too).
+// Shows the outline only — fill and labels stay hidden (confirmed
+// 2026-11-12: "only the border in route mode, not the entire shaded
+// area"), so drawing a route isn't obscured by shaded zone colour or text.
+export async function showFareZonesOverlay(map: maplibregl.Map): Promise<void> {
+  const allZones = await window.fareZones.listAll();
+  (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData(zonesToGeojson(allZones));
+  (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData(townVisibleBorderSegments(allZones));
+  map.setLayoutProperty(ZONES_FILL_LAYER_ID, "visibility", "none");
+  map.setLayoutProperty(ZONES_LABEL_LAYER_ID, "visibility", "none");
+}
+
+// Clears the shared source AND restores fill/label visibility, so the
+// Fare Zones panel's own full (fill+outline+label) view is unaffected the
+// next time it's opened normally — fareZonePanelState.open() below also
+// defensively resets the same two layers' visibility itself, in case
+// drawing mode was ever abandoned without this running.
+export function hideFareZonesOverlay(map: maplibregl.Map): void {
+  (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+  (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+  map.setLayoutProperty(ZONES_FILL_LAYER_ID, "visibility", "visible");
+  map.setLayoutProperty(ZONES_LABEL_LAYER_ID, "visibility", "visible");
 }
 
 export async function mountFareZones(map: maplibregl.Map, router: Router): Promise<void> {
@@ -396,15 +490,6 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     paint: { "circle-radius": 5, "circle-color": "#f59e0b", "circle-stroke-color": "#18181b", "circle-stroke-width": 1.5 },
   });
 
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Fare zones";
-  toggle.style.position = "absolute";
-  toggle.style.bottom = `${BOTTOM_BAR_CLEARANCE_PX}px`;
-  toggle.style.left = "1300px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
-
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
@@ -469,6 +554,33 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   let allZones: FareZone[] = [];
   let errorMessage = "";
   let draftPoints: FareZonePoint[] = [];
+  // Defensive backstop (2026-11-15) against exact-duplicate points
+  // reaching `draftPoints` at all, from ANY source — a real live bug
+  // (confirmed via a human-driven click trace against a real saved zone,
+  // which came back 66% exact-duplicate points) showed `coastlineFollow`/
+  // `areaClusterFollowBetween`'s own end-of-walk duplicate (now fixed at
+  // the source in coastline-clip.mts/area-cluster.mts) and a consecutive
+  // click's own first new point landing exactly on the previous click's
+  // last one. Fixing the two known source functions doesn't guarantee a
+  // THIRD source (e.g. the WASM router's `find_any_road_route`, out of
+  // scope to touch here) can't hand back the same shape of duplicate —
+  // this catches any of them uniformly, right where points actually
+  // enter the draft, same "skip it, don't push a point that's already
+  // exactly there" convention as pushDedup in the two files above.
+  // Returns how many of `points` were genuinely added, so callers that
+  // track `draftClickPointCounts` record the real count, not the
+  // pre-dedup one (an all-duplicate click would otherwise still log a
+  // nonzero undo entry for a click that visibly added nothing new).
+  function pushDraftPoints(...points: readonly FareZonePoint[]): number {
+    let added = 0;
+    for (const point of points) {
+      const last = draftPoints[draftPoints.length - 1];
+      if (last && sameRealPoint(last, point)) continue;
+      draftPoints.push(point);
+      added++;
+    }
+    return added;
+  }
   // How many entries in `draftPoints` each click added — usually 1, but a
   // road-following click can insert several intermediate points at once.
   // "Undo point" pops a whole click's worth via this, not just the last
@@ -496,13 +608,13 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // the previous point's own chain/edge location, not just whether it was
   // a coastline point at all.
   let lastCoastlineSnap: CoastlineSnap | null = null;
-  // Same idea again, for building-cluster snapping (T118) — just a
-  // boolean, not a stored ClusterSnap, since (unlike road/coastline) a
-  // building boundary's own snap is always recomputed fresh against
+  // Same idea again, for area-cluster snapping (T118/T139) — just a
+  // boolean, not a stored ClusterSnap, since (unlike road/coastline) an
+  // area boundary's own snap is always recomputed fresh against
   // whatever fresh union the NEXT click's own query produces (see the
   // click handler below) rather than reused from an old union call's own
   // now-meaningless boundaryIndex.
-  let lastPointWasBuildingSnapped = false;
+  let lastPointWasAreaSnapped = false;
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
 
@@ -523,14 +635,14 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     if (!last) {
       lastPointWasRoadSnapped = false;
       lastCoastlineSnap = null;
-      lastPointWasBuildingSnapped = false;
+      lastPointWasAreaSnapped = false;
       return;
     }
     lastCoastlineSnap = nearestPointOnCoastline(last, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
     lastPointWasRoadSnapped = lastCoastlineSnap === null && snapToRoad(router, { lng: last.lon, lat: last.lat }) !== null;
-    const nearbyFootprints = queryNearbyBuildingFootprints(map, [last]);
-    const boundaries = unionBuildingFootprints(nearbyFootprints);
-    lastPointWasBuildingSnapped = nearestPointOnBuildingBoundary(last, boundaries, BUILDING_SNAP_DISTANCE_M) !== null;
+    const nearbyFootprints = queryNearbyLandusePolygons(map, [last]);
+    const boundaries = unionAreaPolygons(nearbyFootprints);
+    lastPointWasAreaSnapped = nearestPointOnAreaBoundary(last, boundaries, LANDUSE_SNAP_DISTANCE_M) !== null;
   }
 
   function currentDepotGroup(): DepotGroup | undefined {
@@ -565,7 +677,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // fallback once the brush has made arbitrary interior removals.
   function eraseNear(screenPoint: maplibregl.Point): void {
     const before = draftPoints.length;
-    draftPoints = draftPoints.filter((p) => map.project([p.lon, p.lat]).dist(screenPoint) > ERASE_BRUSH_RADIUS_PX);
+    const keep = draftPoints.map((p) => map.project([p.lon, p.lat]).dist(screenPoint) > ERASE_BRUSH_RADIUS_PX);
+    draftPoints = draftPoints.filter((_, i) => keep[i]);
     if (draftPoints.length === before) return;
     draftClickPointCounts.length = 0;
     for (let i = 0; i < draftPoints.length; i++) draftClickPointCounts.push(1);
@@ -622,6 +735,11 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       body.appendChild(empty);
     }
 
+    // T175 follow-up, confirmed 2026-11-12/13 — the automatic nesting
+    // letter (A, B, C...) each City/Country zone gets, computed once per
+    // render rather than per row.
+    const letters = computeZoneLetters(zones);
+
     for (const zone of zones) {
       const row = document.createElement("div");
       row.style.display = "flex";
@@ -677,6 +795,21 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       typeDropdown.el.style.flex = "0 0 110px";
       row.appendChild(typeDropdown.el);
 
+      // The zone's own computed nesting letter — no letter at all for
+      // Island/Town (computeZoneLetters never assigns one), same inline
+      // fixed-width flex-item pattern as the colour swatch below.
+      const letter = letters.get(zone.id);
+      if (letter !== undefined) {
+        const letterBadge = document.createElement("div");
+        letterBadge.textContent = letter;
+        letterBadge.title = "Zone letter (computed from nesting, not editable)";
+        letterBadge.style.flex = "0 0 20px";
+        letterBadge.style.textAlign = "center";
+        letterBadge.style.fontWeight = "600";
+        letterBadge.style.color = "var(--text-secondary)";
+        row.appendChild(letterBadge);
+      }
+
       // A town's own parent used to show here — first as an editable
       // dropdown, then (after "that is not needed") as a plain read-only
       // label. Live feedback again, 2026-11-01: "I also don't need to know
@@ -689,23 +822,19 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // certainly why "the colour can only be set when the zone is made"
       // was reported even though this editor already existed. Sized up
       // and given its own flex-shrink guard for the same reason as the
-      // dropdown above.
-      const colourInput = document.createElement("input");
-      colourInput.type = "color";
-      colourInput.value = zone.colour;
-      colourInput.title = "Zone colour";
-      colourInput.style.flex = "0 0 32px";
-      colourInput.style.height = "24px";
-      colourInput.style.padding = "0";
-      colourInput.style.border = "1px solid var(--border-strong)";
-      colourInput.style.borderRadius = "4px";
-      colourInput.style.cursor = "pointer";
-      colourInput.addEventListener("change", async () => {
-        await window.fareZones.setColour(zone.id, colourInput.value);
-        await reloadZones();
-        render();
+      // dropdown above. T169: now a custom colour-picker.ts picker, not a
+      // native input — see that file's own header comment.
+      const colourInput = createColourPicker(zone.colour, (hex) => {
+        void (async () => {
+          await window.fareZones.setColour(zone.id, hex);
+          await reloadZones();
+          render();
+        })();
       });
-      row.appendChild(colourInput);
+      colourInput.el.title = "Zone colour";
+      colourInput.el.style.flex = "0 0 32px";
+      colourInput.el.style.height = "24px";
+      row.appendChild(colourInput.el);
 
       const renameButton = document.createElement("button");
       renameButton.className = "btn";
@@ -786,6 +915,13 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       nameInput.style.boxSizing = "border-box";
       nameInput.style.marginBottom = "4px";
       let zoneType: FareZoneType = "city";
+      // Real-geography auto-default (2026-11-15 live request: "Could we
+      // automate whether an area is an Island?") — once the player
+      // explicitly picks a type themselves via the dropdown below, their
+      // choice sticks and the real-geography check at save time is
+      // skipped entirely, same "once touched, stays touched" convention
+      // colourTouched already uses just below.
+      let typeTouched = false;
       let townParentZoneId: number | null = null;
       const parentRow = document.createElement("div");
       parentRow.style.marginBottom = "4px";
@@ -814,6 +950,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       }
       const typeDropdown = createDropdown(Object.values(ZONE_TYPE_LABELS), ZONE_TYPE_LABELS[zoneType], (label) => {
         zoneType = ZONE_TYPE_BY_LABEL[label];
+        typeTouched = true;
         // Only follows the type while the player hasn't picked a colour of
         // their own — once they touch the colour input directly, their
         // choice sticks regardless of type.
@@ -841,20 +978,15 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       const colourLabel = document.createElement("span");
       colourLabel.className = "label-muted";
       colourLabel.textContent = "Colour";
-      const colourInput = document.createElement("input");
-      colourInput.type = "color";
-      colourInput.value = pendingZoneColour;
-      colourInput.style.width = "48px";
-      colourInput.style.height = "26px";
-      colourInput.style.padding = "0";
-      colourInput.style.border = "1px solid var(--border-strong)";
-      colourInput.style.borderRadius = "4px";
-      colourInput.style.cursor = "pointer";
-      colourInput.addEventListener("input", () => {
+      // T169: a custom colour-picker.ts picker, not a native input — see
+      // that file's own header comment.
+      const colourInput = createColourPicker(pendingZoneColour, (hex) => {
         colourTouched = true;
-        pendingZoneColour = colourInput.value;
+        pendingZoneColour = hex;
       });
-      colourRow.append(colourLabel, colourInput);
+      colourInput.el.style.width = "48px";
+      colourInput.el.style.height = "26px";
+      colourRow.append(colourLabel, colourInput.el);
 
       const save = document.createElement("button");
       save.className = "btn";
@@ -868,8 +1000,56 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         }
         if (selectedDepotGroupId === null) return;
         try {
-          const clippedPoints = clipRingToCoastline(draftPoints, coastlineChains);
-          await window.fareZones.create(selectedDepotGroupId, name, zoneType, clippedPoints, pendingZoneColour, townParentZoneId);
+          // DESIGN.md §9: every point that's actually at the side of a
+          // road (a real-distance decision made entirely inside
+          // pushOutRoadSnappedPoints, not by any remembered snap history)
+          // gets pushed off the road, away from the zone's own real (now
+          // fully known) centroid — unconditionally, even on a road
+          // shared with another zone — sliding along the ring's own
+          // local line direction wherever possible rather than jumping
+          // perpendicular to the road (2026-11-14 live bug: the old
+          // perpendicular-only push put a visible kink in a boundary
+          // line that was merely passing near a road, not running along
+          // it). Done before the existing coastline clip below, which
+          // stays the last safety net against a boundary ending up in
+          // the sea.
+          const pushedOutPoints = pushOutRoadSnappedPoints(draftPoints, (lon, lat) => {
+            const info = router.nearest_road_edge_info(lon, lat);
+            if (info.length === 0) return null;
+            const [distM, aLon, aLat, bLon, bLat, widthM] = info;
+            return { distM, aLon, aLat, bLon, bLat, widthM };
+          });
+          const clippedPoints = clipRingToCoastline(pushedOutPoints, coastlineChains);
+          // Diagnostic trace, same convention/purpose as handleMapClick's
+          // own [fare-zone-click] logs — the finalize step's own
+          // before/after at both stages, so a live report about a point
+          // landing somewhere unexpected after Save can be checked
+          // against exactly what each stage did, not re-derived from the
+          // saved result alone.
+          console.log("[fare-zone-save]", { draftPoints, pushedOutPoints, clippedPoints });
+          // Real-geography auto-default (2026-11-15) — only while the
+          // player hasn't picked a type of their own (typeTouched), checks
+          // whether the zone's own real centroid lands on land the actual
+          // coastline data shows is a separate, genuinely island-sized
+          // landmass from the mainland (island-detection.mts), and
+          // defaults to "island" if so. The centroid, not a single vertex,
+          // since a zone can straddle a coastline edge (shore-following
+          // boundaries) — the centroid is the one point guaranteed to sit
+          // inside whichever landmass the zone is actually drawn on,
+          // rather than possibly landing just offshore.
+          let effectiveZoneType = zoneType;
+          if (!typeTouched && clippedPoints.length > 0) {
+            const centroidLon = clippedPoints.reduce((sum, p) => sum + p.lon, 0) / clippedPoints.length;
+            const centroidLat = clippedPoints.reduce((sum, p) => sum + p.lat, 0) / clippedPoints.length;
+            const island = islandAreaForPoint({ lon: centroidLon, lat: centroidLat }, coastlineChains);
+            if (island && island.isIsland) effectiveZoneType = "island";
+          }
+          // Same "follow the type's own default colour while untouched"
+          // rule the manual dropdown already applies (above) — an
+          // auto-detected island shouldn't save with whatever colour the
+          // form's own initial "city" default happened to pre-fill.
+          const effectiveColour = !colourTouched ? DEFAULT_ZONE_COLOUR[effectiveZoneType] : pendingZoneColour;
+          await window.fareZones.create(selectedDepotGroupId, name, effectiveZoneType, clippedPoints, effectiveColour, townParentZoneId);
           draftPoints = [];
           draftClickPointCounts.length = 0;
           pendingZone = false;
@@ -901,8 +1081,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       hint.style.color = "var(--text-muted)";
       hint.style.marginBottom = "4px";
       hint.textContent = isErasing
-        ? "Erasing — click or drag over points to remove them. Click \"Erasing — click to stop\" when done."
-        : `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Ctrl to snap to a building's own outer edge instead of a road — click a first and last point near it to trace the boundary between them. Hold Shift to place the point exactly where clicked, ignoring roads, the coastline and buildings — useful for a deliberate straight line out over open water. Use "Erase points" to remove points with a brush instead of one at a time.`;
+        ? "Removing — click or drag over points to remove them. Click \"Removing — click to stop\" when done."
+        : `Click the map to add a point (${draftPoints.length} so far, 3+ needed). Clicking near a coastline snaps to it. Hold Ctrl to snap to a coloured land-use area's own outer edge instead of a road — click a first and last point near it to trace the boundary between them. Hold Shift to place the point exactly where clicked, ignoring roads, the coastline and these areas — useful for a deliberate straight line out over open water. Use "Remove points" to remove points with a brush instead of one at a time.`;
       drawSection.appendChild(hint);
 
       const controls = document.createElement("div");
@@ -928,7 +1108,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
 
       const eraseToggle = document.createElement("button");
       eraseToggle.className = "btn";
-      eraseToggle.textContent = isErasing ? "Erasing — click to stop" : "Erase points";
+      eraseToggle.textContent = isErasing ? "Removing — click to stop" : "Remove points";
       eraseToggle.classList.toggle("is-active", isErasing);
       eraseToggle.disabled = draftPoints.length === 0 && !isErasing;
       eraseToggle.addEventListener("click", () => {
@@ -949,7 +1129,6 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         fareZoneDrawState.isDrawing = false;
         pendingZone = true;
         stopErasing();
-        toggle.classList.remove("is-active");
         render();
       });
       controls.appendChild(finish);
@@ -963,9 +1142,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
         lastCoastlineSnap = null;
-        lastPointWasBuildingSnapped = false;
+        lastPointWasAreaSnapped = false;
         stopErasing();
-        toggle.classList.remove("is-active");
         updateDraftLayers();
         render();
       });
@@ -983,9 +1161,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         draftClickPointCounts.length = 0;
         lastPointWasRoadSnapped = false;
         lastCoastlineSnap = null;
-        lastPointWasBuildingSnapped = false;
+        lastPointWasAreaSnapped = false;
         errorMessage = "";
-        toggle.classList.add("is-active");
         updateDraftLayers();
         render();
       });
@@ -1030,6 +1207,10 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   });
 
   map.on("click", (e) => {
+    void handleMapClick(e);
+  });
+
+  async function handleMapClick(e: maplibregl.MapMouseEvent): Promise<void> {
     if (!fareZoneDrawState.isDrawing || otherToolActive()) return;
     if (isErasing) return; // handled by mousedown/mousemove above, not here
 
@@ -1039,22 +1220,23 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     // boundary, not a road.
     const zoneSnap = snapToExistingZones(map, e.lngLat, allZones);
     if (zoneSnap) {
-      draftPoints.push(zoneSnap);
-      draftClickPointCounts.push(1);
+      draftClickPointCounts.push(pushDraftPoints(zoneSnap));
       lastPointWasRoadSnapped = false;
       lastCoastlineSnap = null;
-      lastPointWasBuildingSnapped = false;
+      lastPointWasAreaSnapped = false;
       updateDraftLayers();
       render();
       return;
     }
 
-    // Building-cluster boundary snap (T118): holding Ctrl replaces
+    // Area-cluster boundary snap (T118/T139, corrected 2026-11-13 to
+    // landuse areas instead of individual buildings — see
+    // queryNearbyLandusePolygons's own comment): holding Ctrl replaces
     // road-snapping (and coastline-snapping) entirely while held, per
     // the confirmed spec — its own branch, checked before the shift/
     // coastline/road chain below rather than folded into it, since
     // "replaces... entirely" means Ctrl is its own mode, not just
-    // another candidate alongside the others. Queries buildings near
+    // another candidate alongside the others. Queries landuse areas near
     // BOTH the previous draft point and this click (when there is a
     // previous point) so a union spanning both is possible, then checks
     // whether the two land on the SAME merged boundary — re-done fresh
@@ -1064,46 +1246,100 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     const ctrlHeld = (e.originalEvent as MouseEvent).ctrlKey;
     if (ctrlHeld) {
       const clickPoint: FareZonePoint = { lon: e.lngLat.lng, lat: e.lngLat.lat };
+      const pointCountBeforeThisClick = draftPoints.length;
       const previousPoint = draftPoints[draftPoints.length - 1];
       const queryPoints = previousPoint ? [previousPoint, clickPoint] : [clickPoint];
-      const boundaries = unionBuildingFootprints(queryNearbyBuildingFootprints(map, queryPoints));
-      const clusterSnap = nearestPointOnBuildingBoundary(clickPoint, boundaries, BUILDING_SNAP_DISTANCE_M);
+      let boundaries = unionAreaPolygons(queryNearbyLandusePolygons(map, queryPoints));
+      let clusterSnap = nearestPointOnAreaBoundary(clickPoint, boundaries, LANDUSE_SNAP_DISTANCE_M);
+      // A real, separate gap (2026-11-14, found while investigating the
+      // live "jumps away from the boundary" bug below — that specific
+      // bug turned out to be in clipRingToCoastline, not here, but this
+      // is worth guarding anyway): `querySourceFeatures` (inside
+      // queryNearbyLandusePolygons) only ever sees tiles already loaded
+      // for the current view, so a click made just after panning/zooming
+      // can race ahead of its own landuse tile and come back with
+      // NOTHING even though the exact same spot genuinely has landuse
+      // data a moment later, falling back to the raw, unsnapped click
+      // point for no real reason.
+      //
+      // Broadened 2026-11-15, still live after that first fix: the
+      // original retry was gated on `!map.isSourceLoaded("openmaptiles")`
+      // — a BLANKET flag for the whole source, not specifically whether
+      // the tile covering this exact click has actually finished
+      // rendering. Confirmed directly against a real saved zone (the
+      // exact bogus point measured ~10m from the real boundary, with NO
+      // ambiguous/competing landuse geometry nearby — ruling out the
+      // player simply clicking the wrong real feature — and the precise
+      // value differing by ~2m between two otherwise-identical redraws,
+      // consistent with a transient miss rather than a deterministic
+      // bug): `isSourceLoaded` can report the source as a whole "loaded"
+      // while this one tile's own feature data still isn't what
+      // `querySourceFeatures` returns a frame later. Retrying
+      // unconditionally whenever nothing was found — not just when the
+      // source flag says it's still loading — after a couple of render
+      // frames (not `map.once("idle")`, which may never fire again if
+      // the map is already settled) covers that gap too: a genuine "no
+      // area anywhere near here" case still correctly finds nothing on
+      // the retry, the same honest fallback as before.
+      let usedRetry = false;
+      if (!clusterSnap) {
+        usedRetry = true;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        boundaries = unionAreaPolygons(queryNearbyLandusePolygons(map, queryPoints));
+        clusterSnap = nearestPointOnAreaBoundary(clickPoint, boundaries, LANDUSE_SNAP_DISTANCE_M);
+      }
       if (clusterSnap) {
-        const previousSnap = previousPoint && lastPointWasBuildingSnapped ? nearestPointOnBuildingBoundary(previousPoint, boundaries, BUILDING_SNAP_DISTANCE_M) : null;
-        const follow = previousSnap ? buildingClusterFollowBetween(previousSnap, clusterSnap, boundaries) : null;
+        const previousSnap = previousPoint && lastPointWasAreaSnapped ? nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M) : null;
+        const follow = previousSnap ? areaClusterFollowBetween(previousSnap, clusterSnap, boundaries) : null;
+        const bridgeCorner =
+          previousPoint && !lastPointWasAreaSnapped ? nearestVertexOfRing(boundaries[clusterSnap.boundaryIndex], previousPoint, LANDUSE_SNAP_DISTANCE_M) : null;
         if (follow) {
-          draftPoints.push(...follow.slice(1));
-          draftClickPointCounts.push(follow.length - 1);
-        } else if (previousPoint && !lastPointWasBuildingSnapped) {
+          draftClickPointCounts.push(pushDraftPoints(...follow.slice(1)));
+        } else if (bridgeCorner) {
           // T118's confirmed point (5): "on a road, press Ctrl, click
           // near a cluster — connects from the road point to the
           // nearest corner of that cluster," the mirror of point (4)
-          // above. Only when the previous point genuinely wasn't a
-          // building snap at all — two building-snapped points on
-          // different, unconnected clusters are a real "big gap" (3),
-          // not this case, so they fall through to the plain snap point
-          // in the branch below instead.
-          draftPoints.push(nearestVertexOfRing(boundaries[clusterSnap.boundaryIndex], previousPoint));
-          draftClickPointCounts.push(1);
+          // above. Only when the previous point genuinely wasn't an
+          // area snap at all — two area-snapped points on different,
+          // unconnected clusters are a real "big gap" (3), not this
+          // case, so they fall through to the plain snap point in the
+          // branch below instead. Also falls through to that same plain
+          // branch when no real corner is actually close to the road
+          // point (nearestVertexOfRing's own bounded search, 2026-11-14
+          // fix) — bridging to a distant, unrelated corner of a large
+          // polygon produced a visible spike rather than a sensible
+          // connection.
+          draftClickPointCounts.push(pushDraftPoints(bridgeCorner));
         } else {
-          // No previous point at all, or a genuine gap between two
-          // unconnected building boundaries — just the new point on its
-          // own (3), matching the confirmed spec's own straight-line
-          // fallback.
-          draftPoints.push(clusterSnap.point);
-          draftClickPointCounts.push(1);
+          // No previous point at all, a genuine gap between two
+          // unconnected area boundaries, or no real corner close enough
+          // to bridge from — just the new point on its own (3), matching
+          // the confirmed spec's own straight-line fallback.
+          draftClickPointCounts.push(pushDraftPoints(clusterSnap.point));
         }
       } else {
-        // Ctrl held but nothing building-like close enough (no building
-        // tiles loaded here, or genuinely no building nearby) — falls
-        // back to the raw click rather than silently doing nothing, the
-        // same honesty every other snap in this file already has.
-        draftPoints.push(clickPoint);
-        draftClickPointCounts.push(1);
+        // Ctrl held but nothing area-like close enough (no landuse
+        // tiles loaded here, or genuinely no matching area nearby) —
+        // falls back to the raw click rather than silently doing
+        // nothing, the same honesty every other snap in this file
+        // already has.
+        draftClickPointCounts.push(pushDraftPoints(clickPoint));
       }
-      lastPointWasBuildingSnapped = clusterSnap !== null;
+      lastPointWasAreaSnapped = clusterSnap !== null;
       lastPointWasRoadSnapped = false;
       lastCoastlineSnap = null;
+      // Diagnostic trace, same convention/purpose as the plain-click one
+      // further down — this is the branch T207's own retry lives in, so
+      // `usedRetry`/`clusterSnap` here are exactly what a live report
+      // about a bogus area-snap point needs to diagnose without
+      // reproducing the click sequence from guesswork afterwards.
+      console.log("[fare-zone-click]", {
+        clickLngLat: clickPoint,
+        ctrlHeld: true,
+        usedRetry,
+        clusterSnap,
+        addedPoints: draftPoints.slice(pointCountBeforeThisClick),
+      });
       updateDraftLayers();
       render();
       return;
@@ -1142,6 +1378,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
 
     const coastlineSnap = shiftHeld ? null : nearestPointOnCoastline({ lon: e.lngLat.lng, lat: e.lngLat.lat }, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
     const roadSnap = shiftHeld || coastlineSnap ? null : snapToRoad(router, e.lngLat);
+    const pointCountBeforeThisClick = draftPoints.length;
     const previousPoint = draftPoints[draftPoints.length - 1];
     const coastlineFollow =
       coastlineSnap && lastCoastlineSnap && previousPoint ? coastlineFollowBetween(lastCoastlineSnap, coastlineSnap, coastlineChains) : null;
@@ -1169,8 +1406,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // single road-snapped point, same as a normal click — never silently
       // drops the click entirely.
       if (newPoints.length === 0) newPoints.push(roadSnap);
-      draftPoints.push(...newPoints);
-      draftClickPointCounts.push(newPoints.length);
+      draftClickPointCounts.push(pushDraftPoints(...newPoints));
     } else if (coastlineFollow) {
       // Coastline-following (2026-11-01, "snapping to the coast line
       // should work like the other snapping for building, jump big gaps
@@ -1181,8 +1417,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // through to the plain single-point branch below instead — no
       // distance cutoff, see coastlineFollowBetween's own comment for why
       // one was tried and then removed).
-      draftPoints.push(...coastlineFollow.slice(1));
-      draftClickPointCounts.push(coastlineFollow.length - 1);
+      draftClickPointCounts.push(pushDraftPoints(...coastlineFollow.slice(1)));
     } else {
       const point = coastlineSnap?.point ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
       // T118's confirmed point (4): "transitioning off a building-trace
@@ -1192,54 +1427,81 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // corner as an extra bridging point (the trace's own last point
       // stays exactly where it was placed) rather than replacing
       // anything already traced.
-      if (lastPointWasBuildingSnapped && previousPoint) {
-        const boundaries = unionBuildingFootprints(queryNearbyBuildingFootprints(map, [previousPoint]));
-        const previousSnap = nearestPointOnBuildingBoundary(previousPoint, boundaries, BUILDING_SNAP_DISTANCE_M);
-        const corner = previousSnap ? nearestVertexOfRing(boundaries[previousSnap.boundaryIndex], point) : null;
+      if (lastPointWasAreaSnapped && previousPoint) {
+        const boundaries = unionAreaPolygons(queryNearbyLandusePolygons(map, [previousPoint]));
+        const previousSnap = nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M);
+        // Bounded to LANDUSE_SNAP_DISTANCE_M (2026-11-14 fix, see
+        // nearestVertexOfRing's own doc comment) — without this, a large
+        // polygon's globally-nearest vertex to `point` could be a
+        // distant, unrelated corner, producing a boundary that jumped
+        // away from the road and straight back (a live reported bug: a
+        // visible spike near Main Street, Kyle of Lochalsh).
+        const corner = previousSnap ? nearestVertexOfRing(boundaries[previousSnap.boundaryIndex], point, LANDUSE_SNAP_DISTANCE_M) : null;
         const newPoints = corner ? [corner, point] : [point];
-        draftPoints.push(...newPoints);
-        draftClickPointCounts.push(newPoints.length);
+        draftClickPointCounts.push(pushDraftPoints(...newPoints));
       } else {
-        draftPoints.push(point);
-        draftClickPointCounts.push(1);
+        draftClickPointCounts.push(pushDraftPoints(point));
       }
     }
     lastPointWasRoadSnapped = roadSnap !== null;
     lastCoastlineSnap = coastlineSnap;
-    lastPointWasBuildingSnapped = false;
+    lastPointWasAreaSnapped = false;
+    // Diagnostic trace for the road/coastline-follow click path, kept
+    // deliberately (not a throwaway) for diagnosing live reports like the
+    // Main Street, Kyle of Lochalsh spike (T207) — a real human-driven
+    // draw with DevTools' console open captures exactly which snap fired
+    // and what landed in draftPoints for every click, without needing to
+    // reproduce the click sequence from guesswork afterwards.
+    console.log("[fare-zone-click]", {
+      clickLngLat: { lon: e.lngLat.lng, lat: e.lngLat.lat },
+      ctrlHeld,
+      shiftHeld,
+      coastlineSnap,
+      roadSnap,
+      addedPoints: draftPoints.slice(pointCountBeforeThisClick),
+    });
     updateDraftLayers();
     render();
-  });
+  }
 
-  let panelOpen = false;
-  toggle.addEventListener("click", async () => {
-    // While actively drawing, the toggle button cancels the draw instead of
-    // closing the panel — otherwise there'd be no way to re-open the panel
-    // and see the Finish/Cancel controls again without losing the draft.
-    if (fareZoneDrawState.isDrawing) {
-      fareZoneDrawState.isDrawing = false;
-      draftPoints = [];
-      updateDraftLayers();
-      toggle.classList.remove("is-active");
-      render();
-      return;
-    }
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "flex" : "none";
-    toggle.classList.toggle("is-active", panelOpen);
-    if (panelOpen) {
+  fareZonePanelState.open = () => {
+    panel.style.display = "flex";
+    setMenuOpen("fare-zone-drawing", true);
+    // Defensive reset (T175 follow-up) — route-draw.ts's own
+    // showFareZonesOverlay hides fill/labels and restores them again on
+    // hideFareZonesOverlay, but if drawing mode is ever abandoned without
+    // that running, this panel should still always open showing its own
+    // normal full fill+outline+label view, not whatever route-draw left
+    // behind.
+    map.setLayoutProperty(ZONES_FILL_LAYER_ID, "visibility", "visible");
+    map.setLayoutProperty(ZONES_LABEL_LAYER_ID, "visibility", "visible");
+    void (async () => {
       depotGroups = await window.depotGroups.list();
       if (selectedDepotGroupId === null) selectedDepotGroupId = depotGroups[0]?.id ?? null;
       await reloadZones();
       render();
-    } else {
-      // Live user report, 2026-11-01: "when I close the fare zone menu the
-      // zones don't go away" — closing the panel previously only hid the
-      // panel's own DOM, leaving the map's own fill/outline/label layers
-      // showing every zone regardless. Cleared on close, repopulated by
-      // reloadZones()+render() above the next time the panel opens.
-      (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
-      (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+    })();
+  };
+  fareZonePanelState.close = () => {
+    // Switching away while actively drawing cancels the draft — the old
+    // standalone toggle button did this on its own second click (there
+    // was no other way back in to see the Finish/Cancel controls again
+    // without losing it); same reasoning, now triggered by the Fares
+    // screen's own tab switch/close instead.
+    if (fareZoneDrawState.isDrawing) {
+      fareZoneDrawState.isDrawing = false;
+      draftPoints = [];
+      updateDraftLayers();
+      render();
     }
-  });
+    panel.style.display = "none";
+    setMenuOpen("fare-zone-drawing", false);
+    // Live user report, 2026-11-01: "when I close the fare zone menu the
+    // zones don't go away" — closing the panel previously only hid the
+    // panel's own DOM, leaving the map's own fill/outline/label layers
+    // showing every zone regardless. Cleared on close, repopulated by
+    // reloadZones()+render() above the next time the panel opens.
+    (map.getSource(ZONES_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+    (map.getSource(TOWN_BORDER_SOURCE_ID) as maplibregl.GeoJSONSource).setData({ type: "FeatureCollection", features: [] });
+  };
 }

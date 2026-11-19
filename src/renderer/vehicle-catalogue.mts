@@ -40,8 +40,29 @@
 // Where VEHICLE-SPECS.md itself doesn't state a figure, this file says so
 // explicitly (`{ kind: "unspecified" }` or a `notes` entry) rather than
 // inventing one — CLAUDE.md's "ask rather than guess."
+//
+// One real import, added 2026-11-19 for `minTopSpeedMphForRoute` below —
+// reuses route-statistics.mts's own real route-vehicle-lock resolution
+// rather than re-deriving it; confirmed no circular import (that file
+// doesn't import from here).
+import { vehicleRequirementBucketForRoute } from "./route-statistics.mts";
 
 export type PowerType = "diesel" | "electric" | "hybrid" | "hydrogen";
+
+// The 5 real broad vehicle classes (VehicleModel.category's own doc comment)
+// as a closed literal union — added 2026-11-13 for the route-level manual
+// vehicle restriction (Q19, OPEN-ITEMS.md): `VehicleModel.category` itself
+// stays a plain `string` (unchanged, to avoid touching every category
+// literal already written across the catalogue below), but a restriction
+// needs a real closed set to validate/compare against rather than "any
+// string the player typed." No 3-value simplification — these are the
+// exact 5 strings already used verbatim throughout this file.
+export type VehicleCategory =
+  | "Double-deckers"
+  | "Specialised (sightseeing, open-top only)"
+  | "Single-deckers / midibuses"
+  | "Minibus"
+  | "Coaches";
 
 export interface EnergyOption {
   label: string;
@@ -108,6 +129,17 @@ export interface LengthVariant {
   // A hydrogen vehicle's fixed buffer battery, alongside its tank options
   // (Kite Hydroliner, StreetDeck Hydroliner) — doesn't vary with tank size.
   bufferBatteryKWh?: number;
+  // Real-world dimensions/weight, in the same units OSM's own maxheight/
+  // maxweight/maxwidth road tags use (metres/tonnes) — added 2026-11-13
+  // for route-vehicle eligibility against real road restrictions
+  // (OPEN-ITEMS.md Q18/Q19). Supplied directly by the user model by
+  // model, a deliberate exception to "vehicle specs last" (CLAUDE.md).
+  // All optional: undefined means no real figure is on record yet for
+  // that axis, not "no restriction" — a vehicle with no figure set never
+  // fails an OSM-limit check on that axis until a real one is supplied.
+  heightM?: number;
+  widthM?: number;
+  weightTonnes?: number;
   // Price relative to the model's own basePriceGBP, on top of whichever
   // power delta already applies — 0 (the default when omitted) everywhere
   // VEHICLE-SPECS.md never varied price by length within one model, a
@@ -138,6 +170,14 @@ export interface VehicleModel {
   priceNote?: string;
   lengths: LengthVariant[];
   notes?: string[];
+  // Hidden from new purchase (OPEN-ITEMS.md T179, confirmed 2026-11-13) —
+  // "keep the data in case it's needed later, only remove it from the
+  // game." Every field stays exactly as real/confirmed as before; this
+  // is the ONLY thing that changes — `findVehicleModel` still resolves
+  // it normally, so an already-owned vehicle of a discontinued model is
+  // completely unaffected. Only the buy-catalogue screen's own listing
+  // filters on this.
+  discontinued?: boolean;
 }
 
 export interface DroppedVehicle {
@@ -177,10 +217,9 @@ export interface GeneralOption {
 }
 
 // §1 general rules worth surfacing directly in a browsable catalogue view
-// (the deeper economic rules — seats as shippable inventory, private hire's
-// +2 seats, the toilet/4-hour rule — are vehicle-level notes instead, since
-// they're facts about specific vehicles rather than catalogue-wide reading
-// aids).
+// (the deeper economic rules — seats as shippable inventory, the
+// toilet/4-hour rule — are vehicle-level notes instead, since they're
+// facts about specific vehicles rather than catalogue-wide reading aids).
 export const GENERAL_RULES = {
   wheelchairSpace:
     "Every vehicle has exactly 1 wheelchair space, always additional to the seated/standing figures below — never included within them.",
@@ -190,14 +229,13 @@ export const GENERAL_RULES = {
   maxSeatingMaxStanding:
     "Where a vehicle publishes a max capacity that isn't max seated + max standing, those are two different configuration modes: max-seating mode fills the remainder with standing to reach max capacity, max-standing mode fills the remainder with seats.",
   batteryUnits: "Battery figures are always kWh (energy capacity), never kW (power).",
-  schoolRunCapacity: "On a school contract, capacity is seated capacity only — no standing passengers are permitted at all.",
 } as const;
 
 // The 3 coach ids — used below for seatbelts' own "free and standard on
 // coaches" rule. Listed explicitly rather than checked against
 // `category === "Coaches"` at price-lookup time, so the override table
 // itself stays a plain data lookup with no vehicle-shape logic inside it.
-const COACH_MODEL_IDS = ["volvo-9700", "volvo-9700dd", "yutong-coach"];
+const COACH_MODEL_IDS = ["volvo-9700", "volvo-9700dd"];
 
 export const GENERAL_OPTIONS: GeneralOption[] = [
   { id: "cctv-cameras", label: "CCTV cameras", selectionType: "standard", appliesTo: "all", effect: "Standard on every vehicle, not optional.", priceKind: "standard" },
@@ -302,12 +340,11 @@ export const GENERAL_OPTIONS: GeneralOption[] = [
     label: "Seatbelts",
     selectionType: "checkbox",
     appliesTo: "all",
-    effect: "Standard on coaches. On other vehicle types, a functional option satisfying school contract eligibility — no satisfaction effect.",
+    effect: "Standard on coaches. On other vehicle types, a purely cosmetic option with no in-game effect.",
     priceKind: "perSeat",
     priceGBP: 90,
     priceOverridesByModelId: Object.fromEntries(COACH_MODEL_IDS.map((id) => [id, 0])),
   },
-  { id: "school-signs", label: "Foldable school signs", selectionType: "checkbox", appliesTo: "all", effect: "Purely functional, satisfies school contract requirements, shown/hidden per journey.", priceKind: "flat", priceGBP: 600 },
   {
     id: "instructor-mirrors",
     label: "Instructor mirrors",
@@ -364,6 +401,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475, priceDeltaGBP: 0 },
           { label: "Smaller tank", capacity: 200, unit: "L", rangeMiles: 350, priceDeltaGBP: -1_125 }, // confirmed worked example, VEHICLE-SPECS.md §2: 75L less x £15/L
         ],
+        heightM: 4.2,
+        widthM: 2.55,
+        weightTonnes: 18,
       },
       {
         lengthM: 10.9,
@@ -374,6 +414,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Smaller tank", capacity: 200, unit: "L", rangeMiles: 350, priceDeltaGBP: -1_125 },
         ],
         priceDeltaGBP: 4_700, // length pricing confirmed 2026-10-18: 0.4m over the 10.5m base, £235,000 x 0.5%/10cm
+        heightM: 4.2,
+        widthM: 2.55,
+        weightTonnes: 18,
       },
       {
         lengthM: 11.5,
@@ -384,6 +427,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Smaller tank", capacity: 200, unit: "L", rangeMiles: 350, priceDeltaGBP: -1_125 },
         ],
         priceDeltaGBP: 11_800, // length pricing confirmed 2026-10-18: 1.0m over the 10.5m base
+        heightM: 4.2,
+        widthM: 2.55,
+        weightTonnes: 18,
       },
       {
         lengthM: 11.1,
@@ -394,6 +440,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Battery (larger)", capacity: 472, unit: "kWh", rangeMiles: 285, priceDeltaGBP: 35_400 }, // 118kWh extra x £300/kWh
         ],
         notes: ["80 seated: 51 upper deck, 29 lower deck.", "Standing figure (18) is estimated/interpolated from the diesel build, not a real confirmed figure."],
+        heightM: 4.2,
+        widthM: 2.55,
+        weightTonnes: 19.5,
       },
     ],
   },
@@ -423,6 +472,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           "The 3 tip-ups trade off against standing space, not adding to the 125-passenger total capacity ceiling.",
           "Tri-axle (>12.9m).",
         ],
+        heightM: 4.2,
+        widthM: 2.55,
+        weightTonnes: 23.2,
       },
     ],
   },
@@ -453,6 +505,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Standard tank", capacity: 245, unit: "L", rangeMiles: 425, priceDeltaGBP: 0 },
           { label: "Smaller tank", capacity: 190, unit: "L", rangeMiles: 330, priceDeltaGBP: -825 }, // confirmed worked example, VEHICLE-SPECS.md §2: 55L less x £15/L
         ],
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 18.6,
       },
       {
         lengthM: 11,
@@ -463,6 +518,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Smaller tank", capacity: 190, unit: "L", rangeMiles: 330, priceDeltaGBP: -825 },
         ],
         priceDeltaGBP: 6_200, // length pricing confirmed 2026-10-18: 0.4m over the 10.6m base, £310,000 x 0.5%/10cm
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 18.6,
       },
       {
         lengthM: 11.5,
@@ -473,12 +531,18 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Smaller tank", capacity: 190, unit: "L", rangeMiles: 330, priceDeltaGBP: -825 },
         ],
         priceDeltaGBP: 14_000, // length pricing confirmed 2026-10-18: 0.9m over the 10.6m base
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 18.6,
       },
       {
         lengthM: 10.7,
         powerType: "electric",
         capacity: { kind: "maxCapacity", maxCapacity: 84, maxSeated: 73, maxStanding: 14 },
         energyOptions: [{ label: "Battery", capacity: 442, unit: "kWh", rangeMiles: 275 }],
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
       {
         lengthM: 10.9,
@@ -486,52 +550,73 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "maxCapacity", maxCapacity: 90, maxSeated: 69, maxStanding: 24 },
         energyOptions: [{ label: "Hydrogen tank (one size only)", capacity: 27, unit: "kg", rangeMiles: 295 }],
         bufferBatteryKWh: 111,
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
     ],
   },
   {
-    id: "adl-enviro400-opentop-diesel",
-    name: "ADL Enviro400 open-top (diesel)",
-    chassis: "Volvo B5TL",
+    // Replaces the ADL Enviro400 open-top (diesel/electric) entries —
+    // dropped 2026-11-13 at the user's own request ("can we drop the ADL
+    // ones please as they were only because I didn't have any others").
+    // Wrightbus's own real open-top StreetDeck is "the exact same specs
+    // and price just without any standing capacity" as the regular
+    // Ultroliner/Electroliner/Hydroliner, so each power reuses its
+    // donor's own length/capacity/energy stats entirely, with standing
+    // dropped to 0 (max capacity becomes max seated). The diesel side
+    // picks the donor length whose seated count sits closest to the
+    // electric/hydrogen seated counts (73/69) rather than its own
+    // shortest length, per the user's own instruction ("as close to the
+    // Electroliner and Hydroliner in capacity as possible even if it
+    // needs a different length picking") — 10.6m (74 seated) beats 11m
+    // (83) and 11.5m (75).
+    id: "wrightbus-streetdeck-opentop",
+    name: "Wrightbus StreetDeck open-top",
     category: "Specialised (sightseeing, open-top only)",
-    powerOptions: [{ powerType: "diesel", priceDeltaGBP: 0 }],
+    powerOptions: [
+      { powerType: "diesel", priceDeltaGBP: 0 },
+      { powerType: "electric", priceDeltaGBP: 0 },
+      { powerType: "hydrogen", priceDeltaGBP: 0 },
+    ],
     topSpeedMph: 50,
     basePriceGBP: null,
-    priceNote: "Priced as its donor vehicle (ADL Enviro400, diesel).",
+    priceNote: "Priced as its donor vehicle (Wrightbus StreetDeck Ultroliner/Electroliner/Hydroliner, by power type).",
     notes: [
-      "Reuses the Enviro400's own diesel 10.9m stats entirely (base capacity, fuel, chassis), except for tour-specific options (tour audio + PA, languages).",
+      "Reuses its donor StreetDeck's own stats entirely at the length below (fuel/battery/hydrogen tank, chassis), except for tour-specific options (tour audio + PA, languages) and standing capacity, which open-top removes.",
       "An open-top conversion costs £10,000 and cannot be undone; only available on vehicles with a defined open-top variant in the catalogue.",
     ],
     lengths: [
+      {
+        lengthM: 10.6,
+        powerType: "diesel",
+        capacity: { kind: "maxCapacity", maxCapacity: 74, maxSeated: 74, maxStanding: 0 },
+        energyOptions: [
+          { label: "Standard tank", capacity: 245, unit: "L", rangeMiles: 425, priceDeltaGBP: 0 },
+          { label: "Smaller tank", capacity: 190, unit: "L", rangeMiles: 330, priceDeltaGBP: -825 },
+        ],
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 18.6,
+      },
+      {
+        lengthM: 10.7,
+        powerType: "electric",
+        capacity: { kind: "maxCapacity", maxCapacity: 73, maxSeated: 73, maxStanding: 0 },
+        energyOptions: [{ label: "Battery", capacity: 442, unit: "kWh", rangeMiles: 275 }],
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 19.5,
+      },
       {
         lengthM: 10.9,
-        powerType: "diesel",
-        capacity: { kind: "seatedStanding", seated: 82, standing: 18 },
-        energyOptions: [{ label: "Standard tank", capacity: 275, unit: "L", rangeMiles: 475 }],
-      },
-    ],
-  },
-  {
-    id: "adl-enviro400-opentop-electric",
-    name: "ADL Enviro400 open-top (electric)",
-    category: "Specialised (sightseeing, open-top only)",
-    powerOptions: [{ powerType: "electric", priceDeltaGBP: 0 }],
-    topSpeedMph: 50,
-    basePriceGBP: null,
-    priceNote: "Priced as its donor vehicle (ADL Enviro400, electric).",
-    notes: [
-      "Reuses the Enviro400's own electric 11.1m stats entirely (base capacity, battery), except for tour-specific options (tour audio + PA, languages).",
-      "An open-top conversion costs £10,000 and cannot be undone; only available on vehicles with a defined open-top variant in the catalogue.",
-    ],
-    lengths: [
-      {
-        lengthM: 11.1,
-        powerType: "electric",
-        capacity: { kind: "seatedStanding", seated: 80, standing: 18 },
-        energyOptions: [
-          { label: "Battery (smaller)", capacity: 354, unit: "kWh", rangeMiles: 215, priceDeltaGBP: 0 },
-          { label: "Battery (larger)", capacity: 472, unit: "kWh", rangeMiles: 285, priceDeltaGBP: 35_400 }, // 118kWh extra x £300/kWh
-        ],
+        powerType: "hydrogen",
+        capacity: { kind: "maxCapacity", maxCapacity: 69, maxSeated: 69, maxStanding: 0 },
+        energyOptions: [{ label: "Hydrogen tank (one size only)", capacity: 27, unit: "kg", rangeMiles: 295 }],
+        bufferBatteryKWh: 111,
+        heightM: 4.395,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
     ],
   },
@@ -554,13 +639,16 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     topSpeedMph: 50,
     basePriceGBP: 165_000,
     lengths: [
-      { lengthM: 8.9, powerType: "diesel", capacity: { kind: "seatedStanding", seated: 30, standing: 14 }, energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 500 }] },
+      { lengthM: 8.9, powerType: "diesel", capacity: { kind: "seatedStanding", seated: 30, standing: 14 }, energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 500 }], heightM: 2.86, widthM: 2.47, weightTonnes: 14.44 },
       {
         lengthM: 9.7,
         powerType: "diesel",
         capacity: { kind: "seatedStanding", seated: 34, standing: 15 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 490 }],
         priceDeltaGBP: 6_600, // length pricing confirmed 2026-10-18: 0.8m over the 8.9m diesel base, £165,000 x 0.5%/10cm
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 14.44,
       },
       {
         lengthM: 10.8,
@@ -568,6 +656,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "seatedStanding", seated: 40, standing: 16 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 475 }],
         priceDeltaGBP: 15_700, // 1.9m over the 8.9m diesel base
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 14.44,
       },
       {
         lengthM: 11.5,
@@ -575,6 +666,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "seatedStanding", seated: 43, standing: 17 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 460 }],
         priceDeltaGBP: 21_400, // 2.6m over the 8.9m diesel base — a genuine round-half-to-even tie (21,450), not round-half-up
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 14.44,
       },
       {
         lengthM: 11.8,
@@ -582,14 +676,20 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "seatedStanding", seated: 43, standing: 17 },
         energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 440 }],
         priceDeltaGBP: 23_900, // 2.9m over the 8.9m diesel base
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 14.44,
       },
-      { lengthM: 9.9, powerType: "electric", capacity: { kind: "seatedStanding", seated: 33, standing: 40 }, energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 300 }] },
+      { lengthM: 9.9, powerType: "electric", capacity: { kind: "seatedStanding", seated: 33, standing: 40 }, energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 300 }], heightM: 2.86, widthM: 2.47, weightTonnes: 17.2 },
       {
         lengthM: 10.9,
         powerType: "electric",
         capacity: { kind: "seatedStanding", seated: 39, standing: 45 },
         energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 285 }],
         priceDeltaGBP: 14_500, // length pricing confirmed 2026-10-18: 1.0m over the 9.9m electric base, £290,000 (165,000 base + 125,000 electric delta) x 0.5%/10cm
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 17.2,
       },
       {
         lengthM: 11.7,
@@ -597,6 +697,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "seatedStanding", seated: 43, standing: 49 },
         energyOptions: [{ label: "Battery", capacity: 400, unit: "kWh", rangeMiles: 270 }],
         priceDeltaGBP: 26_100, // 1.8m over the 9.9m electric base
+        heightM: 2.86,
+        widthM: 2.47,
+        weightTonnes: 17.2,
       },
     ],
   },
@@ -626,6 +729,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "seatedStanding", seated: 38, standing: 62 },
         energyOptions: [{ label: "Standard tank (no options)", capacity: null, unit: "L", rangeMiles: 425 }],
         notes: ["Fuel tank capacity itself not stated in VEHICLE-SPECS.md — only the 425 mile range."],
+        heightM: 3.3,
+        widthM: 2.5,
+        weightTonnes: 19,
       },
       {
         lengthM: 12,
@@ -642,6 +748,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           "Genuinely the most complex vehicle in the catalogue — two battery chemistries, each with multiple sizes.",
           "The 4 priced tiers are given directly (confirmed 2026-10-18), not computed from a flat per-kWh rate — NCA is £300/kWh and LFP £250/kWh, both measured against this 280kWh NCA base, but the LFP figures don't reduce to a plain \"extra kWh × £250\" calculation.",
         ],
+        heightM: 3.3,
+        widthM: 2.5,
+        weightTonnes: 19.5,
       },
     ],
   },
@@ -662,6 +771,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 35, standing: 43 }, bayInUse: { seated: 35, standing: 34 } },
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 990 }],
         notes: ["69 + wheelchair space, or 78 total with the bay converted to standing."],
+        heightM: 3,
+        widthM: 2.55,
+        weightTonnes: 19,
       },
       {
         lengthM: 12.9,
@@ -670,6 +782,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         energyOptions: [{ label: "Standard tank", capacity: 350, unit: "L", rangeMiles: 900 }],
         priceDeltaGBP: 16_300, // length pricing confirmed 2026-10-18: 2.1m over the 10.8m base, £155,000 x 0.5%/10cm
         notes: ["86 total with a wheelchair aboard, or 93 total with the bay converted to standing."],
+        heightM: 3,
+        widthM: 2.55,
+        weightTonnes: 19,
       },
     ],
   },
@@ -699,6 +814,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Battery (smaller)", capacity: 442, unit: "kWh", rangeMiles: 300, priceDeltaGBP: 0 },
           { label: "Battery (larger)", capacity: 528, unit: "kWh", rangeMiles: 365, priceDeltaGBP: 25_800 }, // 86kWh extra x £300/kWh
         ],
+        heightM: 3.38,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
       {
         lengthM: 11.6,
@@ -709,6 +827,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Battery (larger)", capacity: 528, unit: "kWh", rangeMiles: 365, priceDeltaGBP: 25_800 },
         ],
         priceDeltaGBP: 12_200, // length pricing confirmed 2026-10-18: 0.7m over the 10.9m electric base, £350,000 x 0.5%/10cm — a genuine round-half-to-even tie (12,250)
+        heightM: 3.38,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
       {
         lengthM: 12.5,
@@ -719,6 +840,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "Battery (larger)", capacity: 528, unit: "kWh", rangeMiles: 365, priceDeltaGBP: 25_800 },
         ],
         priceDeltaGBP: 28_000, // 1.6m over the 10.9m electric base
+        heightM: 3.38,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
       {
         lengthM: 12.2,
@@ -731,50 +855,12 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         ],
         bufferBatteryKWh: 54,
         notes: ["Fixed length only, unlike the Electroliner's three."],
+        heightM: 3.38,
+        widthM: 2.52,
+        weightTonnes: 19.5,
       },
     ],
   },
-  {
-    // Merges the old separate "Yutong E10" and "Yutong E12" entries —
-    // confirmed with the user 2026-10-18, after their own length-pricing
-    // note referred to "Yutong E10/E12" as one priced pair (E10 the base,
-    // E12 a real +£19,500 for the extra length) rather than two
-    // independently flat-priced models, the way Enviro400/200 etc. were
-    // merged by power earlier the same day. Both keep their own real,
-    // genuinely different capacity figures.
-    id: "yutong-e10-e12",
-    name: "Yutong E10/E12",
-    category: "Single-deckers / midibuses",
-    powerOptions: [{ powerType: "electric", priceDeltaGBP: 0 }],
-    topSpeedMph: 50,
-    basePriceGBP: 300_000,
-    lengths: [
-      {
-        lengthM: 10.9,
-        powerType: "electric",
-        capacity: { kind: "seatedStanding", seated: 29, standing: 37, tipUps: 4 },
-        energyOptions: [
-          { label: "Battery (smaller)", capacity: 350, unit: "kWh", rangeMiles: 230, priceDeltaGBP: 0 },
-          { label: "Battery (larger)", capacity: 422, unit: "kWh", rangeMiles: 275, priceDeltaGBP: 21_600 }, // 72kWh extra x £300/kWh
-        ],
-        notes: ["E10. Standing figure worked out from a max capacity of 70 minus seats and tip-ups."],
-      },
-      {
-        lengthM: 12.2,
-        powerType: "electric",
-        capacity: { kind: "seatedStanding", seated: 34, standing: 31, tipUps: 5 },
-        energyOptions: [
-          { label: "Battery (smaller)", capacity: 350, unit: "kWh", rangeMiles: 225, priceDeltaGBP: 0 },
-          { label: "Battery (larger)", capacity: 422, unit: "kWh", rangeMiles: 275, priceDeltaGBP: 21_600 }, // 72kWh extra x £300/kWh
-        ],
-        // Length pricing (confirmed 2026-10-18): 1.3m (13 x 10cm) over the
-        // E10's own 10.9m base, at £300,000 x 0.5%/10cm = £19,500.
-        priceDeltaGBP: 19_500,
-        notes: ["E12. Standing figure worked out from a max capacity of 70 minus seats and tip-ups."],
-      },
-    ],
-  },
-
   // --- Minibus ---
   {
     // Merges the old separate "Mercedes-Benz Sprinter/EVM Cityline
@@ -806,8 +892,10 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
         notes: [
           "No standing capacity at all (confirmed by the user) — a fixed seat folds away to make room when the wheelchair bay is occupied, rather than trading against standing space.",
-          "Used only for private hire work (confirmed by the user) — private hire's own +2-seat rule (§1) applies via the same seats-as-shippable-inventory system, not yet built.",
         ],
+        heightM: 2.703,
+        widthM: 2.02,
+        weightTonnes: 5.5,
       },
       {
         lengthM: 7.4,
@@ -815,6 +903,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         variantLabel: "Low floor",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 8 }, bayInUse: { seated: 16, standing: 4 } },
         energyOptions: [{ label: "Standard tank", capacity: 93, unit: "L", rangeMiles: 350 }],
+        heightM: 2.703,
+        widthM: 2.02,
+        weightTonnes: 5.5,
       },
       {
         lengthM: 7.4,
@@ -824,8 +915,10 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
         notes: [
           "No standing capacity at all (confirmed by the user) — a fixed seat folds away to make room when the wheelchair bay is occupied, rather than trading against standing space.",
-          "Used only for private hire work (confirmed by the user) — private hire's own +2-seat rule (§1) applies via the same seats-as-shippable-inventory system, not yet built.",
         ],
+        heightM: 2.703,
+        widthM: 2.02,
+        weightTonnes: 5.9,
       },
       {
         lengthM: 7.4,
@@ -833,6 +926,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         variantLabel: "Low floor",
         capacity: { kind: "wheelchairBayDependent", bayConverted: { seated: 16, standing: 8 }, bayInUse: { seated: 16, standing: 4 } },
         energyOptions: [{ label: "Battery", capacity: 115, unit: "kWh", rangeMiles: 190 }],
+        heightM: 2.703,
+        widthM: 2.02,
+        weightTonnes: 5.9,
       },
     ],
   },
@@ -862,6 +958,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
           { label: "InterCity tank", capacity: 600, unit: "L", rangeMiles: 1125, priceDeltaGBP: 1_800 }, // 120L extra x £15/L
         ],
         notes: ["Twin-axle (≤12.9m)."],
+        heightM: 3.65,
+        widthM: 2.55,
+        weightTonnes: 23.7,
       },
       {
         lengthM: 13.1,
@@ -878,6 +977,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         // twin-axle (12.4m base) to tri-axle (13.1m, >12.9m) here.
         priceDeltaGBP: 10_200,
         notes: ["Tri-axle (>12.9m) — seated capacity doesn't vary further by the specific tri-axle length."],
+        heightM: 3.65,
+        widthM: 2.55,
+        weightTonnes: 23.7,
       },
       {
         lengthM: 13.9,
@@ -889,6 +991,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         ],
         priceDeltaGBP: 21_800, // 1.5m over the 12.4m base (axle charge applied dynamically, see 13.1m's own note)
         notes: ["Tri-axle (>12.9m)."],
+        heightM: 3.65,
+        widthM: 2.55,
+        weightTonnes: 30.7,
       },
       {
         lengthM: 15,
@@ -900,6 +1005,9 @@ export const VEHICLE_MODELS: VehicleModel[] = [
         ],
         priceDeltaGBP: 37_700, // 2.6m over the 12.4m base (axle charge applied dynamically, see 13.1m's own note)
         notes: ["Tri-axle (>12.9m)."],
+        heightM: 3.65,
+        widthM: 2.55,
+        weightTonnes: 30.7,
       },
     ],
   },
@@ -915,53 +1023,16 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       "Both lengths are tri-axle.",
     ],
     lengths: [
-      { lengthM: 13, powerType: "diesel", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }] },
+      { lengthM: 13, powerType: "diesel", capacity: { kind: "seatedOnly", seated: 75 }, energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 1080 }], heightM: 4, widthM: 2.5, weightTonnes: 26.5 },
       {
         lengthM: 14.8,
         powerType: "diesel",
         capacity: { kind: "seatedOnly", seated: 81 },
         energyOptions: [{ label: "Standard tank", capacity: 690, unit: "L", rangeMiles: 980 }],
         priceDeltaGBP: 37_800, // length pricing confirmed 2026-10-18: 1.8m over the 13m base, £420,000 x 0.5%/10cm — no axle charge, both lengths already tri-axle
-      },
-    ],
-  },
-  {
-    id: "yutong-coach",
-    name: "Yutong coach",
-    category: "Coaches",
-    powerOptions: [{ powerType: "electric", priceDeltaGBP: 0 }],
-    topSpeedMph: 62,
-    basePriceGBP: 310_000,
-    notes: ["One buying menu entry with a length dropdown selecting between two real models (GTe12 / GTe14)."],
-    lengths: [
-      {
-        lengthM: 12,
-        powerType: "electric",
-        capacity: { kind: "seatedOnly", seated: 50 },
-        energyOptions: [
-          { label: "GTe12 battery (smaller)", capacity: 399, unit: "kWh", rangeMiles: 320, priceDeltaGBP: 0 },
-          { label: "GTe12 battery (larger)", capacity: 465, unit: "kWh", rangeMiles: 370, priceDeltaGBP: 19_800 }, // 66kWh extra x £300/kWh
-        ],
-        notes: ["GTe12, twin-axle."],
-      },
-      {
-        lengthM: 14,
-        powerType: "electric",
-        capacity: { kind: "seatedOnly", seated: 57 },
-        // 14m is the real GTe14 length (confirmed over the pricing note's
-        // own 15m, which was approximate). The note's +£61,500 figure was
-        // priced for that wrong 15m length, so it doesn't apply here — this
-        // is the standard formula applied fresh to the real 2m difference:
-        // 20 x 10cm segments x 0.5% x £310,000 base = £31,000 raw, no
-        // rounding tie. priceFor() adds the +£15,000 tri-axle crossing
-        // charge on top of this at render/purchase time (12m base is
-        // twin-axle, 14m is tri-axle), same as every other coach length.
-        priceDeltaGBP: 31_000,
-        energyOptions: [
-          { label: "GTe14 battery (smaller)", capacity: 621, unit: "kWh", rangeMiles: 335, priceDeltaGBP: 0 },
-          { label: "GTe14 battery (larger)", capacity: 704, unit: "kWh", rangeMiles: 380, priceDeltaGBP: 24_900 }, // 83kWh extra x £300/kWh
-        ],
-        notes: ["GTe14, tri-axle."],
+        heightM: 4,
+        widthM: 2.5,
+        weightTonnes: 26.5,
       },
     ],
   },
@@ -969,6 +1040,49 @@ export const VEHICLE_MODELS: VehicleModel[] = [
 
 export function findVehicleModel(id: string): VehicleModel | undefined {
   return VEHICLE_MODELS.find((v) => v.id === id);
+}
+
+// Real max-speed cap for a route's own feasibility check, added
+// 2026-11-19 (live request: "Each vehicle should have a max speed" —
+// refined, 2026-11-19 same day, to "Each vehicle should have its own
+// limit as some are different, we will go through later": `topSpeedMph`
+// (above) is already a genuine per-model field, not a shared category
+// lookup, so a later per-model correction needs no architecture change
+// here — this function already reads each model's own real value).
+//
+// Journey timing is derived from a route's own real running time
+// (route-timetable.mts's `computeOffsets`, fed by `legTimesSeconds` from
+// the WASM router), shared by whichever vehicle happens to run that
+// journey — there's still no real vehicle-to-journey assignment system
+// (this codebase's own long-standing, repeatedly-flagged gap). So "a
+// vehicle can't exceed its own max speed" can't mean capping live
+// animation per vehicle; it means the route's own published running time
+// must never imply an average speed faster than every vehicle actually
+// eligible to run it could physically achieve — checked once, at the
+// route level, using whichever real vehicle-type/livery lock already
+// restricts that route (the same real lock `vehicleRequirementBucketForRoute`,
+// route-statistics.mts, already resolves for the vehicle-requirement
+// panel — reused here rather than re-deriving the lock rules a second
+// time). An unrestricted route (no real lock) conservatively uses the
+// slowest model in the WHOLE catalogue, since any model could end up
+// running it.
+export function minTopSpeedMphForRoute(routeNumber: string, liverySpecificRoute: Readonly<Record<string, string>>): number {
+  const bucket = vehicleRequirementBucketForRoute(routeNumber, liverySpecificRoute);
+  let eligible: readonly VehicleModel[];
+  if (bucket === "Coaches") {
+    eligible = VEHICLE_MODELS.filter((v) => v.category === "Coaches");
+  } else if (bucket.includes("ScotRail")) {
+    eligible = VEHICLE_MODELS.filter((v) => v.category === "Single-deckers / midibuses");
+  } else {
+    eligible = VEHICLE_MODELS;
+  }
+  // Can't be empty in practice (every real bucket has at least one real
+  // model in its category) — falls back to the whole catalogue's own
+  // minimum rather than throwing, same "can't do it sensibly, don't
+  // fake it, but don't crash either" convention used throughout this
+  // codebase.
+  const pool = eligible.length > 0 ? eligible : VEHICLE_MODELS;
+  return Math.min(...pool.map((v) => v.topSpeedMph));
 }
 
 export function vehicleModelsByCategory(): Map<string, VehicleModel[]> {
@@ -1016,6 +1130,25 @@ export function axleCountForLength(lengthM: number): "twin-axle" | "tri-axle" {
 // length list a configurator shows once a power is chosen.
 export function lengthsForPower(vehicle: VehicleModel, powerType: PowerType): LengthVariant[] {
   return vehicle.lengths.filter((l) => l.powerType === powerType);
+}
+
+// T179 (OPEN-ITEMS.md, confirmed 2026-11-13) — which power(s) an owned
+// vehicle could be RE-POWERED to: electric/hydrogen LengthVariant rows
+// already defined on this exact model at its exact current length. A
+// re-power never changes model or length, only power (and the selected
+// general options) — confirmed directly, so this is the full eligibility
+// check on the catalogue side (the vehicle's own age/condition gate is
+// separate, see repower-booking.mts). Most models have no such variant
+// yet, pending the later full spec-population pass across the whole
+// Q15-Q22 backlog — that's the expected, correct state, not a gap to
+// work around here.
+export function repowerTargetsFor(vehicle: VehicleModel, currentLengthM: number): PowerType[] {
+  // Deduped — a model can carry more than one LengthVariant row at the
+  // same length/power (different variantLabels, e.g. evm-cityline's
+  // Stepped-entrance/Low-floor split), which would otherwise produce the
+  // same target power twice.
+  const powers = vehicle.lengths.filter((l) => l.lengthM === currentLengthM && (l.powerType === "electric" || l.powerType === "hydrogen")).map((l) => l.powerType);
+  return [...new Set(powers)];
 }
 
 // The real price for this exact model/length/power combination — base

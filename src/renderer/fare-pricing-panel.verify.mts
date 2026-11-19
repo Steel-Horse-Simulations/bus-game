@@ -51,6 +51,7 @@ function route(routeType: RouteType, depotGroupId = 1): Route {
     colour: "#000000",
     name: null,
     pickupDropoffOverrides: [],
+    timingPointIndexes: [],
     parentRouteId: null,
     variationLetter: null,
     composedFromRouteIds: [],
@@ -60,6 +61,7 @@ function route(routeType: RouteType, depotGroupId = 1): Route {
     isMinorVariation: false,
     assignedLiveryId: null,
     useBrandedColour: false,
+    vehicleRestrictions: { baseType: null, powerType: null, axleCount: null, liveryId: null },
   };
 }
 

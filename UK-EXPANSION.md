@@ -152,7 +152,7 @@ shortfall. Purely informational, doesn't block activation.
 ## 7. Mandatory regional/national liveries (9 total)
 
 Two exemption patterns, plus one universal addition:
-- **STANDARD**: long distance and private hire vehicles exempt
+- **STANDARD**: long distance vehicles exempt
 - **NONE**: every vehicle must comply, no exceptions
 - **UNIVERSAL**: sightseeing services are exempt from EVERY mandatory
   livery in this table, regardless of which pattern it otherwise
@@ -172,7 +172,7 @@ fined for every service run in the wrong livery.
 | Isle of Man | Bus Vannin | Whole island | NONE |
 | Isle of Wight | Southern Vectis | Whole island | NONE |
 | Bristol + Bath | WESTbus | Depot-based | Standard |
-| Wales (all depots based there) | TrawsCymru | Depot-based | Long distance exempt; private hire NOT exempt (opposite emphasis from every other entry) |
+| Wales (all depots based there) | TrawsCymru | Depot-based | Standard |
 | Plymouth + Cornwall | Transport for Cornwall | Depot-based | Standard |
 
 Manchester and London went through two reversals (depot-based →
@@ -253,7 +253,7 @@ placeholder in §7):**
   non-TfL livery if **less than 40%** of its route mileage is within
   Zone 6 specifically (this 40% test applies to Zone 6 only, not to
   Zones 1-5).
-- Exemptions: long distance, private hire, and sightseeing (standard
+- Exemptions: long distance and sightseeing (standard
   pattern + the universal sightseeing exemption, §7).
 - **Export direction, new rule**: a TfL-liveried bus moved to operate
   OUTSIDE the zones entirely CANNOT keep TfL livery — must be repainted.
@@ -341,7 +341,7 @@ Railair, not a single fixed contract like AIR (DESIGN.md §10).
 - **Its own livery**, supplied by the user — use a placeholder badge until
   then. **Railair can only run in this livery, and this livery can only run
   on Railair** — a two-way exclusive lock, not the one-way vehicle locks
-  Citylink/Ember/MegaBus already have (`livery-seed-data.mts`).
+  Citylink/MegaBus already have (`livery-seed-data.mts`).
 - **Needs luggage racks** (airport-spec conversion, VEHICLE-SPECS.md's own
   "Seats and luggage racks are shippable inventory" system) **and comfier
   seats**, the same equipment AIR and Express 500 already require
@@ -478,170 +478,70 @@ local network rather than one route.
   majority (confirmed — even the smaller commercial minority gets the
   same real-fixed-content treatment, for consistency across the island).
 - Each service uses its **real route number, real path/stops, and real
-  timetable** — including real **school** timetable variations and real
-  **seasonal** variations (§12), all sourced from actual data rather than
-  generated.
-- **School service exception, Skye-specific only:** Skye's school
-  services do NOT use the general S-prefix convention (§ elsewhere in
-  this spec) — they keep their real actual route numbers, since this is
-  genuine fixed real-world data rather than a game-generated school
-  route. This does NOT change the S-prefix system anywhere else in the
-  game — it's a one-island carve-out.
+  timetable** — including real **seasonal** variations (§12), all
+  sourced from actual data rather than generated.
 - **Livery:** Skye already has its own established dedicated livery,
   "Rapsons" (bus-game-fare-caps-and-airports-2.md) — **confirmed still
   required**, unchanged in this real-fixed-content context.
-- **Route list confirmed (15 routes) — timetables pending, arriving one
+- **Route list confirmed (7 routes) — timetables pending, arriving one
   at a time as they're downloaded.** ~~Route 54~~ was on the original
   list in error — it doesn't exist; it was replaced by 607 in the real
-  world, so 607 covers that corridor now. **Route 150 was missed off the
-  original list** and has since been added — a real, separate route.
-  Track receipt of each route's real timetable (base + school + seasonal
-  variants) here:
+  world (see 608's own note below for where that corridor ended up).
+  Routes 157 and 158 (Portree primary-school interchange shuttles) have
+  since been dropped from scope entirely — school-run content and the
+  mechanics it depended on (term-time timetable splits, the Portree High
+  School wait/departure-order interchange) were dropped from the game,
+  2026-11-08, leaving 157/158 with no real-world service left to model.
+  **Routes 150, 152, 155, 159 and 56X were dropped from scope by the
+  user's own decision, 2026-11-08** — each was a through-running/linked
+  appendage, or (56X) a short branch off another kept route, rather than
+  a self-contained service worth the real-content treatment on its own.
+  **Route 607 was folded into 608 as one of its own shorter workings,
+  not kept as a separate route** (same decision) — see 608's own entry
+  below. Track receipt of each remaining route's real timetable (base +
+  seasonal variants) here:
 
   | Route | Timetable received? |
   |---|---|
-  | 52 *(through-runs with 152 — see below)* | ✅ received, format understood |
+  | 52 | ✅ received, format understood |
   | 55 | ✅ received, format understood |
   | 56 | ✅ received, format understood |
-  | 56X | ✅ received, format understood |
   | 57A *(genuinely distinct from 57C, not a variation; Summer timetable only so far)* | ✅ received, format understood |
   | 57C *(genuinely distinct from 57A, not a variation; Summer timetable only so far)* | ✅ received, format understood |
   | 58 | ✅ received, format understood |
-  | 150 *(through-runs with 155/158 — see below)* | ✅ received, format understood |
-  | 152 *(term-time only; through-runs with 52 — see below)* | ✅ received, format understood |
-  | 155 *(through-runs with 150/158 — see below)* | ✅ received, format understood |
-  | 157 | ✅ received, format understood |
-  | 158 *(through-runs with 155/150 — see below)* | ✅ received, format understood |
-  | 159 *(term-time only, confirmed in advance)* | ✅ received, format understood |
-  | 607 *(duty-linked with 608 — see below)* | ✅ received, format understood |
-  | 608 *(duty-linked with 607 — see below)* | ✅ received, format understood |
+  | 608 *(includes 607's own shorter working — see below)* | ✅ received, format understood |
 
-  **ALL 15 ROUTES NOW RECEIVED.** Remaining open items before this
-  section is fully closed: the second Portree-High-Square-bound bus's
-  identity and the full Portree High departure order (user said they'd
-  give this once all timetables were in — worth asking now); confirming
-  Skye's "Rapsons" livery still applies unchanged in this real-content
-  context; building all 15 routes' real stop geometry in-game before
-  timetables can be coded in.
-- **Term-time-only routes, running tally:** 607, 150, 155, 152, 157, 158
-  and 159 all run zero service during Highland school holidays (152 and
-  159 confirmed in advance, ahead of receiving their timetables).
-- **Duty linking:** 607 and 608 must be linked when building driver/vehicle
-  duties (a bus/driver can work between the two across a shift) — this
-  pair is otherwise completely separate from the other 12 routes. This is
-  the first confirmed case of the "some services link onto other
-  services" linking the user flagged earlier; more such links may be
-  confirmed for the remaining routes once all timetables are in.
-- **Primary school buses + public-access exception:** Skye also runs
-  dedicated primary-school buses, distinct from the secondary/high-school
-  angle already seen on 608. Confirmed so far:
-  - 608's school-run journeys are fully covered by the two already
-    identified (0848, 1510) — nothing further needed there.
-  - Route 55 (not yet received) will have 2 services that double as
-    school runs.
-  - **157 and 158 are exclusively primary school buses** — their entire
-    service is school-run, unlike 607/608 which mix school and general
-    journeys.
-  - **General rule: every Skye service is open to the public, even
-    journeys flagged as school runs** (608's 0848/1510, all of 607) —
-    **except 157 and 158**, which are closed/restricted to primary
-    school pupils only. This is the one access exception on the island.
-  - Other primary-school runs elsewhere on Skye typically carry only 2-3
-    students each — confirmed this needs no special vehicle/mechanic
-    treatment, just noted as real low demand.
-- **Routes 52 & 152 received (Portree - Armadale, Stagecoach North
-  Scotland) — linked like 150/155:**
-  - 52 and 152 are linked the same way as 150/155 (same bus continues
-    from one to the other).
-  - Together, 52 and 152 are run by just ONE bus and driver all day.
-  - **Partial reveal of the Portree High School departure order:** most
-    buses waiting at Portree High terminate there — only 2 continue on
-    to Portree Somerled Square. 152's AM working (arrives High School
-    0837, continues to the Square 0844) is one of those 2, and happens
-    to be the one that leaves first once the waiting group starts moving
-    off (not a separate priority rule, just the order it occurs in) —
-    **the second Square-bound "bus" identified: it's not a distinct
-    scheduled working like 152's, it's the 57C (the one that came from
-    Flodigarry via the 57A→57C link) returning to the Square as a
-    shuttle bus, not a proper timetabled service** — matches the
-    earlier-established mechanic of passengers changing onto the 52 or
-    the 57C-shuttle to reach the Square.
-  - **52 is NOT term-time-only** — it has a genuine unlabelled
-    (runs-regardless-of-term-time) service plus NSCH and Friday-only
-    journeys, unlike 152 which IS fully term-time-only (matches the
-    152/157/158/159 school-days-only rule already stated).
+  **ALL 7 ROUTES NOW RECEIVED.** Remaining open items before this
+  section is fully closed: confirming Skye's "Rapsons" livery still
+  applies unchanged in this real-content context; building all 7
+  routes' real stop geometry in-game before timetables can be coded in;
+  608's own shorter (ex-607) working still needs its real departure times
+  re-sourced, since the original 607/608 material was almost entirely
+  bound up in school-run timetable splits that no longer apply.
+- **Route 52 received (Portree - Armadale, Stagecoach North Scotland):**
   - **Seasonal/Summer timetable — fully confirmed:**
     - **Operative date range:** always starts on the **3rd Monday of May**
       and always ends on the **2nd Saturday of September**, every year —
       a simplified rule, not the PDF's literal printed dates (18 May – 12
       Sept 2026 is just what that rule works out to for this year) and
       not the earlier-stated "first Monday of May" (imprecise).
-    - **Outbound (Portree Square → Armadale Pier), 6 columns:**
-      1. 0905 — base timetable, every Mon-Fri, all year round.
-      2. 1105 (first) — school holidays only, every day Mon-Fri.
-      3. 1105 (second) — school days only, Monday-Thursday (not Friday).
-      4. 1330 — school holidays only, every day Mon-Fri.
-      5. 1545 (first) — Fridays only, school days only.
-      6. 1545 (second) — every day Mon-Fri, school holidays only.
-    - **Return (Armadale Pier → Portree Square), 5 main columns:**
-      1. 1035 — base timetable, every Mon-Fri, all year round.
-      2. 1235 (first) — Monday-Friday, school holidays.
-      3. 1235 (second) — Monday-Thursday, school days.
-      4. 1505 — Monday-Friday, school holidays.
-      5. 1710 — base timetable, every Mon-Fri, all year round.
-    - Plus a separate **6th return-only short working**: dep New
-      Broadford Hospital 0805 → arr Portree Square 0843 (no
-      Armadale-originating counterpart) — school holidays only,
-      Monday-Friday.
+    - **Outbound (Portree Square → Armadale Pier), every Mon-Fri,
+      year-round:** 0905, 1105, 1330, 1545.
+    - **Return (Armadale Pier → Portree Square), every Mon-Fri,
+      year-round:** 1035, 1235, 1505, 1710.
+    - Plus a separate short working: dep New Broadford Hospital 0805 →
+      arr Portree Square 0843, Monday-Friday (no Armadale-originating
+      counterpart).
     - **Saturday: the entire Saturday 52 service (all 3 outbound times
       0905/1230/1545 and their returns) is a summer-only addition**, not
       part of the base timetable at all.
-    - The confirmed "2 extra summer weekday services run by a different
-      Portree driver/bus, not part of the regular 52/152 duty" = the
-      Sch/Mon-Thu pair specifically (outbound 1105-second + return
-      1235-second) — matches the user's original description "the extra
-      1105 and 1235 school day not Friday services" exactly.
-    - Working interpretation (consistent, not separately challenged): all
-      other Summer-only journeys (the #Sch/holiday-flagged columns, and
-      the Friday-only 1545/Sch pair) are extra round trips run by the
-      SAME regular single 52/152 duty — freed up during school holidays
-      since no 152 school-run duty is needed then. Only the Mon-Thu 1105/
-      1235 pair needs a genuinely separate driver/bus.
-- **NEW ROUTE 150 discovered (Kyle of Lochalsh - Broadford, Stagecoach
-  North Scotland) — through-running chain with 155 and 158 confirmed:**
-  - 150 was missed off the original 15-route list — a real, separate
-    route, now added.
-  - **Confirmed chain (cross-checked against both timetables, times line
-    up exactly):** AM — 150 departs Kyle of Lochalsh 0733, arrives
-    Broadford 0759, the SAME BUS becomes the 155 departing Broadford 0801,
-    arriving Portree High School 0840, then becomes the 158 onward to
-    Portree Primary School. PM — mirror image, two workings: the 155
-    departs Portree High School (1320 a,SCH or 1550 b,SCH), arrives
-    Broadford (1400/1630), becomes the 150 departing Broadford
-    (1401/1631), arriving Kyle of Lochalsh (1421/1651).
-  - This resolves 158's link partner (see above): it's the 155, which
-    links onward to 150. 157 and 158 have genuinely different partners
-    (157->56, 158->155->150), as previously stated.
-  - **Through-ticketing:** customers don't change buses on this chain and
-    can buy a single ticket from Kyle of Lochalsh to Portree High School
-    (and reverse), despite it formally being 3 different route numbers.
-  - **Confirmed: 150 and 155 are also fully term-time-only**, zero
-    service during Highland school holidays — same pattern as 607.
-  - Footnote polarity: a = Fridays only, b = not Fridays (matches the
-    607/56/56X/157/158 family, opposite of 55's).
 - **Route 55 (Kyle of Lochalsh - Glasnakille, Stagecoach North Scotland)
   received.** Confirmed details (as described by the user, not
   independently re-derived from the raw PDF grid — exact minute-by-minute
   times to be confirmed once the route is built in-game):
-  - Three named school-run variations: the 0801 SCH journey diverts via
-    Broadford Primary School for an extra bit of route (school-run only),
-    resuming as a regular service afterwards; the 1455 a,SCH journey
-    diverts via Broadford Primary for 1 stop only, otherwise matching the
-    main route; the 1215 b,SCH journey is a school run for the entire
-    route, start to end (not partial).
-  - **Footnote polarity flips again**: on 55, "a" = does not run Fridays,
-    "b" = only runs Fridays — the *opposite* of 607. Confirms (a third
-    time) that a/b meaning is never fixed and must be read per-route.
+  - **Footnote polarity**: on 55, "a" = does not run Fridays, "b" = only
+    runs Fridays — confirms a/b meaning is never fixed and must be read
+    per-route, not assumed to match any other route's own convention.
   - Route 55 is self-contained — 1 bus and 1 driver cover it all day.
   - **Minibus requirement:** routes 55, 58 and 608 must all be operated
     with minibuses specifically, not full-size buses — **confirmed to
@@ -683,26 +583,25 @@ local network rather than one route.
     terminating here simply disappear from the map (no parking/facility
     representation needed).
   - **Route gating confirmed so far:**
-    - 607 and 608: no outstation gating — only need enough vehicles owned.
-    - 55, 52, 152, 155, 158: locked until Broadford Yard is rented/bought.
-    - 56 and 56X: locked until Lonmore is rented — **except** the 56's
-      runs to/from Bernisdale, which operate out of Portree and so are
-      NOT locked (only the rest of 56, plus all of 56X, needs Lonmore).
-    - Not yet stated: gating for 57A, 57C, 157, 159 — pending. (58 never
-      leaves Portree — see below — so likely needs no outstation gating,
-      but this hasn't been explicitly confirmed by the user yet.)
+    - 608: no outstation gating — only needs enough vehicles owned.
+    - 55, 52: locked until Broadford Yard is rented/bought.
+    - 56: locked until Lonmore is rented — **except** the 56's runs
+      to/from Bernisdale, which operate out of Portree and so are NOT
+      locked (only the rest of 56 needs Lonmore).
+    - Not yet stated: gating for 57A, 57C — pending. (58 never leaves
+      Portree — see below — so likely needs no outstation gating, but
+      this hasn't been explicitly confirmed by the user yet.)
 - **Route 58 (Portree town service, Stagecoach North Scotland) received
   — simple, fully confirmed:**
-  - A pure Portree town circular, NOT school-related (no SCH/NSCH labels
-    at all): Broom Place Depot → Dental Surgery (3 min) → Somerled Sq
-    (8) → Skye Candles Visitor Centre (13) → Somerled Sq again (17) →
-    Martin Cr (20) → Somerled Sq again (22) → Dental Surgery (29) →
-    Broom Place Depot (32) — a genuine loop passing through Somerled
-    Square three times per circuit.
+  - A pure Portree town circular: Broom Place Depot → Dental Surgery (3
+    min) → Somerled Sq (8) → Skye Candles Visitor Centre (13) → Somerled
+    Sq again (17) → Martin Cr (20) → Somerled Sq again (22) → Dental
+    Surgery (29) → Broom Place Depot (32) — a genuine loop passing
+    through Somerled Square three times per circuit.
   - Hourly Mon-Fri departures: **0915, 1015, 1115, 1215, 1315(a),
     1415(a)**. Footnote a = does not run on Fridays, applying
-    to the 1315 and 1415 departures (matches the 607/56/56X/157/158/150/
-    152/155 a-polarity family). **No Saturday or Sunday service at all.**
+    to the 1315 and 1415 departures (matches 56's own a-polarity
+    pattern). **No Saturday or Sunday service at all.**
   - **Confirmed: "Broom Place Depot" IS Portree Depot** (Plus Code
     CQCQ+4V) — same physical depot, Broom Place is just its street name.
   - Needs a **Mercedes Sprinter** (see minibus requirement above).
@@ -724,45 +623,18 @@ local network rather than one route.
     IGNORED entirely and the c-flagged journey's times are used for
     Monday and Wednesday too (c becomes the Mon-Thu standard). 57C has
     no such split at all, so the override has no effect there.
-  - **School-run identification rule:** any journey that stops at
-    "Portree, o/s High School" (distinct from Somerled Square) is a
-    school service — not the SCH flag alone.
-  - **57A school runs (4):** 0810 SCH (short working from Uig only); 0655
-    SCH (full-loop-via-Kilmuir working, paired with an 0655 NSCH holiday
-    equivalent); 1550 c,SCH (→ Mon-Thu standard per the override); 1320
-    a,SCH (Fridays only).
-  - **57C school runs:** 0751 SCH — becomes a shuttle FROM the school TO
-    Portree Square, then the SAME bus goes on to run the 0910 57A; 0751
-    NSCH — holiday equivalent (no shuttle needed, waits at the Square,
-    still continues to the 0910 57A); 1320 b,SCH (Fri only) — a
-    complementary pair, one working TO Uig (drop-off only throughout) and
-    one TO Portree (pick-up only until Uig Pier, then normal); 1550
-    a,SCH (Mon-Thu) — the same complementary pair pattern (TO Uig
-    drop-off-only / TO Portree pick-up-only-until-Uig then normal).
   - **Duty-linking chain confirmed, same-bus continuity both ways round
     the loop:**
     - **57A → 57C at Flodigarry** (any 57A reaching Flodigarry always
-      turns and continues as a 57C): 0705 (Mon-Fri) → 0751 (splits
-      SCH/NSCH by term); 0730 (Sat) → 0811 (Sat); 1755 (Mon-Sat) → 1840
-      (Mon-Sat).
+      turns and continues as a 57C): 0705 (Mon-Fri) → 0751; 0730 (Sat) →
+      0811 (Sat); 1755 (Mon-Sat) → 1840 (Mon-Sat).
     - **57C → 57A at Uig Pier** (any 57C terminating at Uig Pier always
       continues as a 57A from Uig): 0630 (Mon-Sat) → 0700 (Mon-Sat); 0740
-      (SCH) → 0810 (SCH); 1320 b,SCH (Fri) → 1400 a,SCH (Fri); 1550 a,SCH
-      (not-Fri) → 1630 d,SCH (not-Fri).
+      → 0810; 1320 (Fri) → 1400 (Fri); 1550 (not-Fri) → 1630 (not-Fri).
   - **Not all services go via Portree Co-op** — confirmed: an early
     working (Uig Pier 0700 → Uig E Police 0702 → Kensaleyre 0716 →
     Somerled Square 0726) skips Co-op and the second Portree High stop
     entirely.
-  - **Returning Uig school buses (57A) terminate at Portree Co-op, NOT
-    Somerled Square** — same pattern noted for 56's Bernisdale afternoon
-    school runs (added above).
-  - **Pick-up/drop-off split between the two overlapping 57A morning
-    school workings — fully resolved:** Uig → Kensaleyre: full-loop bus =
-    drop-off only, Uig bus = pick-up only. Kensaleyre → Portree: roles
-    swap — Uig bus becomes drop-off only, full-loop bus becomes normal
-    pick-up AND drop-off. Net effect: at every stop on the corridor, at
-    least one of the two buses is always available to pick up — it just
-    alternates which one, switching over at Kensaleyre.
   - **Saturday is seasonal — two different Saturday timetables:**
     Monday-Friday is identical winter and summer. The already-received
     Saturday table (57A: 0655/0730/0910/1210/1550/1755; 57C:
@@ -779,41 +651,6 @@ local network rather than one route.
       to a 57C) — it must instead be constructed by taking Summer
       Saturday's **1550 full-loop** timing pattern and adding **exactly
       2 hours 5 minutes to every timing point**.
-- **Route 159 (Portree - Peinchorran via Lower Ollach/Braes) received —
-  LAST of the 15 Skye routes, fully resolved:**
-  - No proper PDF exists for this one — user typed the timetable out by
-    hand. Term-time only (school days only, zero service in Highland
-    school holidays), no Saturday or Sunday service at all.
-  - **Structure:** at each end of the day, the SAME bus/driver runs a
-    "not school bus" leg immediately followed by a "school bus" leg
-    reversing direction back toward Portree High (mirror image in the
-    afternoon) — same-bus/same-driver duty continuity, with a consistent
-    **5-minute layover at Peinchorran** between the two legs every time.
-  - **"School bus" vs "not school bus" is NOT a public-access
-    restriction** — all school runs on Skye are open to the public
-    (matches the general rule already established); it's purely a
-    demand-modelling label, not a boarding restriction.
-  - **Confirmed stop-by-stop:**
-    - AM not-school-bus: Portree Square 0735 → Lower Ollach 0750 →
-      Peinchorran 0800.
-    - AM school-bus (5 min later): Peinchorran 0805 → Lower Ollach 0819 →
-      Penifiller Turning Circle 0830 → Portree High 0841.
-    - Mon-Thu PM school-bus: Portree High 1550 → Penifiller Turning
-      Circle 1559 → Lower Ollach 1612 → Peinchorran 1625.
-    - Mon-Thu PM not-school-bus (5 min later): Peinchorran 1630 → Lower
-      Ollach 1638 → Portree Square 1655.
-    - Friday PM school-bus: Portree High 1320 → Penifiller Turning Circle
-      1329 → Lower Ollach 1342 → Peinchorran **1355** (corrected from an
-      initial typo of 1455, confirmed — keeps the same 5-min pattern).
-    - Friday PM not-school-bus (5 min later): Peinchorran 1400 → Lower
-      Ollach 1408 → Portree Square 1425.
-  - Operates from **Portree Depot**, no outstation gating needed (like
-    56's Bernisdale workings).
-  - **Vehicle requirement: a midibus** (single-deck, shorter-length
-    class — distinct from the smaller "small bus" narrow-road class).
-    Any power type (diesel, hybrid, electric or hydrogen) is fine —
-    power type is independent of size under the current fleet-numbering
-    scheme (see the main vehicle catalogue).
 - **Skye-wide vehicle requirements — re-expressed in size/type terms.**
   Fleet numbers now carry a fixed leading digit per vehicle type/size
   category, assigned in size order — 1=minibus, 2=midibus, 3=full-size
@@ -827,19 +664,18 @@ local network rather than one route.
   category rather than by number:
   - **Mercedes Sprinter** (the specific model, not a size category):
     routes 55, 58, 608.
-  - **Midibus** (single-deck, shorter-length class): route 159; 57A/57C
-    Winter Saturday.
-  - **56 and 56X — governed by a Milovaig-reach rule, NOT a school/
-    non-school split** (an earlier recorded version of this rule was
-    wrong and has been superseded — see the full route breakdown below
-    for the complete per-journey table): any 56/56X journey that
-    physically reaches or starts at Milovaig itself needs a **midibus**;
-    any journey terminating/starting short of Milovaig (at Lonmore,
-    Bernisdale, or Co-op) defaults to a **full-size single-deck** bus —
-    regardless of whether it's a school run or calls at Portree High
-    School. Four named journeys (56's 1015 outbound/1119 return pair,
-    and 56's non-school 1320 outbound/1422 return pair) are flexible
-    exceptions that can use EITHER size.
+  - **Midibus** (single-deck, shorter-length class): 57A/57C Winter
+    Saturday.
+  - **56 — governed by a Milovaig-reach rule, based on vehicle size vs.
+    the road, not any other factor** (an earlier recorded version of
+    this rule was wrong and has been superseded — see the full route
+    breakdown below for the complete per-journey table): any 56 journey
+    that physically reaches or starts at Milovaig itself needs a
+    **midibus**; any journey terminating/starting short of Milovaig (at
+    Lonmore, Bernisdale, or Co-op) defaults to a **full-size single-deck**
+    bus — regardless of time of day. Two named journey pairs (56's 1015
+    outbound/1119 return, and 56's 1320 outbound/its return leg 1422)
+    are flexible exceptions that can use EITHER size.
   - **Full-size single-deck:** 57A/57C Summer Saturday; **every other
     Skye service by default** (i.e. anything not given a specific
     vehicle type above).
@@ -857,248 +693,112 @@ local network rather than one route.
     the depot). This is SEPARATE from the already-established 55/58
     Saturday minibus swap at Broadford Yard, which still stands as its
     own deliberate weekly arrangement.
-  - **607 and 608 CAN have their buses swapped at Portree Depot**
-    specifically when a vehicle needs swapping for maintenance.
-- **PORTREE HIGH SCHOOL DEPARTURE ORDER — fully resolved, fixed order,
-  same both AM and PM:**
-  1. 152 – Armadale
-  2. 155 – Torrin
-  3. 56 – Lonmore
-  4. 57A/57C – Full Loop
-  5. 57C/57A – Flodigarry
-  6. 56X – Milovaig
-  7. 607 – Fiscavaig
-  8. 159 – Peinchorran
-  9. 57A/57C – Uig
-  10. 56 – Bernisdale
-  11. 150/155 – Kyle of Lochalsh
-
-  (608 is not in this list because it **simply doesn't call at Portree
-  High School at all** — not a timing coincidence, a genuine route fact.
-  "Torrin" is just the **155's terminus** — nothing more to it. Why the
-  route number changes mid-journey through the 150→155→158 through-
-  running chain is unexplained even to the user, but confirmed as
-  genuinely how the real service is numbered, not an error.)
-- **Routes 56 & 56X (Portree - Milovaig, Stagecoach North Scotland) —
+  - **608's buses CAN be swapped at Portree Depot** specifically when a
+    vehicle needs swapping for maintenance.
+- **Route 56 (Portree - Milovaig, Stagecoach North Scotland) —
   FULLY RE-DERIVED directly from the source PDFs.** An earlier round of
-  incremental corrections in chat produced an inaccurate record (only 4
-  "school-run" journeys, muddled 56/56X attribution); that version is
-  superseded entirely by the per-journey breakdown below, read straight
-  from both timetables.
-  - **Route 56 (plain), Mon-Fri, effective 19/08/2024 — 11 outbound + 11
-    return journeys, not 4:**
+  incremental corrections in chat produced an inaccurate record; that
+  version is superseded entirely by the per-journey breakdown below,
+  read straight from both timetables.
+  - **Route 56 (plain), Mon-Fri, effective 19/08/2024 — collapsed to one
+    everyday pattern (no term-time split):**
     - *Outbound (Portree Somerled Sq → Milovaig):*
-      1. 0654 SCH — starts at Lonmore (dep) → Colbost → Milovaig.
-      2. 0800 SCH — Somerled Sq → terminates Bernisdale PO.
-      3. 1015 (no flag, daily) — Somerled Sq → terminates Lonmore.
-      4. 1310 (calls HS 1320) a,SCH (Fri only) — Somerled Sq → full run
-         to Milovaig.
-      5. 1320 b,SCH (not Fri) — Somerled Sq → terminates Lonmore.
-      6. 1320 NSCH (holidays) — twin of #5.
-      7. 1320 (starts AT Portree HS) a,SCH (Fri only) → terminates
-         Bernisdale PO.
-      8. 1550 NSCH (holidays) — Somerled Sq → terminates Lonmore.
-      9. 1550 a,SCH (Fri only) — twin of #8.
-      10. 1550 (starts AT Portree HS) b,SCH (not Fri) → terminates
-          Bernisdale PO.
-      11. 1740 (no flag, daily) — Somerled Sq → terminates Lonmore.
+      1. 0654 — starts at Lonmore (dep) → Colbost → Milovaig.
+      2. 0800 — Somerled Sq → terminates Bernisdale PO.
+      3. 1015 — Somerled Sq → terminates Lonmore.
+      4. 1310 (calls Portree High School 1320), Fridays only — Somerled
+         Sq → full run to Milovaig.
+      5. 1320, not Fridays — Somerled Sq → terminates Lonmore.
+      6. 1320 (starts at Portree High School), Fridays only →
+         terminates Bernisdale PO.
+      7. 1550 — Somerled Sq → terminates Lonmore.
+      8. 1550 (starts at Portree High School) → terminates Bernisdale
+         PO.
+      9. 1740 — Somerled Sq → terminates Lonmore.
     - *Return (Milovaig → Portree Somerled Sq):*
-      1. 0820 SCH — starts at Bernisdale PO → terminates AT Portree High
-         School (never reaches Somerled Sq) — pick-up only, linked to 157.
-      2. 0759 SCH — starts at Lonmore → via HS 0842 → Somerled Sq 0847 —
-         drop-off only from Bernisdale onward.
-      3. 0800 NSCH — starts at Lonmore → Somerled Sq 0844, no HS call.
-      4. 1119 (no flag, daily) — Lonmore → Somerled Sq 1207, no HS call.
-      5. 1347 a,SCH (Fri only) — starts at Bernisdale PO → terminates
-         Portree Co-op (confirms "returning Bernisdale school runs
-         terminate at Co-op, not the Square").
-      6. 1422 "b" (not Fri, no SCH flag) — Lonmore → Somerled Sq 1510.
-      7. 1422 "a" (Fri only, no SCH flag) — twin of #6.
-      8. 1452 a,SCH (Fri only) — starts AT Milovaig → terminates Lonmore.
-      9. 1617 b,SCH (not Fri) — starts at Bernisdale PO → terminates
+      1. 0820 — starts at Bernisdale PO → terminates at Portree High
+         School (never reaches Somerled Sq) — pick-up only.
+      2. 0759 — starts at Lonmore → via Portree High School 0842 →
+         Somerled Sq 0847 — drop-off only from Bernisdale onward.
+      3. 0800 — starts at Lonmore → Somerled Sq 0844, no High School
+         call.
+      4. 1119 — Lonmore → Somerled Sq 1207, no High School call.
+      5. 1347, Fridays only — starts at Bernisdale PO → terminates
          Portree Co-op.
-      10. 1642 (no flag, daily) — Lonmore → Somerled Sq 1727, no HS call.
-      11. 1706 b,SCH (not Fri) — starts AT Milovaig → terminates Lonmore.
-  - **Route 56X, Mon-Fri — 100% SCH, no NSCH/holiday service at all:**
-    - *Outbound, effective 31/10/2026 — 3 journeys, all call at or start
-      from Portree High School:*
-      1. 1320, a,SCH (Fri only) — starts AT Portree HS → terminates
-         Lonmore. Midibus.
-      2. 1540 (calls HS 1550), b,SCH (not Fri) — Somerled Sq → full run
-         to Milovaig (the ONLY 56X journey reaching Milovaig).
-         Full-size single-deck.
-      3. 1550, b,SCH (not Fri) — starts AT Portree HS → terminates
-         Lonmore. Midibus.
-    - *Return, effective 19/08/2024 — only 1 journey, the whole service:*
-      1. 0728, SCH — starts AT Milovaig → ... → HS 0845 → Somerled Sq
-         0849. Full-size single-deck.
-  - **Vehicle-size rule — Milovaig-reach, not school/non-school:** any
-    56/56X journey reaching or starting at Milovaig needs a midibus;
-    anything short of Milovaig (Lonmore, Bernisdale, Co-op) defaults to a
-    full-size single-deck bus — regardless of school-run status. This
-    holds even when a Milovaig-reaching journey also calls at Portree
-    High and queues in the departure order (56's 1310/1320 full run;
-    56X's 1540/1550 full run keep the midibus/full-size assignment
-    despite queuing). Power type (diesel/hybrid/electric/hydrogen) is a
-    free choice regardless of which size applies.
+      6. 1422, not Fridays — Lonmore → Somerled Sq 1510.
+      7. 1422, Fridays only — Lonmore → Somerled Sq 1510.
+      8. 1452, Fridays only — starts at Milovaig → terminates Lonmore.
+      9. 1617, not Fridays — starts at Bernisdale PO → terminates
+         Portree Co-op.
+      10. 1642 — Lonmore → Somerled Sq 1727, no High School call.
+      11. 1706, not Fridays — starts at Milovaig → terminates Lonmore.
+  - **Vehicle-size rule — Milovaig-reach:** any 56 journey reaching or
+    starting at Milovaig needs a midibus; anything short of Milovaig
+    (Lonmore, Bernisdale, Co-op) defaults to a full-size single-deck
+    bus. This holds even when a Milovaig-reaching journey also calls at
+    Portree High School (the 1310/1320 full run keeps the midibus
+    assignment regardless). Power type (diesel/hybrid/electric/hydrogen)
+    is a free choice regardless of which size applies.
     - **Named flexible exceptions** (either size, player's choice): 56
-      outbound 1015 + its return leg 1119; and 56's non-school 1320
-      outbound pair (b,SCH/NSCH) + its return leg 1422 pair (a/b). No
-      other Lonmore-terminating journey gets this flexibility — the 1550
+      outbound 1015 + its return leg 1119; and 56's 1320 outbound pair
+      (not-Fri/Fri-from-HS) + its return leg 1422 pair. No other
+      Lonmore-terminating journey gets this flexibility — the 1550
       pair, 1740, 1642, 0800, 0759, 0820, 1347 and 1617 all stay strictly
       on the full-size-single-deck default.
-  - **Portree High departure-order queue membership:** of the 26 total
-    56/56X journeys above, 9 call at or start from Portree High School
-    and therefore queue in the fixed departure order (§ below): 56
-    outbound #4, #7, #10; 56 return #1, #2; and all 4 of 56X. The
-    departure order's "56 - Lonmore", "56X - Milovaig" and "56 -
-    Bernisdale" entries are destination-level slots used by whichever of
-    that group's journeys is departing at a given time, not one-journey-
-    each slots.
-    - **"Linked" meaning confirmed: same bus.** Some of these school-
-      calling 56 journeys are linked with route 157 (0820 pick-up-only,
-      0759 drop-off-only, and 56X's 1320/1550 short workings, which are
-      also drop-off-only after Portree High) — the SAME BUS that runs
-      those journeys then continues to run the 157 (duty/vehicle
-      continuity, not just a timed passenger connection). This is the
-      general meaning of "linked"/"connects to" throughout this Skye
-      section — applies retroactively to 607/608, the 56X-to-56 Milovaig
-      connection, and the Friday 56X-terminates-at-Lonmore-connects-to-
-      the-1422 case too.
+    - **"Linked" meaning confirmed: same bus.** Where two journeys are
+      "linked"/"connects to" each other, it means the SAME BUS runs one
+      then continues to run the other (duty/vehicle continuity, not
+      just a timed passenger connection) — the general meaning of
+      "linked"/"connects to" throughout this Skye section, confirmed by
+      608's own short working (below).
   - **"Drop-off only" segments — already implemented in-game** (a
     per-stop drop-off-only/pick-up-only option already exists in code;
     this was just new information to this conversation, not a new
     mechanic to design). Apply the existing per-stop flag to:
-    - 56X into Portree (AM): drop-off only from Lonmore to Portree.
-    - 56X out of Portree (PM): drop-off only from after Portree High
-      School until Lonmore, then normal pickup+dropoff resumes.
-    - 56 school runs from Lonmore (AM): normal until Bernisdale, then
-      drop-off only from Bernisdale to Portree High School.
-    - 56 school runs (PM): drop-off only between Portree High School and
-      just after Bernisdale.
-  - **NEW (from 57A/57C work): the returning Bernisdale afternoon 56
-    school runs terminate at Portree Co-op, NOT Portree Somerled
-    Square** — same short-working-terminus pattern as 57A's returning
-    Uig school buses (see below).
-  - **CONFIRMED REAL, needs building:** the school-run-services-don't-
-    reach-Portree-Somerled-Square interchange is NOT obsolete — it's a
-    genuine current arrangement. Passengers wanting the square change
-    onto the 52 (into Portree) and the 57C (run as a shuttle to the
-    square), both then continuing back out again as the 52 and 57A.
-  - The 56X always connects to a 56 at Milovaig (the far terminus) —
-    exact nature (duty-link vs. timed passenger connection) not yet
-    spelled out.
-  - A 56X journey on Fridays terminates early at Lonmore instead of
-    continuing to Milovaig, connecting to "the 1422" (a 56 departure) —
-    exact stop/journey cross-reference to be nailed down when the route
-    is built in-game.
-- **Routes 157 & 158 received — Portree primary-school interchange
-  shuttles:**
-  - 157 = Portree - High School, connecting **Bun Sgoil Ghaidhlig Phort
-    Righ** (Gaelic-medium primary school) with Portree High School (via
-    Dental Surgery, Co-Op). 158 = Portree High School - **Portree Primary
-    School** (mainstream), via Co-Op only.
-  - Both are pure interchange shuttles: primary pupils transfer to/from
-    other services at Portree High School.
-  - **Capacity:** 157 runs at ~70% of seated capacity, 158 at ~60%.
-  - **Confirmed:** AM = High School -> primary school; PM = primary
-    school -> High School — a single ~10 min leg each way, timed to meet
-    the rural services already linked to 157 (56's 0820 AM pickup-only,
-    1320/1550 PM drop-off-only).
-  - **158 links to DIFFERENT services than 157 — RESOLVED: it's the
-    155**, which itself links onward to 150 (a route the user had missed
-    off the original list). Full chain confirmed below.
-  - Mon-Fri only, no weekend service, every journey SCH-tagged (fully
-    term-time only) — consistent with being pure school shuttles.
-- **RESOLVED — Portree High School wait/departure-order mechanic:**
-  "157 and 158 connected to all other school runs at the same time"
-  means all school buses at Portree High School must **wait until every
-  other connecting school bus has arrived, no matter the delay** —
-  departure is gated on last arrival, not the printed timetable time.
-  There is also a **fixed order** in which buses leave the high school,
-  even when the timetable shows several leaving simultaneously. The
-  exact order is **not yet given** — pending from the user once the
-  rest of the Skye timetable work is done; don't invent one meanwhile.
-  Not yet confirmed whether this is Portree-specific or a general
-  school-interchange mechanic.
+    - 56's AM journey from Lonmore via Bernisdale: normal until
+      Bernisdale, then drop-off only from Bernisdale to Portree High
+      School.
+    - 56's PM journey via Bernisdale: drop-off only between Portree High
+      School and just after Bernisdale.
 
   **Real-data import notes, established from working through 608
-  (Portree-Fiscavaig), apply to all 15 routes:**
+  (Portree-Fiscavaig), apply to all 7 routes:**
   - Sources are Traveline Scotland PDFs. Real operator names shown on
     them (e.g. "Alasdair Macdonald" on 608) are pure real-world colour —
     they mean nothing in-game. The player's own company runs every Skye
     route regardless of who really operates it.
   - Skye routes are NOT all Stagecoach — expect a mix of real operators
-    across the 15.
-  - "SCH" = Highland school term-time days only. "NSCH" = Highland
-    school holiday days only. An unlabelled column = runs regardless of
-    term/holiday.
+    across the 7.
   - A journey starting partway along a route (never visiting one of the
     termini) is just an ordinary partial-route journey — no special
     handling needed, the same as any route where not every journey runs
     the full length.
-  - **NEW REQUIREMENT surfaced by 608's "a"/"b" footnotes** (Tuesdays-
-    and-Thursdays-only vs every-SCH-day-except-Tuesdays-and-Thursdays):
-    the timetable system needs genuine **day-of-week-specific
-    sub-patterns within a Monday-Friday block** — not just the existing
-    Mon-Fri / Sat / Sun granularity. A journey needs to be flaggable as
-    running on specific weekdays only, or all-but-specific-weekdays,
-    within what would otherwise be treated as one uniform block. This is
-    a general timetable-engine requirement, not Skye-specific — confirmed
-    needed here but likely useful wherever a real timetable has this kind
-    of weekday variation.
-  - **CORRECTION on how to read 608's own "a"/"b" footnote, Skye-specific:**
-    the "a" (Tuesdays-and-Thursdays-only school run) variant is a real-world
-    leftover that no longer actually happens — some Skye services used to
-    run a last school trip specifically on Tuesdays and Thursdays, but this
-    stopped in reality and the published Traveline timetable was simply
-    never updated to remove it. So for Skye, **ignore the "a" pattern
-    entirely** and use the "b" (does-not-run-Tue/Thu) times for every
-    weekday instead, including Tuesdays and Thursdays — that's what
-    actually runs now. This is Skye data-cleaning guidance only, not a
-    reversal of the general day-of-week sub-pattern requirement above —
-    other areas/routes do have genuinely different day-to-day timetables
-    that still need that engine capability.
-  - **Same obsolete Tue/Thu correction also applies to 607, confirmed
-    2026-09-28 — this one was missed the first time round.** 607 carries
-    the identical real-world leftover Tuesday/Thursday split 608 has, on
-    top of (not instead of) 607's own separate, genuine, still-current
-    Friday-differs pattern documented just below — the two are independent
-    dimensions on the same route. Every other route in the source file was
-    already corrected for this obsolete pattern; 607 and 608 were the two
-    that got missed. Use the not-Tue/Thu times for every weekday on 607
-    too, exactly as for 608, while still keeping its own real Friday split.
-  - **NEW genuine (current, not obsolete) Skye pattern: Fridays differ.**
-    On Skye, Fridays run a different timetable from Monday-Thursday on
-    most of the 15 routes. Expect most routes to need a Mon-Thu / Friday /
-    (Saturday / Sunday where they run) split, rather than a flat
-    Monday-Friday block — check each route's Friday table separately
-    rather than assuming it matches Mon-Thu.
-  - **Confirmed by 607 (Portree-Fiskavaig, a separate real route from 608
-    of a near-identical name/corridor but a shorter stop list):** its own
-    "a"/"b" footnotes read "a = Only runs on Fridays" / "b = Does not run
-    on Fridays" — a live, current example of the Friday-differs pattern
-    above (unlike 608's obsolete Tue/Thu case). This also confirms the
-    footnote letters "a"/"b" are **assigned per timetable, not fixed in
+  - **NEW genuine Skye pattern: Fridays differ.** On Skye, Fridays run a
+    different timetable from Monday-Thursday on most routes. Expect most
+    routes to need a Mon-Thu / Friday / (Saturday / Sunday where they
+    run) split, rather than a flat Monday-Friday block — check each
+    route's Friday table separately rather than assuming it matches
+    Mon-Thu.
+  - **608's own shorter working** (previously recorded as a separate
+    route, 607 — Portree-Fiskavaig, a near-identical name/corridor to
+    608's own but with a shorter stop list; folded into 608 as just
+    another one of its runs, 2026-11-08, rather than kept as a second
+    route): its own "a"/"b" footnotes read "a = Only runs on Fridays" /
+    "b = Does not run on Fridays" — a live, current example of the
+    Friday-differs pattern above. This also confirms the footnote
+    letters "a"/"b" are **assigned per timetable, not fixed in
     meaning** — always read each route's own footnote text rather than
-    assuming "a"/"b" mean the same thing route to route.
-  - No route so far (608, 607) has shown a Saturday or Sunday table at
+    assuming "a"/"b" mean the same thing route to route. Real departure
+    times for this shorter working still need re-sourcing — the
+    original material was almost entirely bound up in the now-dropped
+    school-day timetable split.
+  - No route so far (608) has shown a Saturday or Sunday table at
     all — absence of a weekend table in the PDF means no weekend service
-    that day, the same reading convention used for 608.
-  - **607 is confirmed term-time-only**: every journey on it is SCH-tagged
-    (no NSCH, no unlabelled journeys), confirmed to mean it runs zero
-    service during Highland school holidays — a genuine route-level
-    holiday shutdown, not just an artefact of this PDF.
+    that day.
 
-- **Portree High School / Portree Square substitution on non-school days
-  (2026-09-28).** Any Skye service that normally calls at Portree High
-  School on school days, and also operates on non-school days (i.e. it
-  isn't a school-day-only working), calls at **Portree Square** instead
-  of Portree High School on those non-school days. Portree Square is the
-  same real place already referred to elsewhere in this section as
-  "Portree Somerled Square" — use "Portree Square" going forward as the
-  short form. This is separate from, and doesn't resolve, the still-open
-  Portree High departure-order question above.
+- **Naming note (2026-09-28).** "Portree Square" is the same real place
+  elsewhere in this section as "Portree Somerled Square" — use "Portree
+  Square" going forward as the short form.
 
 - **Portree Square — stance rules (2026-09-28, Portree Square only unless
   noted).** Confirmed by the user; none of this is built yet — see
@@ -1314,11 +1014,11 @@ full-size single-deck), `7002h` (hydrogen coach, tri-axle).
 |---|---|---|
 | 1 | Minibus | Mercedes-Benz Sprinter/EVM Cityline (diesel or electric). "Small bus" is not a separate category — folded into this digit. |
 | 2 | Midibus | ADL Enviro200 MMC at 8.9m/9.7m/10.8m; ADL Enviro200EV at 9.9m; MCV Evora at 10.8m (all at/under the 10.8m size-class cutoff) |
-| 3 | Full-size single-deck | ADL Enviro200 MMC at 11.5m/11.8m; ADL Enviro200EV at 10.9m/11.7m; MCV Evora at 12.9m; Volvo 7900 Hybrid/Electric; Yutong E10/E12; Wrightbus GB Kite Electroliner/Hydroliner (all over the 10.8m cutoff) |
-| 4 | Double-decker, twin-axle | ADL Enviro400 MMC, ADL Enviro400EV, the Enviro400 open-topper (both power variants), Wrightbus StreetDeck Ultroliner/Electroliner/Hydroliner (buses, not coaches) |
+| 3 | Full-size single-deck | ADL Enviro200 MMC at 11.5m/11.8m; ADL Enviro200EV at 10.9m/11.7m; MCV Evora at 12.9m; Volvo 7900 Hybrid/Electric; Wrightbus GB Kite Electroliner/Hydroliner (all over the 10.8m cutoff) |
+| 4 | Double-decker, twin-axle | ADL Enviro400 MMC, ADL Enviro400EV, Wrightbus StreetDeck Ultroliner/Electroliner/Hydroliner and their open-top variant (buses, not coaches) |
 | 5 | Double-decker, tri-axle | ADL Enviro400 XLB (13.4m — see §14a; replaces the ADL Enviro500) |
-| 6 | Coach, twin-axle | Volvo 9700 at 12.4m; Yutong T12E |
-| 7 | Coach, tri-axle | Volvo 9700 at 13.1m/13.9m/15m; Volvo 9700DD (13m/14.8m); Yutong T15E |
+| 6 | Coach, twin-axle | Volvo 9700 at 12.4m |
+| 7 | Coach, tri-axle | Volvo 9700 at 13.1m/13.9m/15m; Volvo 9700DD (13m/14.8m) |
 | 9 | Support vehicles | Pool cars, staff transport and other support vehicles (confirmed 2026-10-30) — not a bus at all, so it sits outside the size-order sequence 1-7 rather than slotting in by length. Still takes the same e/h suffix convention for electric/hydrogen support vehicles. |
 
 Twin-axle vs tri-axle is derived automatically from length (up to 12.9m

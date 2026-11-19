@@ -269,6 +269,10 @@ fn main() {
     println!("  psv=yes            {}", stats.psv_yes);
     println!("  bus=yes            {}", stats.bus_yes);
     println!("  maxspeed present   {}", stats.maxspeed_present);
+    println!("  maxweight present  {}", stats.maxweight_present);
+    println!("  maxheight present  {}", stats.maxheight_present);
+    println!("  maxlength present  {}", stats.maxlength_present);
+    println!("  maxwidth present   {}", stats.maxwidth_present);
 
     let report = graph_build::BuildReport {
         graph: combined_graph.expect("parse_sources always returns at least the GB source"),

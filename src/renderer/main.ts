@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
 import basemapStyle from "./basemap-style.json";
 import { drawStops } from "./stops-layer";
+import { repairRouteOrientations } from "./route-orientation-repair";
 import { drawRailwayPlatforms } from "./railway-stations-layer";
 import { registerMapIcons } from "./map-icons";
 import { registerSupportVehicleIcons } from "./support-vehicle-icons";
@@ -12,8 +13,12 @@ import { mountRoutePanel } from "./route-panel";
 import { mountVehicleSimulation } from "./vehicle-simulation";
 import { mountVehicleBuyMenu } from "./vehicle-buy-menu";
 import { seedRealLiveries } from "./livery-seed-data.mts";
+import { loadScotlandBoundary } from "./scotland-boundary.mts";
+import { loadWalesBoundary } from "./wales-boundary.mts";
 import { mountLiveryPanel } from "./livery-panel";
 import { mountRepaintShops, seedRealRepaintShops } from "./repaint-shop-panel";
+import { mountRepowerBookingPanel } from "./repower-booking-panel";
+import { mountFleetListPanel } from "./fleet-list-panel";
 import { mountDeadMileagePreview } from "./dead-mileage-preview";
 import { mountDutyPanel } from "./duty-panel";
 import { mountDepotPlacement } from "./depot-placement";
@@ -22,9 +27,18 @@ import { mountDealerReferencePins, seedRealDealers } from "./dealer-reference-pi
 import { mountFareZones } from "./fare-zone-drawing";
 import { mountFarePricingPanel } from "./fare-pricing-panel";
 import { mountLongDistanceSectionsTool } from "./long-distance-sections-panel";
-import { mountBottomBar } from "./bottom-bar";
+import { mountRouteStatisticsPanel } from "./route-statistics-panel";
+import { mountFleetScreen } from "./fleet-screen";
+import { mountFaresScreen } from "./fares-screen";
+import { mountDepotsScreen } from "./depots-screen";
+import { mountDutiesScreen } from "./duties-screen";
+import { mountRoutesScreen } from "./routes-screen";
+import { mountTimetablesScreen } from "./timetables-screen";
+import { mountBottomBar, type BottomBarSection } from "./bottom-bar";
 import { startGameClock } from "./game-clock-engine";
 import { loadRouter } from "./router";
+import { mountJourneyPlannerDebugEntryPoint, rebuildJourneyPlanner } from "./journey-planner";
+import { mountFareJourneyDebugEntryPoint } from "./fare-journey-debug";
 import { setLoadingProgress } from "./loading-progress";
 
 // MapLibre auto-detects its worker script from import.meta.url, which only
@@ -97,7 +111,8 @@ map.addControl(navControl, "top-right");
 registerMapIcons(map);
 mountDepotGroupsPanel();
 mountLiveryPanel();
-(window as unknown as { __map: maplibregl.Map }).__map = map;
+mountRepowerBookingPanel();
+mountFleetListPanel();
 
 // The style (fetched from the local pmtiles/tile server, see
 // startMapDataServer in electron/main.ts) is not guaranteed loaded by the
@@ -114,16 +129,67 @@ async function waitForStyleLoad(m: maplibregl.Map): Promise<void> {
   await new Promise<void>((resolve) => m.once("load", () => resolve()));
 }
 
+// A plain "not built yet" screen for a bottom-bar section with no real
+// content of its own — Calendar and Finance, confirmed fine by the user
+// (2026-11-08) rather than leaving the button doing nothing with no
+// explanation at all.
+function buildPlaceholderScreen(title: string, message: string): { open(): void; close(): void } {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.style.position = "fixed";
+  panel.style.top = "72px";
+  panel.style.left = "50%";
+  panel.style.transform = "translateX(-50%)";
+  panel.style.zIndex = "1000";
+  panel.style.width = "360px";
+  panel.style.display = "none";
+  panel.style.flexDirection = "column";
+  document.body.appendChild(panel);
+
+  const header = document.createElement("div");
+  header.className = "panel-header";
+  header.textContent = title;
+  panel.appendChild(header);
+
+  const body = document.createElement("div");
+  body.style.padding = "12px";
+  body.className = "label-muted";
+  body.textContent = message;
+  panel.appendChild(body);
+
+  return {
+    open() {
+      panel.style.display = "flex";
+    },
+    close() {
+      panel.style.display = "none";
+    },
+  };
+}
+
 init().then(async () => {
   setLoadingProgress(0.01, "Starting the game clock…");
   await startGameClock();
   setLoadingProgress(0.02, "Loading map style…");
   await waitForStyleLoad(map);
   setLoadingProgress(0.05, "Loading road network…");
+  // The onProgress callback only tracks the download fraction — once that
+  // reaches 1, loadRouter still has to synchronously decode the whole graph
+  // into the WASM Router (tens of seconds for the full UK+Ireland+IoM graph,
+  // ~969MB), with no progress of its own to report. Showing "100%" through
+  // that whole wait reads as a hang (real user report, 2026-11-14) — once
+  // the download itself is done, switch to an honest "still working, no
+  // further figure available" label rather than inventing a fake percentage.
   const router = await loadRouter((f) =>
-    setLoadingProgress(0.05 + f * 0.8, `Loading road network… ${Math.round(f * 100)}%`),
+    setLoadingProgress(0.05 + f * 0.8, f < 1 ? `Loading road network… ${Math.round(f * 100)}%` : "Processing road network…"),
   );
   (window as unknown as { __router: Router }).__router = router;
+  // Debug entry point only this increment (OPEN-ITEMS.md) — no real caller
+  // yet, so not on the loading screen's own critical path.
+  mountJourneyPlannerDebugEntryPoint();
+  void rebuildJourneyPlanner();
+  // T175, same debug-only-until-a-real-caller-exists treatment.
+  mountFareJourneyDebugEntryPoint(router);
   setLoadingProgress(0.86, "Drawing stops…");
   await registerSupportVehicleIcons(map);
   // drawStops needs the router to kerb-snap a newly placed stop
@@ -131,6 +197,10 @@ init().then(async () => {
   // rather than the previous order where stops drew before any router
   // existed at all.
   await drawStops(map, router);
+  // Needs busStationsState (just populated by drawStops) and every route's
+  // own depot group — see route-orientation-repair.ts for why this can't be
+  // a db.mts migration instead.
+  await repairRouteOrientations();
   setLoadingProgress(0.88, "Drawing railway platforms…");
   await drawRailwayPlatforms(map);
   setLoadingProgress(0.9, "Loading routes…");
@@ -145,10 +215,18 @@ init().then(async () => {
   setLoadingProgress(0.97, "Loading dealers…");
   await seedRealDealers();
   await mountDealerPlacement(map, router);
+  // Fetched once at boot (T190, 2026-11-14) — backs National Express
+  // Scottish's own route-terminus restriction. Before seedRealLiveries()
+  // below only by convenience of staying near its one real consumer;
+  // no real ordering dependency between the two.
+  await loadScotlandBoundary();
+  // Same pattern, 2026-11-15 — backs National Express Welsh's own
+  // route-terminus restriction, the exact Wales mirror of the line above.
+  await loadWalesBoundary();
   // Seeded before the buy menu loads its own initial liveries list, same
   // reasoning as seedRealDealers() above.
   await seedRealLiveries();
-  mountVehicleBuyMenu();
+  mountVehicleBuyMenu(router);
   await mountDealerReferencePins(map);
   await seedRealRepaintShops();
   await mountRepaintShops(map, router);
@@ -157,9 +235,47 @@ init().then(async () => {
   await mountLongDistanceSectionsTool(map, router);
   await mountDeadMileagePreview(map, router);
   await mountDutyPanel(router);
-  // Visual shell only for now (bottom-bar.ts) — switching what's actually
-  // shown for each section is a deliberate follow-up, not guessed at here.
-  mountBottomBar();
+  await mountRouteStatisticsPanel();
+  // Live request, 2026-11-08: "get all menus working... instead of
+  // temporary ones" — the bottom bar (bottom-bar.ts) was shipped as a
+  // visual shell only, with switching what's actually shown for each
+  // section a deliberate, confirmed-not-yet follow-up. Fleet is wired
+  // for real here (fleet-screen.ts, reusing vehicle-buy-menu.ts/
+  // livery-panel.ts/repaint-shop-panel.ts's own content as tabs, per
+  // bottom-bar.ts's own header comment for what that section should be).
+  // Depots/Duties/Fares/Routes/Timetables each needed their own real
+  // design work (a map-tool arm/disarm merged with a panel for Depots, a
+  // depot-group picker in front of the existing full-screen tool for
+  // Duties, a mode change on the always-visible route list for Routes/
+  // Timetables) — all five now wired. Calendar and Finance stay plain
+  // placeholders, confirmed fine by the user until each has a real screen
+  // of its own.
+  const fleetScreen = mountFleetScreen();
+  const faresScreen = mountFaresScreen();
+  const depotsScreen = mountDepotsScreen();
+  const dutiesScreen = mountDutiesScreen();
+  const routesScreen = mountRoutesScreen();
+  const timetablesScreen = mountTimetablesScreen();
+  const placeholderScreens: Partial<Record<BottomBarSection, { open(): void; close(): void }>> = {
+    calendar: buildPlaceholderScreen("Calendar", "Not built yet — the day-type Mon-Fri/Sat/Sun bar (top right) is still the real control."),
+    finance: buildPlaceholderScreen("Finance", "Not built yet — Phase 5's financial screen isn't built. Each depot group's own balance/transactions already show in the Depot groups panel."),
+  };
+  mountBottomBar((section) => {
+    fleetScreen.close();
+    faresScreen.close();
+    depotsScreen.close();
+    dutiesScreen.close();
+    routesScreen.close();
+    timetablesScreen.close();
+    for (const screen of Object.values(placeholderScreens)) screen.close();
+    if (section === "fleet") fleetScreen.open();
+    else if (section === "fares") faresScreen.open();
+    else if (section === "depots") depotsScreen.open();
+    else if (section === "duties") dutiesScreen.open();
+    else if (section === "routes") routesScreen.open();
+    else if (section === "timetables") timetablesScreen.open();
+    else placeholderScreens[section]?.open();
+  });
   setLoadingProgress(1, "Ready");
   document.getElementById("loading-overlay")?.remove();
 });

@@ -145,8 +145,9 @@ export interface ComposableRoute {
   points: readonly CombinePoint[];
   parentRouteId: number | null;
   composedFromRouteIds: readonly number[];
+  colour?: string;
   // A minor variation (DESIGN.md §6, confirmed 2026-11-01 — the user's own
-  // real example: the Skye 56 skipping Bernisdale on certain school runs)
+  // real example: the Skye 56 skipping Bernisdale on certain workings)
   // always shares its parent's exact route number, with no letter suffix,
   // and is ALWAYS live-linked to its parent's current path — unlike a
   // major variation, which is only live if the player explicitly composed
@@ -217,6 +218,81 @@ export function resolveRoutePoints<T extends ComposableRoute>(route: T, allRoute
   } catch {
     return route.points as CombinePoint[];
   }
+}
+
+// A minor variation's own stored `colour` is never shown — it always
+// follows its parent's current colour, live (2026-11-08, live request:
+// "Minor variations should follow the main route colour"), the same
+// live-link principle resolveRoutePoints above already applies to points.
+// Recurses through parentRouteId since a minor variation's own parent can
+// itself be a minor variation. Falls back to the route's own stored colour
+// whenever live resolution isn't possible (deleted parent, a cycle) rather
+// than throwing or returning a hardcoded default — same safety fallback
+// resolveRoutePoints uses.
+export function effectiveRouteColour<T extends ComposableRoute & { isMinorVariation?: boolean }>(
+  route: T,
+  allRoutes: readonly T[],
+  seen: ReadonlySet<number> = new Set(),
+): string {
+  if (!route.isMinorVariation || route.parentRouteId === null || seen.has(route.id)) return route.colour ?? "#3b82f6";
+  const parent = allRoutes.find((r) => r.id === route.parentRouteId);
+  if (!parent) return route.colour ?? "#3b82f6";
+  return effectiveRouteColour(parent, allRoutes, new Set(seen).add(route.id));
+}
+
+// A small set of mutually distinct, high-contrast colours — originally a
+// pure display fallback (route-timetable-panel.ts's family tabs), never
+// written back to a route's own stored colour there. Exported too (T169)
+// as colour-picker.ts's own preset swatch grid — the same "already a
+// well-chosen distinct set" reasoning applies to a general-purpose colour
+// picker, not just the family-tab collision case this was built for.
+export const DISTINCT_DISPLAY_PALETTE = [
+  "#ef4444",
+  "#3b82f6",
+  "#22c55e",
+  "#f59e0b",
+  "#a855f7",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
+  "#6366f1",
+  "#84cc16",
+];
+
+// When editing a route's timetable alongside its variation family (live
+// request, 2026-11-08: "if variations are the same colour each one should
+// be given a unique colour in the timetable editor to make editing
+// easier"), two or more members sharing the exact same effective colour
+// (effectiveRouteColour above — a real, common case now that every minor
+// variation always follows its parent's colour) are hard to tell apart in
+// the family tabs. This resolves a DISPLAY-ONLY colour per family member —
+// a member with no colour collision keeps its own real colour; a colliding
+// group gets reassigned distinct colours from DISTINCT_DISPLAY_PALETTE
+// (excluding the group's own shared colour, so every reassigned member is
+// guaranteed visibly different from it). Never touches the real stored
+// `colour` field — purely what the editor's own tabs render.
+export function resolveFamilyDisplayColours<T extends ComposableRoute & { isMinorVariation?: boolean }>(
+  family: readonly T[],
+  allRoutes: readonly T[],
+): Map<number, string> {
+  const nominal = new Map<number, string>();
+  for (const r of family) nominal.set(r.id, effectiveRouteColour(r, allRoutes));
+
+  const groups = new Map<string, number[]>();
+  for (const [id, colour] of nominal) {
+    const key = colour.toLowerCase();
+    const ids = groups.get(key) ?? [];
+    ids.push(id);
+    groups.set(key, ids);
+  }
+
+  const result = new Map<number, string>(nominal);
+  for (const [colour, ids] of groups) {
+    if (ids.length < 2) continue;
+    const palette = DISTINCT_DISPLAY_PALETTE.filter((c) => c.toLowerCase() !== colour);
+    ids.forEach((id, i) => result.set(id, palette[i % palette.length]));
+  }
+  return result;
 }
 
 // Every OTHER route that needs refreshing after `savedRouteId`'s own points

@@ -1,10 +1,15 @@
 import { createDropdown, type Dropdown } from "./dropdown";
+import { createColourPicker } from "./colour-picker";
 import { busStationsState } from "./stops-layer";
 import { dutyPanelState } from "./duty-panel";
+import { setMenuOpen } from "./menu-visibility";
 import { TICKET_MACHINE_PRICE_GBP, TAP_ON_TAP_OFF_PRICE_GBP_PER_VEHICLE, type TicketMachineTier } from "./ticket-machine.mts";
 import { UPGRADABLE_TICKET_APP_PRICE_GBP, MOBILE_APP_LIVE_DATA_PRICE_GBP, UPGRADED_AVL_DATA_PRICE_GBP } from "./company-upgrades.mts";
 import { gameClockState } from "./game-clock-engine";
-import { SECONDS_PER_DAY } from "./game-clock.mts";
+import { SECONDS_PER_DAY, gameDateTimeFromSeconds, WEEKDAY_NAMES } from "./game-clock.mts";
+import { elapsedMonthKeysSince, generateMonthlyBookings, maxMonthKey, monthKeyFromGameDay, type PrivateHireVehicleClass } from "./private-hire-income.mts";
+import { computeDepotVehicleRequirements, type PvrTimetable } from "./route-statistics.mts";
+import { LIVERY_SPECIFIC_ROUTE } from "./livery-seed-data.mts";
 
 function todayDayIndex(): number {
   return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
@@ -80,24 +85,21 @@ function regionDropdown(selected: string, onChange: (value: string) => void): Dr
   return createDropdown(REGIONS, selected, onChange);
 }
 
-export function mountDepotGroupsPanel(): void {
-  // top:8px/right:8px is also vehicle-simulation.ts's own Mon-Fri/Sat/Sun
-  // day-type bar's corner (fixed top-right, mounted later in main.ts's own
-  // boot order) — at equal z-index, this button lost the DOM-order
-  // tiebreak to that bar and was completely hidden behind it, a real live
-  // user report ("I can't see the button anymore") for the exact same
-  // root cause route-panel.ts already had to fix once (56px comfortably
-  // clears the bar's own measured 42px height from top:8px, same value
-  // reused here for consistency rather than re-deriving it).
-  const toggle = document.createElement("button");
-  toggle.className = "btn";
-  toggle.textContent = "Depot groups";
-  toggle.style.position = "absolute";
-  toggle.style.top = "56px";
-  toggle.style.right = "8px";
-  toggle.style.zIndex = "2";
-  document.body.appendChild(toggle);
+// Shown/hidden by the Depots section of the bottom bar (depots-screen.ts),
+// not its own floating toggle button any more (T167 — same "get all menus
+// working" conversion T162/T166 already did for Fleet/Fares).
+export const depotGroupsPanelState: { open: (() => void) | null; close: (() => void) | null } = {
+  open: null,
+  close: null,
+};
 
+export function mountDepotGroupsPanel(): void {
+  // top:88px/right:8px — clear of vehicle-simulation.ts's own Mon-Fri/Sat/
+  // Sun day-type bar's corner (fixed top-right, mounted later in main.ts's
+  // own boot order, ~42px tall from top:8px) and the old standalone
+  // toggle button's own former 56-88px slot (removed above; the panel's
+  // own top kept at its old value rather than moving up, to avoid
+  // re-deriving this clearance math for no real benefit).
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.style.position = "absolute";
@@ -108,15 +110,20 @@ export function mountDepotGroupsPanel(): void {
   panel.hidden = true;
   document.body.appendChild(panel);
 
-  toggle.addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
-    toggle.classList.toggle("is-active", !panel.hidden);
-    if (!panel.hidden) {
-      void refresh();
-      void refreshUpgradesSection();
-      void refreshBalanceSection();
-    }
-  });
+  depotGroupsPanelState.open = () => {
+    panel.hidden = false;
+    setMenuOpen("depot-groups-panel", true);
+    void refresh();
+    void refreshUpgradesSection();
+    void (async () => {
+      await generatePrivateHireIncome();
+      await refreshBalanceSection();
+    })();
+  };
+  depotGroupsPanelState.close = () => {
+    panel.hidden = true;
+    setMenuOpen("depot-groups-panel", false);
+  };
 
   const title = document.createElement("div");
   title.className = "panel-header";
@@ -148,6 +155,51 @@ export function mountDepotGroupsPanel(): void {
   balanceSection.appendChild(balanceLine);
   balanceSection.appendChild(recentTransactions);
   panel.appendChild(balanceSection);
+
+  // Private hire revival (T183, Q20/OPEN-ITEMS.md) — the lazy "re-checked
+  // fresh every time this screen opens" income trigger (see private-hire-
+  // income.mts's own header comment for why there's no real monthly game-
+  // tick to hang this off instead). Finds every owned Lothian-Coaches
+  // vehicle across every depot group, backfills any fully-elapsed months
+  // it hasn't had bookings generated for yet, and records one real
+  // FinanceTransaction per generated booking before the balance section
+  // below re-reads the ledger — so a newly-generated "Private hire"
+  // transaction is already visible the moment the panel opens, not a
+  // screen refresh later.
+  function dayLabelFor(gameDay: number): string {
+    return WEEKDAY_NAMES[gameDateTimeFromSeconds(gameDay * SECONDS_PER_DAY).weekday];
+  }
+
+  async function generatePrivateHireIncome(): Promise<void> {
+    const liveries = await window.liveries.list();
+    const lothianCoaches = liveries.find((l) => l.name === "Lothian Coaches");
+    if (!lothianCoaches) return;
+    const allVehicles = await window.vehicles.listAll();
+    const privateHireVehicles = allVehicles.filter((v) => v.liveryId === lothianCoaches.id);
+    if (privateHireVehicles.length === 0) return;
+    const nowGameDay = todayDayIndex();
+    for (const vehicle of privateHireVehicles) {
+      const vehicleClass: PrivateHireVehicleClass = vehicle.modelId === "evm-cityline" ? "sprinter" : "coach";
+      const generatedMonths = await window.privateHireIncome.listGeneratedMonths(vehicle.id);
+      const purchaseMonthKey = monthKeyFromGameDay(vehicle.boughtGameDay);
+      const lastKnownMonthKey = maxMonthKey(generatedMonths) ?? purchaseMonthKey;
+      const monthsToGenerate = elapsedMonthKeysSince(lastKnownMonthKey, nowGameDay);
+      if (monthsToGenerate.length === 0) continue;
+      for (const monthKey of monthsToGenerate) {
+        const bookings = generateMonthlyBookings(vehicleClass, monthKey);
+        for (const booking of bookings) {
+          await window.finance.record(
+            booking.amountGBPPence,
+            "Private hire",
+            vehicle.depotGroupId,
+            `Private hire — fleet ${vehicle.fleetNumber}, ${dayLabelFor(booking.gameDay)} ${booking.timeOfDayLabel}`,
+            booking.gameDay,
+          );
+        }
+      }
+      await window.privateHireIncome.markMonthsGenerated(vehicle.id, monthsToGenerate);
+    }
+  }
 
   async function refreshBalanceSection(): Promise<void> {
     const balancePence = await window.finance.getBalance();
@@ -294,6 +346,19 @@ export function mountDepotGroupsPanel(): void {
 
   const refresh = async () => {
     const groups = await window.depotGroups.list();
+    // Peak vehicle requirement, per-depot breakdown (2026-11-16, scoped
+    // and confirmed directly with the user — see route-statistics.mts's
+    // own header for the real calculation and why it's broken down by
+    // vehicle-type lock rather than one flat number). Fetched once here,
+    // not per group, to avoid an N+1 fetch across every depot group.
+    const [allRoutesForPvr, allTimetablesForPvr] = await Promise.all([window.routes.list(), window.routeTimetables.listAll()]);
+    const pvrTimetablesByRouteId = new Map<number, PvrTimetable[]>();
+    for (const tt of allTimetablesForPvr) {
+      const existingForRoute = pvrTimetablesByRouteId.get(tt.routeId) ?? [];
+      existingForRoute.push(tt);
+      pvrTimetablesByRouteId.set(tt.routeId, existingForRoute);
+    }
+    const pvrRoutes = allRoutesForPvr.map((r) => ({ id: r.id, number: r.number, depotGroupId: r.depotGroupId, points: r.points, terminusIndex: r.terminusIndex, startIndex: r.startIndex }));
     list.innerHTML = "";
     if (groups.length === 0) {
       const empty = document.createElement("div");
@@ -478,22 +543,47 @@ export function mountDepotGroupsPanel(): void {
       const colourLabelEl = document.createElement("span");
       colourLabelEl.className = "label-muted";
       colourLabelEl.textContent = "Colour";
-      const colourInput = document.createElement("input");
-      colourInput.type = "color";
-      colourInput.value = group.colour;
-      colourInput.style.width = "40px";
-      colourInput.style.padding = "0";
-      colourInput.addEventListener("change", () => {
-        void window.depotGroups.setColour(group.id, colourInput.value);
+      // T169: a custom colour-picker.ts picker, not a native input — see
+      // that file's own header comment.
+      const colourInput = createColourPicker(group.colour, (hex) => {
+        void window.depotGroups.setColour(group.id, hex);
       });
       colourRow.appendChild(colourLabelEl);
-      colourRow.appendChild(colourInput);
+      colourRow.appendChild(colourInput.el);
+
+      // Peak vehicle requirement — real per-route figures (route-
+      // statistics.mts) summed into buckets by real vehicle-type lock,
+      // not one flat number (confirmed directly with the user: a route
+      // locked to electric single-deckers and one locked to coaches
+      // aren't interchangeable, so showing "8 vehicles" would hide that
+      // real constraint).
+      const pvrRow = document.createElement("div");
+      pvrRow.style.display = "flex";
+      pvrRow.style.gap = "6px";
+      pvrRow.style.alignItems = "flex-start";
+      const pvrLabelEl = document.createElement("span");
+      pvrLabelEl.className = "label-muted";
+      pvrLabelEl.textContent = "Vehicles needed";
+      pvrLabelEl.style.flexShrink = "0";
+      const pvrValueEl = document.createElement("span");
+      const pvrBreakdown = computeDepotVehicleRequirements(group.id, pvrRoutes, pvrTimetablesByRouteId, LIVERY_SPECIFIC_ROUTE);
+      if (pvrBreakdown.length === 0) {
+        pvrValueEl.textContent = "no routes with a real timetable yet";
+        pvrValueEl.className = "label-muted";
+      } else {
+        pvrValueEl.textContent = pvrBreakdown
+          .map((b) => `${b.vehicles} ${b.bucket === "unrestricted" ? "" : b.bucket + " "}(${b.routeNumbers.join(", ")})`.trim())
+          .join(", ");
+      }
+      pvrRow.appendChild(pvrLabelEl);
+      pvrRow.appendChild(pvrValueEl);
 
       wrapper.appendChild(row);
       wrapper.appendChild(stationRow);
       wrapper.appendChild(ticketRow);
       wrapper.appendChild(tapOnTapOffRow);
       wrapper.appendChild(colourRow);
+      wrapper.appendChild(pvrRow);
       wrapper.appendChild(groupError);
       list.appendChild(wrapper);
     }
