@@ -2,7 +2,7 @@
 // building-cluster.mts 2026-11-13 — see that file's own header comment),
 // run directly with
 // `node --experimental-strip-types src/renderer/area-cluster.verify.mts`.
-import { unionAreaPolygons, nearestPointOnAreaBoundary, ringWalkShorterArc, areaClusterFollowBetween, nearestVertexOfRing } from "./area-cluster.mts";
+import { unionAreaPolygons, nearestPointOnAreaBoundary, ringWalkShorterArc, areaClusterFollowBetween } from "./area-cluster.mts";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -100,35 +100,14 @@ assert(unionAreaPolygons([]).length === 0, "unioning nothing returns no boundari
   assert(gapFollow === null, "A and C are on different, unconnected boundaries — a genuine gap, not traced");
 }
 
-// --- nearestVertexOfRing (DESIGN.md's confirmed points 4/5) ---
-
-{
-  const square = [{ lon: 0, lat: 0 }, { lon: 4, lat: 0 }, { lon: 4, lat: 4 }, { lon: 0, lat: 4 }, { lon: 0, lat: 0 }];
-  const nearTopRight = nearestVertexOfRing(square, { lon: 3.9, lat: 3.9 }, 1_000_000)!;
-  assert(nearTopRight.lon === 4 && nearTopRight.lat === 4, `a point just inside the top-right corner should pick that corner, got (${nearTopRight.lon}, ${nearTopRight.lat})`);
-
-  const nearBottomLeft = nearestVertexOfRing(square, { lon: 0.1, lat: -0.1 }, 1_000_000)!;
-  assert(nearBottomLeft.lon === 0 && nearBottomLeft.lat === 0, `a point just outside the bottom-left corner should still pick that corner, got (${nearBottomLeft.lon}, ${nearBottomLeft.lat})`);
-
-  // A point on an EDGE's own midpoint, nearest to neither endpoint by
-  // more than the other — nearestPointOnAreaBoundary would land
-  // exactly here (mid-edge); nearestVertexOfRing must still pick an
-  // actual corner, never a mid-edge point.
-  const onEdgeMidpoint = nearestVertexOfRing(square, { lon: 2, lat: 0 }, 1_000_000)!;
-  const isARealCorner = square.slice(0, -1).some((v) => v.lon === onEdgeMidpoint.lon && v.lat === onEdgeMidpoint.lat);
-  assert(isARealCorner, `even equidistant from two corners, the result must be one of the ring's real vertices, got (${onEdgeMidpoint.lon}, ${onEdgeMidpoint.lat})`);
-
-  // Real live bug, 2026-11-14: a large polygon whose own OSM geometry
-  // only records vertices at its true corners can have its globally-
-  // nearest vertex sitting far from a click made partway along a long
-  // edge — bridging to it produced a visible spike (jump away from the
-  // road and straight back). `nearestVertexOfRing` must refuse to
-  // return a corner at all once every real vertex is further away than
-  // maxDistanceM, rather than always returning *some* vertex regardless
-  // of how far it really is.
-  const farAway = nearestVertexOfRing(square, { lon: 2, lat: 0 }, 1);
-  assert(farAway === null, `no real vertex of this square is within 1m of (2,0) — expected null, got ${JSON.stringify(farAway)}`);
-}
+// nearestVertexOfRing (the "bridge corner" gap-jumping helper, DESIGN.md's
+// former confirmed points 4/5) was removed outright 2026-11-19 — the user
+// confirmed they no longer use the gap-jumping behaviour at all (the
+// point-removal/undo button supersedes it) and asked for it to be deleted,
+// not fixed again, after it was found to be the actual cause of a real,
+// repeated live "spike" bug (bridging to a distant, unrelated corner of a
+// large polygon). No replacement test needed — there is no code left to
+// test.
 
 // --- real duplicate-point bug (2026-11-15, confirmed via a live human-
 // driven click trace against a real saved zone, which came back 66%

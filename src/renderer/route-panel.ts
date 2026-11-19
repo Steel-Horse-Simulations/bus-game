@@ -1108,29 +1108,18 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
             const tpCheckbox = document.createElement("input");
             tpCheckbox.type = "checkbox";
             tpCheckbox.checked = routeIsTimingPoint;
-            // Island-route cap (2026-11-15 follow-up, corrected 2026-11-19
-            // — see validateTimingPoints' own matching real rule in
-            // route-timetable.mts for the full story) — real server-side
-            // rule: an island route gets exactly one OPTIONAL timing point.
-            // Checked against `route.timingPointIndexes` (the real,
-            // persisted list of player-flagged optional points) directly,
-            // not the raw `timingPoints` array — a mandatory terminus/
-            // forced-by-stop entry never lands in `timingPointIndexes`, so
-            // it never counts against this cap. `routeIsTimingPoint` is
-            // already "is THIS index in route.timingPointIndexes," so once
-            // that's false, any nonzero length there means some OTHER
-            // optional point is already flagged.
-            const islandCapReached = isIslandRoute && !routeIsTimingPoint && route.timingPointIndexes.length > 0;
-            tpCheckbox.disabled = islandCapReached;
+            // Island-route single-optional-timing-point cap removed
+            // entirely (2026-11-19) — it was a real live bug, making every
+            // pre-existing route with more than one timing point
+            // permanently unsaveable, and re-reading the user's own
+            // original request confirmed the cap was never actually what
+            // they'd asked for in the first place (see
+            // validateTimingPoints' own matching comment in
+            // route-timetable.mts for the full story). An island route now
+            // allows any number of timing points, same as an ordinary one.
             tpToggleRow.appendChild(tpCheckbox);
             tpToggleRow.appendChild(document.createTextNode("Timing point (this route)"));
             controls.appendChild(tpToggleRow);
-            if (islandCapReached) {
-              const capNote = document.createElement("div");
-              capNote.className = "label-muted";
-              capNote.textContent = "Island routes are limited to a single timing point, already set elsewhere on this route.";
-              controls.appendChild(capNote);
-            }
 
             const legMinutesLabel = document.createElement("label");
             legMinutesLabel.className = "label-muted";

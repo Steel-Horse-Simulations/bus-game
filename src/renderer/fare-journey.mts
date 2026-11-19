@@ -72,9 +72,11 @@ export function zoneForPoint(point: FareZonePoint, zones: readonly FareZone[]): 
 
 // Whether a depot group is "on an island" (2026-11-15, user's own words:
 // "It should be based on the fare zone type a depot is in") — gates the
-// timing-point restriction in route-timetable.mts's validateTimingPoints
-// (an island route is limited to a single timing point with no peak
-// padding). Checked against the depot's own real site location (not any
+// remaining island-specific rule in route-timetable.mts's
+// validateTimingPoints (no separate peak-padding figure on a timing
+// point; the earlier count cap at "a single timing point" was removed
+// 2026-11-19, a real bug — see that function's own comment). Checked
+// against the depot's own real site location (not any
 // route's drawn points), reusing the exact same zoneForPoint this file
 // already uses for touchesIsland fare pricing — a depot group with no
 // depot yet, or whose depot's point falls inside no drawn zone at all, is

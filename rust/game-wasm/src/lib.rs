@@ -1916,8 +1916,6 @@ impl Router {
             let se = &self.graph.edges[start_snap_edge as usize];
             let from_forward_ok = start == se.from && matches!(se.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
             let to_reverse_ok = start == se.to && matches!(se.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
-            let n = &self.graph.nodes[start as usize];
-            push_e7(&mut coords, n.lon_e7, n.lat_e7);
             if from_forward_ok || to_reverse_ok {
                 let from_n = &self.graph.nodes[se.from as usize];
                 let to_n = &self.graph.nodes[se.to as usize];
@@ -1929,12 +1927,37 @@ impl Router {
                     full_seq.reverse();
                 }
                 let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
-                for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                // The bus has to physically travel from the true snap
+                // point BACK to the start node before the main path below
+                // (which Dijkstra always begins walking FROM the node, via
+                // whichever edge turned out cheapest) can continue — so
+                // this short, real connecting stretch belongs snap-point
+                // first, node last, not the other way round. Pushing the
+                // node first (the previous order) drew this stretch
+                // backwards and then had the main loop below jump
+                // straight from the snap point to wherever the *actual*
+                // first edge leads — a fake straight-line "teleport" with
+                // no corresponding road, visible as a sharp fork/spike
+                // right at the route's own start whenever the cheapest
+                // path's real first edge differs from the edge the start
+                // point happened to snap onto (confirmed live: Portree
+                // Depot's stop -113 snaps onto Broom Place between two
+                // junctions, but the cheapest path away from the depot
+                // actually leaves in the opposite direction along a
+                // different edge — a real user-reported spike at exactly
+                // this point, 2026-11-19, root-caused by replaying this
+                // exact leg natively against the real road graph).
+                push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                for &(lon_e7, lat_e7) in full_seq[1..=seg].iter().rev() {
                     push_e7(&mut coords, lon_e7, lat_e7);
                 }
-                push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                let n = &self.graph.nodes[start as usize];
+                push_e7(&mut coords, n.lon_e7, n.lat_e7);
                 leg_edges.push(start_snap_edge);
                 leg_counts.push((seg + 1) as u32);
+            } else {
+                let n = &self.graph.nodes[start as usize];
+                push_e7(&mut coords, n.lon_e7, n.lat_e7);
             }
         } else {
             let n = &self.graph.nodes[start as usize];
@@ -2217,9 +2240,6 @@ impl Router {
                 // reintroducing the doubling-back bug
                 // (`find_route_through_does_not_double_back_at_an_
                 // asymmetric_interior_waypoint` catches this directly).
-                let node = &self.graph.nodes[start as usize];
-                push_e7(&mut coords, node.lon_e7, node.lat_e7);
-                let before = coords.len();
                 let se = &self.graph.edges[start_snap_edge as usize];
                 let from_forward_ok = start == se.from && matches!(se.oneway, OnewayDirection::Forward | OnewayDirection::TwoWay);
                 let to_reverse_ok = start == se.to && matches!(se.oneway, OnewayDirection::Reverse | OnewayDirection::TwoWay);
@@ -2234,15 +2254,38 @@ impl Router {
                         full_seq.reverse();
                     }
                     let seg = closest_segment_index(&full_seq, start_snap_lon_e7, start_snap_lat_e7);
-                    for &(lon_e7, lat_e7) in &full_seq[1..=seg] {
+                    // Same fix as `find_route`'s own i==0 start-side gap
+                    // patch (see its doc comment, 2026-11-19): the bus has
+                    // to travel from the true snap point BACK to the start
+                    // node before the main path below (always walked FROM
+                    // the node) can continue, so this short real
+                    // connecting stretch must be emitted snap-point
+                    // first, node last — not node first, snap last, which
+                    // drew it backwards and then jumped straight from the
+                    // snap point to wherever the real first edge actually
+                    // leads, a fake "teleport" with no corresponding road.
+                    // The snap point is `i==0`'s own implicit, uncounted
+                    // anchor (same convention as the common branch above
+                    // and as `find_route`'s own point 0) — `before` is
+                    // captured after pushing it, so only the mid points
+                    // plus the node get counted, same total this edge
+                    // always counted before this fix, just attributed to
+                    // the other end of the stretch now.
+                    push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                    let before = coords.len();
+                    for &(lon_e7, lat_e7) in full_seq[1..=seg].iter().rev() {
                         push_e7(&mut coords, lon_e7, lat_e7);
                     }
-                    push_e7(&mut coords, start_snap_lon_e7, start_snap_lat_e7);
+                    let node = &self.graph.nodes[start as usize];
+                    push_e7(&mut coords, node.lon_e7, node.lat_e7);
                     let added = ((coords.len() - before) / 2) as u32;
                     if added > 0 {
                         leg_edges.push(start_snap_edge);
                         leg_counts.push(added);
                     }
+                } else {
+                    let node = &self.graph.nodes[start as usize];
+                    push_e7(&mut coords, node.lon_e7, node.lat_e7);
                 }
             } else {
                 // Interior point (i>0) whose own first real Dijkstra step

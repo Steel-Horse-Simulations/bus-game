@@ -775,6 +775,64 @@ assert(
   "a route timetable created just before close survives close+reopen",
 );
 
+// --- real non-zero timing-point padding survives reopen AND a later
+// unrelated edit (regression for the 2026-11-19 live incident: the v65->v66
+// migration reset every pre-existing timing point's standardPaddingMinutes/
+// peakPaddingMinutes to 0 — see that migration's own comment above — which
+// is a one-time, intentional, already-tested reset (see the v65->v66
+// migration test further down this file), NOT a live bug. This test instead
+// guards the ongoing save/load path itself: once a player has real non-zero
+// padding saved, neither a plain reopen nor a later save that only touches
+// an unrelated field (here, the time bands) should ever silently zero it
+// back out. ---
+upsertRouteTimetable(
+  db,
+  route2.id,
+  SUNDAY_MASK,
+  "both",
+  [{ startMinutes: 700, endMinutes: 1000, intervalMinutes: 45 }],
+  [{ pointIndex: 1, standardPaddingMinutes: 7, peakPaddingMinutes: 12, dwellMinutes: 3 }],
+  [0, 250],
+  [0, 250],
+  [0, 250],
+  [0, 250],
+  [],
+  [],
+);
+db.close();
+db = openSave(path);
+let reopenedTimingPoints = listRouteTimetablesForRoute(db, route2.id)[0].timingPoints;
+assert(
+  JSON.stringify(reopenedTimingPoints) ===
+    JSON.stringify([{ pointIndex: 1, standardPaddingMinutes: 7, peakPaddingMinutes: 12, dwellMinutes: 3 }]),
+  `real non-zero timing-point padding survives close+reopen unchanged, got ${JSON.stringify(reopenedTimingPoints)}`,
+);
+// Re-save the SAME component with only the time bands changed (simulating
+// "editing something else and re-saving") — the timing points passed
+// through unchanged must still come back unchanged, not reset to defaults.
+upsertRouteTimetable(
+  db,
+  route2.id,
+  SUNDAY_MASK,
+  "both",
+  [{ startMinutes: 600, endMinutes: 1100, intervalMinutes: 30 }],
+  reopenedTimingPoints,
+  [0, 250],
+  [0, 250],
+  [0, 250],
+  [0, 250],
+  [],
+  [],
+);
+db.close();
+db = openSave(path);
+reopenedTimingPoints = listRouteTimetablesForRoute(db, route2.id)[0].timingPoints;
+assert(
+  JSON.stringify(reopenedTimingPoints) ===
+    JSON.stringify([{ pointIndex: 1, standardPaddingMinutes: 7, peakPaddingMinutes: 12, dwellMinutes: 3 }]),
+  `real non-zero timing-point padding survives an unrelated field edit + reopen, got ${JSON.stringify(reopenedTimingPoints)}`,
+);
+
 // --- player-placed stops (DESIGN.md §4) ---
 const placedLegal = createPlayerStop(db, -3.21, 55.951, true);
 const placedIllegal = createPlayerStop(db, -3.22, 55.952, false);

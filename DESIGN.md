@@ -2067,10 +2067,14 @@ Street. **Contract held by Edinburgh Airport.**
 **Eligibility and economics.**
 - Offered once the player has a **depot within Edinburgh's city
   boundaries**.
-- Earns from its own dedicated fares (below), topped up to a **guaranteed
-  minimum revenue** if fares fall short in a given period — unlike 398,
-  which stands entirely on the per-journey payment, Airlink mostly stands
-  on its own commercial legs.
+- **Earns purely from its own dedicated fares (below)** — unlike 398,
+  which stands entirely on the per-journey payment, Airlink stands
+  entirely on its own commercial legs, with no council/airport top-up of
+  any kind. (A "guaranteed minimum revenue" top-up was proposed here
+  originally but dropped 2026-11-19, the user's own words: "I think we
+  ditch the 'Guaranteed minimum revenue'" — no real figure was ever set
+  for it, and it added a payment mechanism on top of what's otherwise a
+  genuinely commercial route.)
 - **No dead mileage is paid at all** — the operator bears 100% of it,
   unlike 398's partial allowance.
 
@@ -2142,10 +2146,11 @@ Glasgow Airport.**
   out of Buchanan Bus Station**, **and** Route 77 (below) has been running
   for **1 month** — an additional gate layered on top of the original
   condition, not a replacement for it.
-- Same payment structure as Airlink 100: earns from its own dedicated
-  fares (below), topped up to a **guaranteed minimum revenue** if fares
-  fall short in a given period, and **no dead mileage is paid at all** —
-  the operator bears 100% of it.
+- Same payment structure as Airlink 100: **earns purely from its own
+  dedicated fares (below)**, no council/airport top-up of any kind (the
+  "guaranteed minimum revenue" idea was dropped 2026-11-19 — see Airlink
+  100's own note above), and **no dead mileage is paid at all** — the
+  operator bears 100% of it.
 
 **Vehicle.** Must carry the Glasgow Airport livery (below), double deck,
 electric (OPERATIONS.md §3's category digit 4 or 5, "e" suffix, whichever

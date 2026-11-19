@@ -377,44 +377,33 @@ export const DEFAULT_TIME_BANDS: readonly TimeBand[] = [
 // early"). Point 0 needs no entry of its own — it's always the journey's
 // own generated departure, the implicit first anchor every leg is measured
 // from.
-// `isIslandRoute` (2026-11-15, user-confirmed) — an island depot group's
-// own routes are restricted to EXACTLY one OPTIONAL timing point, with no
-// peak-padding field at all (fare-journey.mts's isIslandDepotGroup decides
-// this from the real depot's own location against the real fare zones,
-// checked and enforced here too so a bypassed client-side UI can't
-// produce invalid saved data). Defaults false so every pre-existing
-// caller/test keeps behaving exactly as before for an ordinary route.
-//
-// Real bug, fixed 2026-11-19 (live report: "Island routes can only have 1
-// timing point time for whole route not 1 per timing point like it should
-// be"): this used to count EVERY entry in `timingPoints` against the cap,
-// including the route's own MANDATORY ones — the physical/interior
-// terminus (always needs a real published arrival time, no way to
-// disable) and any stop-level "forced" timing point (bus station/airport/
-// always-shared) — which aren't optional player choices at all, they're
-// baseline timing data every route needs regardless of island status.
-// Counting them meant setting a real time on the terminus alone could
-// already exhaust the "one timing point" budget, collapsing the whole
-// route to a single shared figure instead of letting mandatory points
-// work normally and capping only the genuinely optional extra one.
-// `routeTimingPointIndexes` is `Route.timingPointIndexes` — the real,
-// persisted, route-level list of indices the PLAYER has explicitly
-// flagged via the checkbox mechanism (route-panel.ts) — mandatory/forced
-// entries are never added to it, so filtering the cap check to only
-// entries whose index appears there correctly excludes them without
-// needing to re-derive "is this point mandatory" here.
+// `isIslandRoute` (2026-11-15, user-confirmed islands get no separate
+// peak-padding field — see the `peakPaddingMinutes` check below, which
+// still applies). An earlier version of this function also capped island
+// routes to a single OPTIONAL timing point — removed entirely 2026-11-19,
+// a real live bug: the cap was retroactively applied to routes that
+// already had many legitimate timing points flagged from before any such
+// cap was ever enforced (route 58, Skye: 12 real, pre-existing entries in
+// `timingPointIndexes`), making every one of them permanently unsaveable
+// — in effect destroying hours of real work, since the save path simply
+// refused once the count exceeded 1 regardless of whether the player was
+// adding anything new. Re-reading the user's own ORIGINAL request that
+// started this whole feature — "Island routes can only have 1 timing
+// point time for whole route not 1 per timing point like it should be" —
+// confirms the cap was the wrong reading of it from the start: that's a
+// complaint that islands wrongly shared ONE time across the whole route
+// when EACH timing point should get its OWN time, not a request to limit
+// the COUNT of timing points to one. The user's own follow-up confirmed
+// directly: "that is not how it should work." So islands now work exactly
+// like an ordinary route for timing-point COUNT — any number of stops can
+// be flagged, each gets its own real time — the only island-specific rule
+// left is the no-peak-padding one below.
 export function validateTimingPoints(
   points: readonly { kind: "stop" | "waypoint" }[],
   timingPoints: readonly TimingPoint[],
   isIslandRoute = false,
   routeTimingPointIndexes: readonly number[] = [],
 ): string | null {
-  if (isIslandRoute) {
-    const optionalCount = timingPoints.filter((tp) => routeTimingPointIndexes.includes(tp.pointIndex)).length;
-    if (optionalCount > 1) {
-      return "An island route is limited to a single optional timing point (its own start/terminus and any stop-forced timing point are unaffected).";
-    }
-  }
   const seen = new Set<number>();
   for (const tp of timingPoints) {
     if (!Number.isInteger(tp.pointIndex) || tp.pointIndex < 0 || tp.pointIndex >= points.length) {

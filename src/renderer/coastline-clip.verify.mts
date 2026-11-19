@@ -3,11 +3,19 @@
 // src/renderer/coastline-clip.verify.mts`.
 import * as fs from "node:fs";
 import { initSync, decode_coastline } from "./wasm/game_wasm.js";
-import { segmentIntersection, findCoastlineCrossings, coastlineWalkBetween, clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, type FareZonePoint } from "./coastline-clip.mts";
+import { segmentIntersection, findCoastlineCrossings, coastlineWalkBetween, clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, dedupeRing, type FareZonePoint } from "./coastline-clip.mts";
+import { pushOutRoadSnappedPoints } from "./fare-zone-road-pushout.mts";
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(`FAILED: ${message}`);
   console.log(`ok: ${message}`);
+}
+
+function distanceForTest(a: FareZonePoint, b: FareZonePoint): number {
+  const cosLat = Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
+  const dLon = (b.lon - a.lon) * (Math.PI / 180) * cosLat * 6_371_000;
+  const dLat = (b.lat - a.lat) * (Math.PI / 180) * 6_371_000;
+  return Math.hypot(dLon, dLat);
 }
 
 // --- segmentIntersection ---
@@ -424,6 +432,154 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
   const followed = coastlineFollowBetween(from, to, [longChain]);
   assert(followed !== null, "two snaps on the same chain are followed however far apart, not left as null");
   assert(followed !== null && followed.length === longChain.length, "the whole chain between them is included, nothing truncated");
+}
+
+// --- sameRealPoint / dedupeRing (2026-11-19 rewrite) ---
+//
+// The real confirmed root cause behind this whole saga's repeated "spike"
+// reports: a fixed lon/lat DEGREE epsilon (the old 1e-7) is not the same
+// real distance at every latitude/direction, and was too tight to catch a
+// genuine near-duplicate produced by two independently-computed "same"
+// points (e.g. a raw stored vertex vs. a segmentIntersection-computed
+// crossing landing at the same real place via different arithmetic).
+
+{
+  // The exact real gap measured in the TEST zone (id 58, a real saved
+  // zone, pulled directly from the player's own save.sqlite): points 12
+  // and 13 of its own saved ring are 2.0661e-7 degrees of latitude apart
+  // (~2.3cm), identical longitude — just over double the old 1e-7 degree
+  // threshold, so the old sameRealPoint never caught it.
+  const a: FareZonePoint = { lon: -5.715723037719727, lat: 57.28751566953964 };
+  const b: FareZonePoint = { lon: -5.715723037719727, lat: 57.28751587615412 };
+  assert(sameRealPoint(a, b), "the real TEST-zone (id 58) near-duplicate pair, ~2.3cm apart, must now be recognised as the same real point");
+}
+
+{
+  // Two points a real, deliberate 2 metres apart (well beyond the 0.5m
+  // tolerance) must NOT be treated as duplicates — the fix must not have
+  // widened the tolerance so far it starts collapsing genuinely distinct
+  // clicks.
+  const a: FareZonePoint = { lon: -5.715723037719727, lat: 57.28751566953964 };
+  const b: FareZonePoint = { lon: -5.715723037719727, lat: 57.2875337 }; // ~2m further north
+  assert(!sameRealPoint(a, b), "two points a genuine ~2m apart must still be treated as different real points");
+}
+
+{
+  // dedupeRing against the TEST zone's own real saved ring (id 58,
+  // pulled directly from save.sqlite, 2026-11-19) — the actual data this
+  // whole rewrite was triggered by. Points 12/13 (0-indexed) are the
+  // real near-duplicate pair; every other consecutive pair in this real
+  // ring is a genuine, far-larger gap.
+  const testZone58Ring: FareZonePoint[] = [
+    { lon: -5.717664957046509, lat: 57.28796848887046 },
+    { lon: -5.717544257640839, lat: 57.28790326079988 },
+    { lon: -5.717407464981079, lat: 57.28782933551349 },
+    { lon: -5.717352633669384, lat: 57.28772913244461 },
+    { lon: -5.717459399481017, lat: 57.28758042422715 },
+    { lon: -5.7170313492596, lat: 57.28767312869712 },
+    { lon: -5.716779487978056, lat: 57.287734779701516 },
+    { lon: -5.716489945406013, lat: 57.287794403137504 },
+    { lon: -5.716185705216587, lat: 57.287810848969826 },
+    { lon: -5.716059592173677, lat: 57.28779941127273 },
+    { lon: -5.715752214506132, lat: 57.28769927574171 },
+    { lon: -5.715338485595438, lat: 57.287364564881344 },
+    { lon: -5.715723037719727, lat: 57.28751566953964 }, // 12 — the near-duplicate pair
+    { lon: -5.715723037719727, lat: 57.28751587615412 }, // 13
+    { lon: -5.7154494524002075, lat: 57.287595237793454 },
+    { lon: -5.715398944259139, lat: 57.28752953603475 },
+    { lon: -5.715067237615585, lat: 57.28709804698377 },
+    { lon: -5.714762806892395, lat: 57.287056010135046 },
+    { lon: -5.715977958579629, lat: 57.286651784546024 },
+    { lon: -5.717496130347257, lat: 57.28691291414867 },
+    { lon: -5.718025060247044, lat: 57.287872433639734 },
+  ];
+  const deduped = dedupeRing(testZone58Ring);
+  assert(deduped.length === testZone58Ring.length - 1, `expected exactly one pair collapsed (21 -> 20 points), got ${deduped.length} from ${testZone58Ring.length}`);
+  // Confirm it's specifically the 12/13 pair that collapsed, not some
+  // other pair — point 12 (whichever of the two survives) should now sit
+  // directly between points 11 and 14 with no stray extra vertex.
+  const idx11 = deduped.findIndex((p) => p.lon === testZone58Ring[11].lon && p.lat === testZone58Ring[11].lat);
+  assert(idx11 >= 0, "point 11 survives unchanged");
+  const next = deduped[idx11 + 1];
+  const nextNext = deduped[idx11 + 2];
+  assert(
+    sameRealPoint(next, testZone58Ring[12]) && nextNext.lon === testZone58Ring[14].lon && nextNext.lat === testZone58Ring[14].lat,
+    `expected the collapsed pair's one survivor directly between real points 11 and 14, got next=${JSON.stringify(next)} nextNext=${JSON.stringify(nextNext)}`,
+  );
+}
+
+{
+  // A ring with no near-duplicates anywhere, including across its own
+  // wrap-around closing edge, comes back completely unchanged.
+  const clean: FareZonePoint[] = [
+    { lon: 0, lat: 0 },
+    { lon: 1, lat: 0 },
+    { lon: 1, lat: 1 },
+    { lon: 0, lat: 1 },
+  ];
+  const deduped = dedupeRing(clean);
+  assert(deduped.length === 4, `a ring with no real duplicates anywhere is untouched, got ${deduped.length} points`);
+}
+
+{
+  // The wrap-around case specifically: the ring's own LAST point is a
+  // near-duplicate of its FIRST — a real possibility (e.g. a zone-to-zone
+  // snap landing the final click back on the exact vertex the first
+  // click started from) that a purely consecutive-pair scan wouldn't
+  // catch without also checking the closing edge.
+  const wrapsAround: FareZonePoint[] = [
+    { lon: 0, lat: 0 },
+    { lon: 1, lat: 0 },
+    { lon: 1, lat: 1 },
+    { lon: 0.0000001, lat: 0.0000001 }, // ~0.014m from point 0 — a real near-duplicate of the first point
+  ];
+  const deduped = dedupeRing(wrapsAround);
+  assert(deduped.length === 3, `the wrap-around near-duplicate of the first point must be dropped, got ${deduped.length} points`);
+}
+
+// --- end-to-end: the TEST zone (id 58)'s own real near-duplicate pair,
+// through the real finalize pipeline (dedupeRing, then a road push-out),
+// confirming the fix actually prevents the divergence mechanism
+// fare-zone-road-pushout.verify.mts's own "duplicate-neighbour input"
+// tests already document: pushOutRoadSnappedPoints pushes every point
+// independently BY ARRAY INDEX, using THAT point's own real ring
+// neighbours — so two near- (not bit-) identical entries, each with its
+// own slightly different neighbours, can get pushed to two genuinely
+// different final positions. That divergence, not any one single
+// previously-fixed bug, is the actual "spike" mechanism behind this
+// whole saga's repeated reports. ---
+{
+  const testZone58Ring: FareZonePoint[] = [
+    { lon: -5.715338485595438, lat: 57.287364564881344 }, // 11
+    { lon: -5.715723037719727, lat: 57.28751566953964 }, // 12 — near-duplicate pair
+    { lon: -5.715723037719727, lat: 57.28751587615412 }, // 13
+    { lon: -5.7154494524002075, lat: 57.287595237793454 }, // 14
+  ];
+  // A real-shaped road edge running close to the near-duplicate pair, so
+  // both points qualify for push-out — the exact condition under which
+  // the divergence bites.
+  const nearestRoadEdge = (lon: number, lat: number) => ({ distM: 0.3, aLon: lon - 0.01, aLat: lat, bLon: lon + 0.01, bLat: lat, widthM: 5.5 });
+
+  // WITHOUT the fix: pushing the raw (non-deduped) ring independently by
+  // index moves points 12 and 13 using two different (prev, next) pairs
+  // — exactly the divergence mechanism.
+  const pushedWithoutDedup = pushOutRoadSnappedPoints([...testZone58Ring], nearestRoadEdge);
+  const rawGapM = distanceForTest(pushedWithoutDedup[1], pushedWithoutDedup[2]);
+
+  // WITH the fix: dedupeRing collapses the near-duplicate pair first, so
+  // there is only ever ONE point there to push — no divergence possible.
+  const deduped = dedupeRing(testZone58Ring);
+  assert(deduped.length === 3, `the real near-duplicate pair collapses before push-out ever sees it, got ${deduped.length}`);
+  const pushedWithDedup = pushOutRoadSnappedPoints(deduped, nearestRoadEdge);
+  assert(pushedWithDedup.length === 3, "push-out doesn't change the point count, only positions");
+
+  // Sanity: confirm the bug this is guarding against is real on the
+  // UN-deduped input (otherwise this test would be proving nothing) —
+  // the raw gap between the pushed copies of 12/13 should be
+  // meaningfully larger than their own ~2.3cm starting gap, since each
+  // was pushed by a different amount/direction using its own distinct
+  // neighbours.
+  assert(rawGapM > 0.05, `sanity: pushing the un-deduped pair independently should visibly diverge them (>5cm), got ${rawGapM}m — if this fails, the test fixture no longer demonstrates the bug`);
 }
 
 console.log("All coastline-clip checks passed.");

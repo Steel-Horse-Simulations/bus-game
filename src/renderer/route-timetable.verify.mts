@@ -117,10 +117,20 @@ assert(
 );
 
 // --- island restriction (2026-11-15, corrected 2026-11-19) ---
-assert(
-  validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }], true, [1]) === null,
-  "an island route with exactly one OPTIONAL timing point and no peak figure is valid",
-);
+// Island single-optional-timing-point cap removed entirely (2026-11-19) —
+// a real live bug, confirmed against the real save: every one of Skye's
+// 20 routes (depot group 22) already had well more than one timing point
+// flagged (7 to 14 each) from real pre-existing work, and the cap made
+// every single one of them permanently unsaveable the moment it was
+// enforced. Re-reading the user's own original request confirmed the cap
+// itself was the wrong reading of it from the start: "Island routes can
+// only have 1 timing point time for whole route not 1 per timing point
+// like it should be" was a complaint that islands wrongly shared ONE time
+// across the whole route when EACH timing point should get its OWN time
+// — not a request to limit the COUNT to one. These assertions prove an
+// island route now behaves exactly like an ordinary one for timing-point
+// COUNT (any number allowed, each gets its own real time) — the only
+// island-specific rule left is no separate peak-padding figure.
 assert(
   validateTimingPoints(
     [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "stop" as const }],
@@ -130,12 +140,12 @@ assert(
     ],
     true,
     [1, 2],
-  ) !== null,
-  "an island route with more than one OPTIONAL timing point is rejected",
+  ) === null,
+  "an island route with MORE than one optional timing point is now valid — the exact real-world shape of Skye's 20 broken routes",
 );
 assert(
   validateTimingPoints(stopStopWaypoint, [{ pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: 8, dwellMinutes: 0 }], true, [1]) !== null,
-  "an island route's timing point can't carry a separate peak figure",
+  "an island route's timing point still can't carry a separate peak figure — the one island-specific rule that remains",
 );
 assert(
   validateTimingPoints(
@@ -147,42 +157,6 @@ assert(
     false,
   ) === null,
   "the same two timing points are fine for a non-island route — isIslandRoute defaults to false, unchanged behaviour",
-);
-
-// Real bug, fixed 2026-11-19: "Island routes can only have 1 timing point
-// time for whole route not 1 per timing point like it should be" — the
-// old code counted a route's own MANDATORY terminus/forced-by-stop
-// entries against the island cap. These two prove the actual bug
-// scenario and its fix: a mandatory entry (index 2, NOT in
-// routeTimingPointIndexes — exactly how route-panel.ts's own terminus/
-// forced-by-stop blocks behave, they never write to timingPointIndexes)
-// coexists with one real optional entry (index 1, IS in
-// routeTimingPointIndexes) without tripping the cap; a second optional
-// entry still correctly fails.
-const threeStops = [{ kind: "stop" as const }, { kind: "stop" as const }, { kind: "stop" as const }];
-assert(
-  validateTimingPoints(
-    threeStops,
-    [
-      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }, // optional, flagged
-      { pointIndex: 2, standardPaddingMinutes: 3, peakPaddingMinutes: null, dwellMinutes: 0 }, // mandatory terminus, NOT flagged
-    ],
-    true,
-    [1],
-  ) === null,
-  "a mandatory terminus entry plus one real optional entry is valid on an island route — the bug this fix addresses",
-);
-assert(
-  validateTimingPoints(
-    threeStops,
-    [
-      { pointIndex: 1, standardPaddingMinutes: 5, peakPaddingMinutes: null, dwellMinutes: 0 }, // optional, flagged
-      { pointIndex: 2, standardPaddingMinutes: 3, peakPaddingMinutes: null, dwellMinutes: 0 }, // ALSO optional, flagged this time
-    ],
-    true,
-    [1, 2],
-  ) !== null,
-  "two genuinely optional flagged entries still correctly fails on an island route",
 );
 
 // --- isPeakMinute (2026-11-15) ---

@@ -54,19 +54,61 @@ export interface CoastlineCrossing {
   point: FareZonePoint;
 }
 
-// Cheap, local proximity check for the dedup below — doesn't need
-// distanceM's own real-metres accuracy (that's defined further down,
-// after this point), just "close enough to be the same real-world point
-// rather than two independent crossings," which a plain degree
-// difference already answers fine at this tiny a scale. Exported
-// (2026-11-15) — area-cluster.mts's own ring-walk needs the exact same
-// "is this really the same point" check to fix a real duplicate-point
-// bug (see walkRingDirection's own comment there), and fare-zone-
-// drawing.ts's draftPoints push sites reuse it as a defensive backstop
-// against any duplicate a snap/follow function hands back — built once
-// rather than redefined three times (CLAUDE.md).
+// How close two points need to be, in real metres, to count as "the same
+// real-world point" rather than two independent computations that landed
+// close together — the one hard-invariant tolerance every near-duplicate
+// check in the whole fare-zone-drawing pipeline shares (sameRealPoint,
+// dedupeRing below, and every call site that imports either). 0.5m is
+// generous enough to absorb floating-point slop between two independently
+// computed "same" point (a raw stored chain/ring vertex vs. a
+// segmentIntersection-computed crossing that lands at the same real place
+// via different arithmetic), while being far tighter than any two clicks a
+// player could make at a different real spot and mean differently.
+//
+// **This replaced a plain lon/lat DEGREE epsilon (1e-7, ~1.1cm of latitude
+// at these latitudes but a materially different real distance of
+// longitude depending on cos(lat)) after a real confirmed miss, 2026-11-19
+// — the TEST zone (id 58, a real saved zone) came back with two
+// consecutive points 2.07e-7 degrees of latitude apart (~2.3cm) that were
+// clearly meant to be the same vertex (identical longitude, a coastline-
+// walk's raw chain vertex immediately followed by a segmentIntersection-
+// computed crossing landing at that same real place): just over double
+// the old threshold, so it was never caught, and the two near-duplicate
+// entries then got pushed independently (by index, in
+// fare-zone-road-pushout.mts's own per-point loop, see that file's own
+// "duplicate-neighbour input" test) to two genuinely different final
+// positions — the actual mechanism behind this whole saga's repeated
+// "spike" reports, not any one single previously-fixed bug.** A real-
+// distance check (rather than a raw degree difference) is also simply the
+// geometrically correct comparison — a fixed degree epsilon is not
+// uniform in real metres across latitude/longitude at all, which a plain
+// distance-in-metres check sidesteps entirely.
+const DUPLICATE_POINT_TOLERANCE_M = 0.5;
+
 export function sameRealPoint(a: FareZonePoint, b: FareZonePoint): boolean {
-  return Math.abs(a.lon - b.lon) < 1e-7 && Math.abs(a.lat - b.lat) < 1e-7;
+  return distanceM(a, b) < DUPLICATE_POINT_TOLERANCE_M;
+}
+
+// The one hard invariant every finished ring passes through before any
+// further processing (road push-out, then coastline clipping) — not
+// trusted to have already been perfectly maintained by every click-time
+// insertion path (zone-to-zone snap, road-follow, coastline-follow,
+// area-cluster-follow, the plain fallback), each of which also already
+// dedupes via sameRealPoint at its own point of insertion. Collapses any
+// consecutive near-duplicate (including the WRAP-AROUND closing edge,
+// last point back to first — a real ring, not an open polyline) down to
+// one point. Cheap insurance, not redundant: a second, independent
+// confirmation that no two adjacent points in the final ring are the same
+// real place, from a single whole-ring pass rather than scattered
+// per-call-site checks that could individually drift.
+export function dedupeRing(points: readonly FareZonePoint[]): FareZonePoint[] {
+  if (points.length === 0) return [];
+  const result: FareZonePoint[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    if (!sameRealPoint(result[result.length - 1], points[i])) result.push(points[i]);
+  }
+  while (result.length > 1 && sameRealPoint(result[0], result[result.length - 1])) result.pop();
+  return result;
 }
 
 export function findCoastlineCrossings(p1: FareZonePoint, p2: FareZonePoint, chains: FareZonePoint[][]): CoastlineCrossing[] {

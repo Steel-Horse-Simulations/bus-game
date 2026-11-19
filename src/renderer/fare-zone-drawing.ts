@@ -32,9 +32,9 @@ import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { createColourPicker } from "./colour-picker";
-import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, type CoastlineSnap } from "./coastline-clip.mts";
+import { clipRingToCoastline, dedupeRing, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, type CoastlineSnap } from "./coastline-clip.mts";
 import { computeZoneLetters } from "./fare-journey.mts";
-import { unionAreaPolygons, nearestPointOnAreaBoundary, areaClusterFollowBetween, nearestVertexOfRing } from "./area-cluster.mts";
+import { unionAreaPolygons, nearestPointOnAreaBoundary, areaClusterFollowBetween } from "./area-cluster.mts";
 import { pushOutRoadSnappedPoints } from "./fare-zone-road-pushout.mts";
 import { islandAreaForPoint } from "./island-detection.mts";
 import { routeDrawState } from "./route-draw";
@@ -554,19 +554,27 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   let allZones: FareZone[] = [];
   let errorMessage = "";
   let draftPoints: FareZonePoint[] = [];
-  // Defensive backstop (2026-11-15) against exact-duplicate points
-  // reaching `draftPoints` at all, from ANY source — a real live bug
-  // (confirmed via a human-driven click trace against a real saved zone,
-  // which came back 66% exact-duplicate points) showed `coastlineFollow`/
-  // `areaClusterFollowBetween`'s own end-of-walk duplicate (now fixed at
-  // the source in coastline-clip.mts/area-cluster.mts) and a consecutive
-  // click's own first new point landing exactly on the previous click's
-  // last one. Fixing the two known source functions doesn't guarantee a
-  // THIRD source (e.g. the WASM router's `find_any_road_route`, out of
-  // scope to touch here) can't hand back the same shape of duplicate —
-  // this catches any of them uniformly, right where points actually
-  // enter the draft, same "skip it, don't push a point that's already
-  // exactly there" convention as pushDedup in the two files above.
+  // Defensive backstop (2026-11-15, widened 2026-11-19) against
+  // near-duplicate points reaching `draftPoints` at all, from ANY
+  // source — a real live bug (confirmed via a human-driven click trace
+  // against a real saved zone, which came back 66% exact-duplicate
+  // points) showed `coastlineFollow`/`areaClusterFollowBetween`'s own
+  // end-of-walk duplicate (now fixed at the source in coastline-clip.
+  // mts/area-cluster.mts) and a consecutive click's own first new point
+  // landing exactly on the previous click's last one. Fixing the two
+  // known source functions doesn't guarantee a THIRD source (e.g. the
+  // WASM router's `find_any_road_route`, out of scope to touch here)
+  // can't hand back the same shape of duplicate — this catches any of
+  // them uniformly, right where points actually enter the draft, same
+  // "skip it, don't push a point that's already there" convention as
+  // pushDedup in the two files above — and `sameRealPoint` itself now
+  // uses a real-distance (not raw degree-epsilon) tolerance, per its own
+  // header comment in coastline-clip.mts, so this catches a near- as
+  // well as an exact-duplicate. A whole-ring `dedupeRing` pass at Save
+  // time (below) is the second, independent half of this same hard
+  // invariant, covering the case where two separately-inserted points
+  // end up near-adjacent in the final ring without ever being
+  // consecutive AT insertion time.
   // Returns how many of `points` were genuinely added, so callers that
   // track `draftClickPointCounts` record the real count, not the
   // pre-dedup one (an all-duplicate click would otherwise still log a
@@ -596,25 +604,28 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // Shift+box-zoom conflict found earlier the same day — without it, a
   // drag meant to erase would instead pan the map underneath the cursor.
   let isErasing = false;
-  // Whether the most recently added point was snapped to a road — checked
-  // on the NEXT click to decide whether to road-follow between the two
-  // ("follow the road until the next point if it is also on a road",
-  // 2026-10-30). Reset whenever drawing starts/stops/undoes.
-  let lastPointWasRoadSnapped = false;
-  // Same idea, for the coastline (live user request, 2026-11-01: "snapping
-  // to the coast line should work like the other snapping for building,
-  // jump big gaps but follow if I mannualy do it") — carries the full
-  // CoastlineSnap (not just a boolean) since coastlineFollowBetween needs
-  // the previous point's own chain/edge location, not just whether it was
-  // a coastline point at all.
-  let lastCoastlineSnap: CoastlineSnap | null = null;
-  // Same idea again, for area-cluster snapping (T118/T139) — just a
-  // boolean, not a stored ClusterSnap, since (unlike road/coastline) an
-  // area boundary's own snap is always recomputed fresh against
-  // whatever fresh union the NEXT click's own query produces (see the
-  // click handler below) rather than reused from an old union call's own
+  // What the most recently added point was snapped to, as ONE tagged
+  // union rather than three independently-set/independently-reset
+  // booleans/objects (lastPointWasRoadSnapped/lastCoastlineSnap/
+  // lastPointWasAreaSnapped, as this was until the 2026-11-19 rewrite).
+  // That three-variable shape was a real, repeated source of this
+  // feature's own long bug history: every branch that could change the
+  // "last point" had to remember to set all three correctly (one true,
+  // the other two false/null), and every past fix that patched one
+  // branch's own point-insertion logic left the other two variables as a
+  // separate thing that could still drift out of sync. Consolidating to
+  // one variable, set in exactly one place per click, makes "what was
+  // the last point snapped to" a single fact instead of three facts that
+  // have to agree with each other.
+  //
+  // "area" carries no stored ClusterSnap (unlike "coastline", which needs
+  // the previous point's own chain/edge location for coastlineFollowBetween)
+  // since an area boundary's own snap is always recomputed fresh against
+  // whatever fresh union the NEXT click's own query produces — see the
+  // Ctrl branch below — rather than reused from an old union call's own
   // now-meaningless boundaryIndex.
-  let lastPointWasAreaSnapped = false;
+  type LastClickSnap = { kind: "none" } | { kind: "road" } | { kind: "coastline"; snap: CoastlineSnap } | { kind: "area" };
+  let lastSnap: LastClickSnap = { kind: "none" };
   let pendingZone = false; // true once "Finish" is clicked and the name/type form is up
   let pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
 
@@ -633,16 +644,21 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   function recomputeLastSnapState(): void {
     const last = draftPoints[draftPoints.length - 1];
     if (!last) {
-      lastPointWasRoadSnapped = false;
-      lastCoastlineSnap = null;
-      lastPointWasAreaSnapped = false;
+      lastSnap = { kind: "none" };
       return;
     }
-    lastCoastlineSnap = nearestPointOnCoastline(last, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
-    lastPointWasRoadSnapped = lastCoastlineSnap === null && snapToRoad(router, { lng: last.lon, lat: last.lat }) !== null;
+    const coastlineSnap = nearestPointOnCoastline(last, coastlineChains, COASTLINE_SNAP_DISTANCE_M);
+    if (coastlineSnap) {
+      lastSnap = { kind: "coastline", snap: coastlineSnap };
+      return;
+    }
+    if (snapToRoad(router, { lng: last.lon, lat: last.lat }) !== null) {
+      lastSnap = { kind: "road" };
+      return;
+    }
     const nearbyFootprints = queryNearbyLandusePolygons(map, [last]);
     const boundaries = unionAreaPolygons(nearbyFootprints);
-    lastPointWasAreaSnapped = nearestPointOnAreaBoundary(last, boundaries, LANDUSE_SNAP_DISTANCE_M) !== null;
+    lastSnap = nearestPointOnAreaBoundary(last, boundaries, LANDUSE_SNAP_DISTANCE_M) !== null ? { kind: "area" } : { kind: "none" };
   }
 
   function currentDepotGroup(): DepotGroup | undefined {
@@ -1000,6 +1016,30 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         }
         if (selectedDepotGroupId === null) return;
         try {
+          // The one hard whole-ring invariant (2026-11-19 rewrite,
+          // dedupeRing — coastline-clip.mts): every click-time insertion
+          // path already dedupes via sameRealPoint at its own point of
+          // insertion (pushDraftPoints here, pushDedup inside
+          // coastlineWalkBetween/walkRingDirection), but this is a second,
+          // independent whole-ring pass right before the two steps below
+          // that actually move points around — not redundant insurance,
+          // the real mechanism this whole feature's long "spike" history
+          // traced back to (2026-11-19, the TEST zone, id 58): two
+          // consecutive points that are near- but not bit-identical (e.g.
+          // a raw stored chain vertex vs. a segmentIntersection-computed
+          // crossing landing at the same real place via different
+          // arithmetic) used to slip past the old, tighter degree-epsilon
+          // check, and pushOutRoadSnappedPoints then pushes every point
+          // independently BY ARRAY INDEX — so two near-duplicate entries,
+          // each with its own (possibly different) ring neighbours, could
+          // get shoved to two genuinely different final positions. That
+          // divergence, not any single previously-fixed bug, is what read
+          // as a "spike" in every screenshot this whole saga worked from
+          // (see fare-zone-road-pushout.verify.mts's own "duplicate-
+          // neighbour input" tests). Run on the whole ring, including its
+          // wrap-around closing edge (last point back to first), since a
+          // near-duplicate there is exactly as real as one anywhere else.
+          const dedupedPoints = dedupeRing(draftPoints);
           // DESIGN.md §9: every point that's actually at the side of a
           // road (a real-distance decision made entirely inside
           // pushOutRoadSnappedPoints, not by any remembered snap history)
@@ -1013,7 +1053,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           // it). Done before the existing coastline clip below, which
           // stays the last safety net against a boundary ending up in
           // the sea.
-          const pushedOutPoints = pushOutRoadSnappedPoints(draftPoints, (lon, lat) => {
+          const pushedOutPoints = pushOutRoadSnappedPoints(dedupedPoints, (lon, lat) => {
             const info = router.nearest_road_edge_info(lon, lat);
             if (info.length === 0) return null;
             const [distM, aLon, aLat, bLon, bLat, widthM] = info;
@@ -1026,7 +1066,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           // landing somewhere unexpected after Save can be checked
           // against exactly what each stage did, not re-derived from the
           // saved result alone.
-          console.log("[fare-zone-save]", { draftPoints, pushedOutPoints, clippedPoints });
+          console.log("[fare-zone-save]", { draftPoints, dedupedPoints, pushedOutPoints, clippedPoints });
           // Real-geography auto-default (2026-11-15) — only while the
           // player hasn't picked a type of their own (typeTouched), checks
           // whether the zone's own real centroid lands on land the actual
@@ -1140,9 +1180,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         fareZoneDrawState.isDrawing = false;
         draftPoints = [];
         draftClickPointCounts.length = 0;
-        lastPointWasRoadSnapped = false;
-        lastCoastlineSnap = null;
-        lastPointWasAreaSnapped = false;
+        lastSnap = { kind: "none" };
         stopErasing();
         updateDraftLayers();
         render();
@@ -1159,9 +1197,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         fareZoneDrawState.isDrawing = true;
         draftPoints = [];
         draftClickPointCounts.length = 0;
-        lastPointWasRoadSnapped = false;
-        lastCoastlineSnap = null;
-        lastPointWasAreaSnapped = false;
+        lastSnap = { kind: "none" };
         errorMessage = "";
         updateDraftLayers();
         render();
@@ -1221,9 +1257,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     const zoneSnap = snapToExistingZones(map, e.lngLat, allZones);
     if (zoneSnap) {
       draftClickPointCounts.push(pushDraftPoints(zoneSnap));
-      lastPointWasRoadSnapped = false;
-      lastCoastlineSnap = null;
-      lastPointWasAreaSnapped = false;
+      lastSnap = { kind: "none" };
       updateDraftLayers();
       render();
       return;
@@ -1289,32 +1323,24 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         clusterSnap = nearestPointOnAreaBoundary(clickPoint, boundaries, LANDUSE_SNAP_DISTANCE_M);
       }
       if (clusterSnap) {
-        const previousSnap = previousPoint && lastPointWasAreaSnapped ? nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M) : null;
+        const previousSnap = previousPoint && lastSnap.kind === "area" ? nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M) : null;
         const follow = previousSnap ? areaClusterFollowBetween(previousSnap, clusterSnap, boundaries) : null;
-        const bridgeCorner =
-          previousPoint && !lastPointWasAreaSnapped ? nearestVertexOfRing(boundaries[clusterSnap.boundaryIndex], previousPoint, LANDUSE_SNAP_DISTANCE_M) : null;
         if (follow) {
           draftClickPointCounts.push(pushDraftPoints(...follow.slice(1)));
-        } else if (bridgeCorner) {
-          // T118's confirmed point (5): "on a road, press Ctrl, click
-          // near a cluster — connects from the road point to the
-          // nearest corner of that cluster," the mirror of point (4)
-          // above. Only when the previous point genuinely wasn't an
-          // area snap at all — two area-snapped points on different,
-          // unconnected clusters are a real "big gap" (3), not this
-          // case, so they fall through to the plain snap point in the
-          // branch below instead. Also falls through to that same plain
-          // branch when no real corner is actually close to the road
-          // point (nearestVertexOfRing's own bounded search, 2026-11-14
-          // fix) — bridging to a distant, unrelated corner of a large
-          // polygon produced a visible spike rather than a sensible
-          // connection.
-          draftClickPointCounts.push(pushDraftPoints(bridgeCorner));
         } else {
-          // No previous point at all, a genuine gap between two
-          // unconnected area boundaries, or no real corner close enough
-          // to bridge from — just the new point on its own (3), matching
-          // the confirmed spec's own straight-line fallback.
+          // Bridge-corner gap-jumping removed (2026-11-19, user's own
+          // instruction): "I don't actually use the gap jumping as we
+          // have since added the point removal button I just use that
+          // instead so we can ditch the bridging as I find it's a bit
+          // annoying as to when it does and doesn't work." It was also
+          // the root cause of a real, repeated live bug — bridging to a
+          // distant, unrelated corner of a large polygon produced a
+          // visible spike (confirmed via direct investigation against a
+          // real save this same session). No previous point at all, a
+          // genuine gap between two unconnected area boundaries, or
+          // (previously) a bridge candidate — just the new point on its
+          // own, matching the confirmed spec's own straight-line
+          // fallback.
           draftClickPointCounts.push(pushDraftPoints(clusterSnap.point));
         }
       } else {
@@ -1325,9 +1351,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         // already has.
         draftClickPointCounts.push(pushDraftPoints(clickPoint));
       }
-      lastPointWasAreaSnapped = clusterSnap !== null;
-      lastPointWasRoadSnapped = false;
-      lastCoastlineSnap = null;
+      lastSnap = clusterSnap !== null ? { kind: "area" } : { kind: "none" };
       // Diagnostic trace, same convention/purpose as the plain-click one
       // further down — this is the branch T207's own retry lives in, so
       // `usedRetry`/`clusterSnap` here are exactly what a live report
@@ -1381,7 +1405,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     const pointCountBeforeThisClick = draftPoints.length;
     const previousPoint = draftPoints[draftPoints.length - 1];
     const coastlineFollow =
-      coastlineSnap && lastCoastlineSnap && previousPoint ? coastlineFollowBetween(lastCoastlineSnap, coastlineSnap, coastlineChains) : null;
+      coastlineSnap && lastSnap.kind === "coastline" && previousPoint ? coastlineFollowBetween(lastSnap.snap, coastlineSnap, coastlineChains) : null;
     // Road-following (2026-10-30, "when snapping to a road it should
     // follow the road until the next point if it is also on a road"):
     // only when BOTH this click and the previous point landed on a road —
@@ -1390,7 +1414,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     // shift is held or a coastline point took priority (above), so this
     // naturally falls through to the plain raw-point branch below without
     // a separate check.
-    if (roadSnap && lastPointWasRoadSnapped && previousPoint) {
+    if (roadSnap && lastSnap.kind === "road" && previousPoint) {
       const pathCoords = router.find_any_road_route(previousPoint.lon, previousPoint.lat, roadSnap.lon, roadSnap.lat);
       // pathCoords includes the previous point's own position again as its
       // first pair (find_any_road_route always starts from the snapped
@@ -1420,32 +1444,18 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       draftClickPointCounts.push(pushDraftPoints(...coastlineFollow.slice(1)));
     } else {
       const point = coastlineSnap?.point ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
-      // T118's confirmed point (4): "transitioning off a building-trace
-      // onto a plain road click connects from whichever corner of the
-      // just-traced cluster is nearest to the new road point, not
-      // necessarily the trace's own last plotted point" — inserts that
-      // corner as an extra bridging point (the trace's own last point
-      // stays exactly where it was placed) rather than replacing
-      // anything already traced.
-      if (lastPointWasAreaSnapped && previousPoint) {
-        const boundaries = unionAreaPolygons(queryNearbyLandusePolygons(map, [previousPoint]));
-        const previousSnap = nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M);
-        // Bounded to LANDUSE_SNAP_DISTANCE_M (2026-11-14 fix, see
-        // nearestVertexOfRing's own doc comment) — without this, a large
-        // polygon's globally-nearest vertex to `point` could be a
-        // distant, unrelated corner, producing a boundary that jumped
-        // away from the road and straight back (a live reported bug: a
-        // visible spike near Main Street, Kyle of Lochalsh).
-        const corner = previousSnap ? nearestVertexOfRing(boundaries[previousSnap.boundaryIndex], point, LANDUSE_SNAP_DISTANCE_M) : null;
-        const newPoints = corner ? [corner, point] : [point];
-        draftClickPointCounts.push(pushDraftPoints(...newPoints));
-      } else {
-        draftClickPointCounts.push(pushDraftPoints(point));
-      }
+      // Bridge-corner gap-jumping removed (2026-11-19, user's own
+      // instruction — see the matching removal in the Ctrl-held
+      // area-cluster branch above for the full reasoning): it was
+      // confirmed to be the actual cause of a real, repeated live bug —
+      // a large polygon's globally-nearest vertex to `point` could be a
+      // distant, unrelated corner, producing a boundary that jumped away
+      // from the road and straight back (visible spikes at Main Street,
+      // Kyle of Lochalsh, and again near Portree Depot). The point-
+      // removal/undo button now covers the case this used to handle.
+      draftClickPointCounts.push(pushDraftPoints(point));
     }
-    lastPointWasRoadSnapped = roadSnap !== null;
-    lastCoastlineSnap = coastlineSnap;
-    lastPointWasAreaSnapped = false;
+    lastSnap = coastlineSnap ? { kind: "coastline", snap: coastlineSnap } : roadSnap ? { kind: "road" } : { kind: "none" };
     // Diagnostic trace for the road/coastline-follow click path, kept
     // deliberately (not a throwaway) for diagnosing live reports like the
     // Main Street, Kyle of Lochalsh spike (T207) — a real human-driven

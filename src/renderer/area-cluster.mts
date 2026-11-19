@@ -132,43 +132,6 @@ function pathLengthM(points: readonly FareZonePoint[]): number {
   return total;
 }
 
-// Whichever real VERTEX of a closed boundary ring is nearest a given
-// reference point, as long as one is actually within maxDistanceM —
-// distinct from nearestPointOnAreaBoundary above, which can land
-// anywhere along an edge, not necessarily at a corner. DESIGN.md's own
-// confirmed points (4)/(5): transitioning between an area trace and a
-// road/raw point connects via whichever corner of the cluster is
-// nearest the OTHER side's point, not an arbitrary edge-interpolated
-// spot.
-//
-// The distance bound was added 2026-11-14 after a real live bug: for a
-// large landuse polygon whose own OSM geometry only records vertices at
-// its true corners (not evenly spaced along straight edges), the
-// globally-nearest vertex to a click made partway along a long edge can
-// be a distant, unrelated corner on the far side of the polygon rather
-// than anything sensibly "nearby" — producing a boundary that jumps far
-// away from the road and straight back, a visible spike. Bounding the
-// search to maxDistanceM (the caller passes the same LANDUSE_SNAP_
-// DISTANCE_M used for every other area-boundary snap in this feature)
-// means a corner is only ever inserted when a real one is actually
-// close to the reference point; otherwise this returns null and the
-// caller falls back to no bridging corner at all, the same "can't do it
-// sensibly, don't fake it" convention used throughout this feature.
-export function nearestVertexOfRing(ring: readonly FareZonePoint[], referencePoint: FareZonePoint, maxDistanceM: number): FareZonePoint | null {
-  let best: FareZonePoint | null = null;
-  let bestDist = Infinity;
-  // ring[length-1] repeats ring[0] (closed) — stop one short so the
-  // closing point isn't considered twice.
-  for (let i = 0; i < ring.length - 1; i++) {
-    const d = distanceM(ring[i], referencePoint);
-    if (d < bestDist) {
-      bestDist = d;
-      best = ring[i];
-    }
-  }
-  return best && bestDist <= maxDistanceM ? best : null;
-}
-
 // Walks a CLOSED ring (ring[0] === ring[ring.length-1]) from one edge to
 // another in a single fixed direction — forward (increasing index, with
 // wraparound) if `forward` is true, backward otherwise. Used by
