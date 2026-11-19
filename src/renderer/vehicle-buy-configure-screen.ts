@@ -392,8 +392,8 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       longDistanceNote.style.color = "var(--text-muted)";
       longDistanceNote.style.marginTop = "4px";
       longDistanceNote.textContent = nationForRegion(group.region) === "scotland"
-        ? "Citylink is allowed in every Scottish depot but is long-distance only (not enforced yet) and needs a coach. Citylink/West Coast Motors is the same but Glasgow and Oban depots only."
-        : "MegaBus and National Express are allowed in every England/Wales depot but are long-distance only (not enforced yet). Both need a coach.";
+        ? "Citylink is allowed in every Scottish depot but is long-distance only (not enforced yet) and needs a coach. Citylink/West Coast Motors is the same but Glasgow and Oban depots only. MegaBus is allowed everywhere too (no nation lock), long-distance only, needs a coach."
+        : "National Express is allowed in every England/Wales depot but is long-distance only (not enforced yet) and needs a coach. TaithCymru is allowed everywhere too but only runs routes to/from Wales (not enforced here yet). MegaBus is allowed everywhere with no nation lock. All three need a coach.";
       col1.appendChild(longDistanceNote);
     }
 

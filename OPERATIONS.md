@@ -760,6 +760,48 @@ Geofabrik's own `wales.poly` region file, same fail-open convention on a
 missing/failed load). Colours sampled directly from the real supplied
 badge artwork: body `#f1f0f0`, dragon/accent `#c8102e`.
 
+### TaithCymru and TrawsCymru (2026-11-19)
+TaithCymru is a real Welsh long-distance coach operator, swapped in for
+MegaBus's old Wales-only role at the user's own direct instruction: "swap
+Megabus for TaithCymru in Wales as that's the actual operator in Wales,
+Megabus will still be kept with no restrictions on use apart from coaches
+and long distance routes." A standalone operator in its own right (not a
+National Express sub-brand), coach-only vehicle lock, long-distance route
+type. Colours are this model's own read of the real supplied vehicle
+photo (no standalone badge PNG given): body `#111111`, ring-and-bars logo
+`#00a551`.
+
+**Nation lock, revised same day.** Originally given the same
+terminus-only rule as National Express Welsh, then corrected by the user
+directly: "TaithCymru should only operate routes that are 85% or more in
+Wales, otherwise it should be National Express." A real distance-weighted
+fraction of the whole route's length against the `wales_boundary.bin`
+boundary (each segment's own midpoint decides whether that segment counts
+as "in Wales," a flagged approximation rather than a true polygon
+intersection) — not just the two endpoints. No separate fallback logic
+was needed for "otherwise it should be National Express": plain National
+Express has no Wales-specific restriction of its own, so it's already the
+next available long-distance choice the moment TaithCymru's own 85% gate
+blocks it.
+
+**TrawsCymru**, added the same day — the real LOCAL Welsh bus operator
+(Transport for Wales's own regional network), genuinely distinct from
+TaithCymru's long-distance coach role: "let's use TrawsCymru as the local
+operator that is used in Wales." Standalone operator, `local_night` route
+type (no coach-only lock), same terminus-only Wales nation lock as
+National Express Welsh (not TaithCymru's stricter 85% rule — a local
+route is far less likely to clip through Wales at one end only the way a
+long-distance coach route can; an inferred choice, not explicitly
+confirmed). Colours are this model's own read of real-world descriptions
+of TrawsCymru's branding ("green, white and red" is the traditional
+palette per a secondhand forum report, not a confirmed hex) rather than a
+sampled badge PNG: body `#00693e`, `#ffffff`.
+
+MegaBus's own former England/Wales nation lock is removed as part of the
+same change — it now has no nation/area lock at all, usable from any
+depot group, keeping only its existing coach-only vehicle lock and
+long-distance-only route-type note.
+
 ---
 
 ## 6. Staff

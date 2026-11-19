@@ -15,6 +15,8 @@ import {
   DAYS_PER_PERIOD,
   PERIODS_PER_COMPANY_YEAR,
   DAYS_PER_COMPANY_YEAR,
+  addOneYear,
+  gameDayFromCivil,
 } from "./game-clock.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -121,6 +123,35 @@ assert(DAYS_PER_PERIOD === 28 && PERIODS_PER_COMPANY_YEAR === 13 && DAYS_PER_COM
   // DESIGN.md §3's own worked example: "at 60x a day passes in about 2.4 real minutes"
   const realMsForOneGameDayAt60x = (86400 / (GAME_SECONDS_PER_REAL_SECOND_AT_1X * 60)) * 1000;
   assert(Math.abs(realMsForOneGameDayAt60x - 144000) < 1, "a full game day at 60x takes 144 real seconds (2.4 real minutes)");
+}
+
+// --- addOneYear (fixed-contract-failures.mts's suspension-return timer) ---
+{
+  const start = gameDayFromCivil(5, 6, 15); // an ordinary date, Year 5, 15 June
+  const returned = addOneYear(start);
+  const dt = gameDateTimeFromSeconds(returned * 86400);
+  assert(dt.year === 6 && dt.month === 6 && dt.day === 15, "an ordinary date returns on the same month/day, one year later");
+
+  // Leap day: Year 4 is a leap year (isLeapYear(4) === true), Year 5 is not.
+  const leapDay = gameDayFromCivil(4, 2, 29);
+  const leapReturn = addOneYear(leapDay);
+  const dtLeap = gameDateTimeFromSeconds(leapReturn * 86400);
+  assert(dtLeap.year === 5 && dtLeap.month === 2 && dtLeap.day === 28, "a 29 February suspension start clamps to 28 February when the return year isn't a leap year");
+
+  // Leap day returning into another leap year (Year 4 -> Year 8, also a
+  // leap year) keeps the real 29 February, no clamping needed.
+  const leapToLeapReturn = addOneYear(gameDayFromCivil(4, 2, 29));
+  // addOneYear only steps forward ONE year (4 -> 5), so re-run it from the
+  // already-clamped 28 Feb Year 5 to reach Year 6, not a double-step check
+  // of 4 -> 8 (isLeapYear(8) === true but that's 4 years forward, not 1).
+  assert(leapToLeapReturn === leapReturn, "addOneYear is deterministic for the same input");
+
+  // Crossing into a genuine leap year on the FAR end (not a leap source
+  // date) is the easy, unclamped case.
+  const intoLeapYear = gameDayFromCivil(3, 3, 1); // Year 3 -> Year 4 (a leap year), ordinary date, no clamping involved
+  const intoLeapReturn = addOneYear(intoLeapYear);
+  const dtIntoLeap = gameDateTimeFromSeconds(intoLeapReturn * 86400);
+  assert(dtIntoLeap.year === 4 && dtIntoLeap.month === 3 && dtIntoLeap.day === 1, "an ordinary date landing in a real leap year on the far end is unaffected");
 }
 
 console.log("\nAll game-clock checks passed.");

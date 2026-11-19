@@ -38,9 +38,14 @@ import {
   liveryEligibleForRoute,
   nationalExpressScottishTerminusReason,
   nationalExpressWelshTerminusReason,
+  taithCymruWalesFractionReason,
+  routeWalesFraction,
+  trawsCymruTerminusReason,
   nationForRegion,
   translinkNationReason,
   airlinkLothianFallbackEligible,
+  liverySpecificRouteReason,
+  LIVERY_SPECIFIC_ROUTE,
 } from "./livery-seed-data.mts";
 import { loadScotlandBoundary, isPointInScotland } from "./scotland-boundary.mts";
 import { loadWalesBoundary, isPointInWales } from "./wales-boundary.mts";
@@ -259,6 +264,91 @@ assert(nationalExpressWelshTerminusReason("National Express Scottish", [{ lon: -
 assert(nationalExpressWelshTerminusReason("National Express Welsh", undefined) === null, "no points at all (draft route not yet known) does not block");
 assert(nationalExpressWelshTerminusReason("National Express Welsh", []) === null, "an empty points array does not block");
 
+// --- TaithCymru — new standalone livery (2026-11-19), swapped in for
+// MegaBus's old Wales role; MegaBus itself loses its nation lock. ---
+assert(REAL_LIVERY_COLOURS["TaithCymru"]?.primary === "#111111", "TaithCymru's primary colour");
+assert(REAL_LIVERY_COLOURS["TaithCymru"]?.secondary === "#00a551", "TaithCymru's secondary colour");
+assert(OPERATOR_LIVERIES["TaithCymru"]?.includes("TaithCymru"), "TaithCymru is a standalone operator, not a National Express sub-brand");
+assert(!OPERATOR_LIVERIES["National Express"]?.includes("TaithCymru"), "TaithCymru does not sit in the National Express operator group");
+assert(LONG_DISTANCE_LIVERY_NAMES.includes("TaithCymru"), "TaithCymru is a long-distance livery");
+assert(isLongDistanceLiveryName("TaithCymru"), "isLongDistanceLiveryName('TaithCymru') is true");
+assert(LIVERY_ROUTE_TYPES["TaithCymru"]?.includes("long_distance"), "TaithCymru's route-type category is long_distance");
+assert(
+  liveryVehicleLockReason("TaithCymru", { id: "volvo-9700", category: "Coaches" }) === null,
+  "TaithCymru is allowed on a coach",
+);
+assert(
+  liveryVehicleLockReason("TaithCymru", { id: "adl-enviro400", category: "Double-deckers" }) !== null,
+  "TaithCymru is blocked on an ordinary double-decker (same coach-only lock as its siblings)",
+);
+// Same shape as National Express Welsh: no depot-region nation lock, a
+// real route-geometry check instead (taithCymruWalesFractionReason, below).
+assert(
+  longDistanceNationLockReason("TaithCymru", "North Scotland") === null,
+  "TaithCymru has no depot-region nation lock from a Scottish depot region",
+);
+assert(
+  longDistanceNationLockReason("TaithCymru", "North England") === null,
+  "TaithCymru has no depot-region nation lock from an England/Wales depot region either",
+);
+// MegaBus's own former England/Wales nation lock is gone entirely — the
+// user's own instruction, "no restrictions on use apart from coaches and
+// long distance routes."
+assert(
+  longDistanceNationLockReason("MegaBus", "West Scotland") === null,
+  "MegaBus is no longer nation-locked out of a Scottish depot region",
+);
+assert(
+  longDistanceNationLockReason("MegaBus", "North England") === null,
+  "MegaBus still has no lock from an England/Wales depot region either (unchanged, just no longer the only region it allows)",
+);
+assert(
+  longDistanceNationLockReason("National Express", "West Scotland") !== null,
+  "plain National Express, by contrast, IS still nation-locked out of Scottish depot regions — unaffected by this change",
+);
+assert(
+  liveryVehicleLockReason("MegaBus", { id: "volvo-9700", category: "Coaches" }) === null,
+  "MegaBus is still allowed on a coach (vehicle lock unchanged)",
+);
+assert(
+  liveryVehicleLockReason("MegaBus", { id: "adl-enviro400", category: "Double-deckers" }) !== null,
+  "MegaBus is still blocked on an ordinary double-decker (vehicle lock unchanged)",
+);
+
+// --- TrawsCymru — new standalone LOCAL Welsh operator (2026-11-19),
+// distinct from TaithCymru's long-distance coach role above. ---
+assert(REAL_LIVERY_COLOURS["TrawsCymru"]?.primary === "#00693e", "TrawsCymru's primary colour");
+assert(REAL_LIVERY_COLOURS["TrawsCymru"]?.secondary === "#ffffff", "TrawsCymru's secondary colour");
+assert(OPERATOR_LIVERIES["TrawsCymru"]?.includes("TrawsCymru"), "TrawsCymru is a standalone operator");
+assert(!LONG_DISTANCE_LIVERY_NAMES.includes("TrawsCymru"), "TrawsCymru is NOT a long-distance livery — it's the local operator");
+assert(!isLongDistanceLiveryName("TrawsCymru"), "isLongDistanceLiveryName('TrawsCymru') is false");
+assert(LIVERY_ROUTE_TYPES["TrawsCymru"]?.includes("local_night"), "TrawsCymru's route-type category is local_night, not long_distance");
+assert(
+  liveryVehicleLockReason("TrawsCymru", { id: "adl-enviro400", category: "Double-deckers" }) === null,
+  "TrawsCymru is allowed on an ordinary double-decker — no coach-only lock, unlike the long-distance operators",
+);
+assert(
+  liveryVehicleLockReason("TrawsCymru", { id: "volvo-9700", category: "Coaches" }) !== null,
+  "TrawsCymru is blocked on a coach (coaches aren't in VEHICLE_ROUTE_TYPES's local_night list)",
+);
+
+// --- Oxford Tube's own locks (2026-11-19) — stays in the game (not
+// removed), excluded only from the contract-failure mechanic, locked to
+// the Volvo 9700DD specifically (not any coach) and long_distance routes.
+assert(LIVERY_ROUTE_TYPES["Oxford Tube"]?.includes("long_distance"), "Oxford Tube's route-type category is long_distance");
+assert(
+  liveryVehicleLockReason("Oxford Tube", { id: "volvo-9700dd", category: "Coaches" }) === null,
+  "Oxford Tube is allowed on the Volvo 9700DD",
+);
+assert(
+  liveryVehicleLockReason("Oxford Tube", { id: "volvo-9700", category: "Coaches" }) !== null,
+  "Oxford Tube is blocked on the plain Volvo 9700 (a coach, but not the DD) — a stricter lock than the general coach-only rule",
+);
+assert(
+  liveryVehicleLockReason("Oxford Tube", { id: "adl-enviro400", category: "Double-deckers" }) !== null,
+  "Oxford Tube is blocked on an ordinary double-decker",
+);
+
 // --- Irish Citylink and Translink — new liveries (2026-11-15). ---
 assert(REAL_LIVERY_COLOURS["Irish Citylink"]?.primary === "#fce908", "Irish Citylink's primary colour (real, sampled from the supplied badge PNG)");
 assert(REAL_LIVERY_COLOURS["Irish Citylink"]?.secondary === "#1eadfb", "Irish Citylink's secondary colour");
@@ -325,6 +415,40 @@ assert(
 assert(
   liveryUnavailableReason("Translink", { id: "adl-enviro400", category: "Double-deckers" }, { name: "Glasgow", region: "West Scotland" }) !== null,
   "liveryUnavailableReason blocks Translink outside Ireland even on an allowed vehicle",
+);
+
+// --- Thistle Coaches (added 2026-11-19) — the competitor's own livery,
+// built for the Fixed real contracts failure mechanic
+// (fixed-contract-failures.mts). White primary is the confirmed real
+// colour; the thistle-purple secondary is this model's own flagged
+// estimate. ---
+assert(REAL_LIVERY_COLOURS["Thistle Coaches"]?.primary === "#ffffff", "Thistle Coaches is plain white primary, the confirmed real colour");
+assert(liveryOperator("Thistle Coaches") === "Thistle Coaches", "Thistle Coaches is its own standalone operator, same shape as Citylink/MegaBus");
+
+// No vehicle-type lock at all — it needs to be able to cover any of the
+// four in-scope contracts, including coach-only Airlink 100 and
+// electric-single-deck-only 398.
+assert(liveryVehicleLockReason("Thistle Coaches", { id: "volvo-9700", category: "Coaches" }) === null, "Thistle Coaches is allowed on a coach (needed to cover Airlink 100)");
+assert(liveryVehicleLockReason("Thistle Coaches", { id: "adl-enviro400", category: "Double-deckers" }) === null, "Thistle Coaches is allowed on a double-decker (needed to cover Express 500)");
+assert(liveryVehicleLockReason("Thistle Coaches", { id: "adl-enviro200", category: "Single-deckers / midibuses" }, "electric") === null, "Thistle Coaches is allowed on an electric single-decker (needed to cover 398)");
+assert(LIVERY_ROUTE_TYPES["Thistle Coaches"] === undefined, "Thistle Coaches has no route-type restriction of its own — genuinely unrestricted, not merely permissive for every category");
+
+// Never player-selectable: locked to a sentinel route number ("Thistle
+// Coaches") that no real player route can ever have, so it's blocked in
+// every real scenario via the SAME mechanism every other specific-route
+// livery already uses (LIVERY_SPECIFIC_ROUTE) — no bespoke "hide this
+// livery" flag needed.
+assert(LIVERY_SPECIFIC_ROUTE["Thistle Coaches"] === "Thistle Coaches", "Thistle Coaches is locked to its own sentinel route number");
+assert(liverySpecificRouteReason("Thistle Coaches", { number: "398" }) !== null, "Thistle Coaches is blocked for an ordinary route number like 398");
+assert(liverySpecificRouteReason("Thistle Coaches", { number: "Airlink 100" }) !== null, "Thistle Coaches is blocked even for another contract's own real route number");
+assert(liverySpecificRouteReason("Thistle Coaches", { number: "Thistle Coaches" }) === null, "the sentinel number itself would pass (by construction, since no player route can ever actually be numbered this)");
+assert(
+  liveryUnavailableReason("Thistle Coaches", { id: "adl-enviro400", category: "Double-deckers" }, { name: "Glasgow", region: "West Scotland" }, undefined, undefined, { number: "500" }) !== null,
+  "liveryUnavailableReason blocks Thistle Coaches for a real route (Express 500's own route number), confirming it never appears in the buy/configure picker",
+);
+assert(
+  !liveryEligibleForRoute("Thistle Coaches", { routeType: "ordinary", number: "52" }, { name: "Glasgow", region: "West Scotland" }),
+  "liveryEligibleForRoute blocks Thistle Coaches for an ordinary player route, confirming it never appears in route branding or the random per-journey livery picker",
 );
 
 // --- Airlink 100's own Lothian/Enviro400 XLB fallback (2026-11-15) ---
@@ -523,6 +647,7 @@ async function runWalesTerminusChecks(): Promise<void> {
     const swansea = { lon: -3.9436, lat: 51.6214 };
     const london = { lon: -0.1276, lat: 51.5072 };
     const manchester = { lon: -2.2426, lat: 53.4808 };
+    const bristol = { lon: -2.5879, lat: 51.4545 };
 
     // Both termini outside Wales: blocked.
     assert(
@@ -576,6 +701,104 @@ async function runWalesTerminusChecks(): Promise<void> {
     assert(
       liveryUnavailableReason("National Express Welsh", { id: "volvo-9700", category: "Coaches" }, undefined, undefined, undefined, { number: "NX1" }) === null,
       "liveryUnavailableReason does not block National Express Welsh when route.points is absent entirely",
+    );
+
+    // TaithCymru's own 85%-of-route-length rule (2026-11-19, replacing its
+    // original terminus-only check) — real distance-weighted fraction
+    // against the same Wales boundary data already loaded above.
+    // TaithCymru's own 85%-of-route-length rule (2026-11-19, replacing its
+    // original terminus-only check) — real distance-weighted fraction
+    // against the same Wales boundary data already loaded above. Each
+    // route below is real-world geography with its own fraction computed
+    // directly by the function under test (routeWalesFraction) and
+    // verified once by hand against isPointInWales on the borderline
+    // points (see the midpoint checks that used to sit here), not
+    // hand-calculated — this project's own "measure, don't guess"
+    // convention for anything involving real-world geometry.
+    const holyhead = { lon: -4.6306, lat: 53.31 }; // deep in north-west Wales
+    const hereford = { lon: -2.7194, lat: 52.0567 }; // England, but the Cardiff-Hereford midpoint still falls in Wales (Monmouthshire's own real eastward bulge)
+    const worcester = { lon: -2.22, lat: 52.192 }; // England, far enough east that the Hereford-Worcester midpoint is genuinely in England
+
+    assert(routeWalesFraction([cardiff, swansea]) === 1, "a route entirely within Wales is 100% Wales");
+    assert(routeWalesFraction([london, bristol]) === 0, "a route entirely within England is 0% Wales");
+    assert(routeWalesFraction(undefined) === null, "no points at all (draft route not yet known) returns null, not 0");
+    assert(routeWalesFraction([cardiff]) === null, "a single point (no real segment yet) returns null");
+    // A real mixed route, well under 85%: London->Bristol->Cardiff->Swansea.
+    const londonToSwansea = routeWalesFraction([london, bristol, cardiff, swansea]);
+    assert(londonToSwansea !== null && londonToSwansea < 0.85, "a route that's mostly England with a Wales tail stays well under 85%");
+    // A real mixed route, ABOVE 85%: a long Wales-only leg (Holyhead to
+    // Cardiff) plus a short England dip (Hereford to Worcester) — proves
+    // the threshold genuinely checks a real proportion, not just 0%/100%.
+    const holyheadToWorcester = routeWalesFraction([holyhead, cardiff, hereford, worcester]);
+    assert(holyheadToWorcester !== null && holyheadToWorcester >= 0.85, "a mostly-Wales route with a short England dip clears the 85% threshold");
+    // The same route with the long Wales leg shortened to Swansea instead
+    // of Holyhead falls back under 85%.
+    const swanseaToWorcester = routeWalesFraction([swansea, cardiff, hereford, worcester]);
+    assert(swanseaToWorcester !== null && swanseaToWorcester < 0.85, "shortening the Wales leg drops the same route back under 85%");
+
+    assert(
+      taithCymruWalesFractionReason("TaithCymru", [holyhead, cardiff, hereford, worcester]) === null,
+      "TaithCymru is allowed on a route that's at least 85% in Wales",
+    );
+    assert(
+      taithCymruWalesFractionReason("TaithCymru", [swansea, cardiff, hereford, worcester]) !== null,
+      "TaithCymru is blocked on a route that's under 85% in Wales",
+    );
+    assert(
+      taithCymruWalesFractionReason("National Express", [swansea, cardiff, hereford, worcester]) === null,
+      "TaithCymru's 85% rule is a no-op for other liveries (plain National Express is unaffected, it's the natural fallback)",
+    );
+    assert(taithCymruWalesFractionReason("TaithCymru", undefined) === null, "no points at all (draft route not yet known) does not block");
+    assert(taithCymruWalesFractionReason("TaithCymru", []) === null, "an empty points array does not block");
+    assert(
+      liveryEligibleForRoute("TaithCymru", { ...longDistanceRoute, points: [holyhead, cardiff, hereford, worcester] }, undefined) === true,
+      "liveryEligibleForRoute allows TaithCymru on an 85%+ Wales route",
+    );
+    assert(
+      liveryEligibleForRoute("TaithCymru", { ...longDistanceRoute, points: [swansea, cardiff, hereford, worcester] }, undefined) === false,
+      "liveryEligibleForRoute blocks TaithCymru on a sub-85% Wales route",
+    );
+    assert(
+      liveryUnavailableReason("TaithCymru", { id: "volvo-9700", category: "Coaches" }, undefined, undefined, undefined, { number: "NX1", points: [holyhead, cardiff, hereford, worcester] }) === null,
+      "liveryUnavailableReason allows TaithCymru on an 85%+ Wales route",
+    );
+    assert(
+      liveryUnavailableReason("TaithCymru", { id: "volvo-9700", category: "Coaches" }, undefined, undefined, undefined, { number: "NX1", points: [swansea, cardiff, hereford, worcester] }) !== null,
+      "liveryUnavailableReason blocks TaithCymru on a sub-85% Wales route",
+    );
+
+    // TrawsCymru's own terminus check (2026-11-19) — same shape as
+    // National Express Welsh's, same real boundary data.
+    assert(
+      trawsCymruTerminusReason("TrawsCymru", [london, manchester]) !== null,
+      "TrawsCymru is blocked when neither terminus is in Wales",
+    );
+    assert(
+      trawsCymruTerminusReason("TrawsCymru", [cardiff, london]) === null,
+      "TrawsCymru is allowed when the FIRST terminus is in Wales",
+    );
+    assert(
+      trawsCymruTerminusReason("TrawsCymru", [london, swansea]) === null,
+      "TrawsCymru is allowed when the LAST terminus is in Wales",
+    );
+    assert(trawsCymruTerminusReason("TrawsCymru", undefined) === null, "no points at all (draft route not yet known) does not block");
+    assert(trawsCymruTerminusReason("TrawsCymru", []) === null, "an empty points array does not block");
+    const localRoute = { routeType: "ordinary" as const, number: "T1" };
+    assert(
+      liveryEligibleForRoute("TrawsCymru", { ...localRoute, points: [london, manchester] }, undefined) === false,
+      "liveryEligibleForRoute blocks TrawsCymru when neither terminus is in Wales",
+    );
+    assert(
+      liveryEligibleForRoute("TrawsCymru", { ...localRoute, points: [cardiff, london] }, undefined) === true,
+      "liveryEligibleForRoute allows TrawsCymru when a terminus is in Wales",
+    );
+    assert(
+      liveryUnavailableReason("TrawsCymru", { id: "adl-enviro400", category: "Double-deckers" }, undefined, undefined, undefined, { number: "T1", points: [london, manchester] }) !== null,
+      "liveryUnavailableReason blocks TrawsCymru when neither terminus is in Wales",
+    );
+    assert(
+      liveryUnavailableReason("TrawsCymru", { id: "adl-enviro400", category: "Double-deckers" }, undefined, undefined, undefined, { number: "T1", points: [cardiff, london] }) === null,
+      "liveryUnavailableReason allows TrawsCymru when a terminus is in Wales",
     );
 
     console.log("All real-Wales-boundary checks passed.");

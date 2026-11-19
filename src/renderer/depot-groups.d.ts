@@ -475,6 +475,43 @@ interface RouteAdvertisingApi {
   recordMonthsBilled(bookingId: number, monthKeys: string[]): Promise<void>;
 }
 
+// Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
+// settled 2026-11-19) — replaces the dropped council-contracts bidding
+// mechanic; see remote_route_subsidies' own CREATE TABLE comment in
+// db.mts and src/renderer/remote-route-subsidy.mts's own header comment
+// for the full real design. Keyed by (routeId, departureMinutes,
+// weekdayMask) — one real SCHEDULED journey, not a live per-instance key.
+type RemoteRouteSubsidyState = "offered" | "accepted" | "declined" | "withdrawal_warned" | "withdrawn";
+
+interface RemoteRouteSubsidy {
+  id: number;
+  routeId: number;
+  departureMinutes: number;
+  weekdayMask: number;
+  state: RemoteRouteSubsidyState;
+  offeredGameDay: number;
+  decidedGameDay: number | null;
+  warningStartedGameDay: number | null;
+}
+
+interface RemoteRouteSubsidyApi {
+  listAll(): Promise<RemoteRouteSubsidy[]>;
+  get(routeId: number, departureMinutes: number, weekdayMask: number): Promise<RemoteRouteSubsidy | null>;
+  // `state: null` deletes the stored record outright (remote-route-
+  // subsidy.mts's evaluateSubsidyDay returns `null` for "no subsidy
+  // relationship exists at all").
+  upsert(
+    routeId: number,
+    departureMinutes: number,
+    weekdayMask: number,
+    state: RemoteRouteSubsidyState | null,
+    offeredGameDay: number,
+    decidedGameDay: number | null,
+    warningStartedGameDay: number | null,
+  ): Promise<RemoteRouteSubsidy | null>;
+  delete(routeId: number, departureMinutes: number, weekdayMask: number): Promise<void>;
+}
+
 interface RepaintBooking {
   id: number;
   vehicleId: number;
@@ -861,6 +898,7 @@ interface Window {
   repaintBookings: RepaintBookingsApi;
   stopUpgrades: StopUpgradesApi;
   routeAdvertising: RouteAdvertisingApi;
+  remoteRouteSubsidy: RemoteRouteSubsidyApi;
   repowerBookings: RepowerBookingsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;

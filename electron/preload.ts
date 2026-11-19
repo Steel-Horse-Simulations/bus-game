@@ -401,6 +401,28 @@ contextBridge.exposeInMainWorld("routeAdvertising", {
   recordMonthsBilled: (bookingId: number, monthKeys: string[]) => ipcRenderer.invoke("routeAdvertising:recordMonthsBilled", bookingId, monthKeys) as Promise<void>,
 });
 
+// Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
+// settled 2026-11-19) — replaces the dropped council-contracts bidding
+// mechanic. See remote-route-subsidy.mts for the real offer/accept/
+// decline/withdrawal logic this storage API persists.
+contextBridge.exposeInMainWorld("remoteRouteSubsidy", {
+  listAll: () => ipcRenderer.invoke("remoteRouteSubsidy:listAll") as Promise<RemoteRouteSubsidy[]>,
+  get: (routeId: number, departureMinutes: number, weekdayMask: number) =>
+    ipcRenderer.invoke("remoteRouteSubsidy:get", routeId, departureMinutes, weekdayMask) as Promise<RemoteRouteSubsidy | null>,
+  upsert: (
+    routeId: number,
+    departureMinutes: number,
+    weekdayMask: number,
+    state: RemoteRouteSubsidyState | null,
+    offeredGameDay: number,
+    decidedGameDay: number | null,
+    warningStartedGameDay: number | null,
+  ) =>
+    ipcRenderer.invoke("remoteRouteSubsidy:upsert", routeId, departureMinutes, weekdayMask, state, offeredGameDay, decidedGameDay, warningStartedGameDay) as Promise<RemoteRouteSubsidy | null>,
+  delete: (routeId: number, departureMinutes: number, weekdayMask: number) =>
+    ipcRenderer.invoke("remoteRouteSubsidy:delete", routeId, departureMinutes, weekdayMask) as Promise<void>,
+});
+
 // Re-power bookings (T179, OPEN-ITEMS.md) — same capacity/scheduling
 // storage shape as repaintBookings above, plus collect() to actually
 // apply the conversion once a booking's completion day has passed (see

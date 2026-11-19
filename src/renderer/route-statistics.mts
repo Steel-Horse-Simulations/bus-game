@@ -331,6 +331,9 @@ const COACH_ONLY_LIVERY_NAMES = new Set([
   "National Express Welsh",
   "Citylink/West Coast Motors",
   "Irish Citylink",
+  // Added 2026-11-19 — same coach-only lock as every other long-distance
+  // operator in this set (livery-seed-data.mts's own liveryVehicleLockReason).
+  "TaithCymru",
 ]);
 
 export function vehicleRequirementBucketForRoute(routeNumber: string, liverySpecificRoute: Readonly<Record<string, string>>): string {

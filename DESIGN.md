@@ -998,8 +998,20 @@ timetable alone and tells the player**.
 
 ### Route numbering
 Numbers are assigned automatically with a manual override. Commercial services
-number from **1** upwards; council contracts from **201**; **long distance**
+number from **1** upwards; contracted routes from **201**; **long distance**
 routes from **900** upwards, the same pattern as the other two.
+
+**Re-justified 2026-11-19** alongside the "Subsidies for remote and rural
+routes" redesign above (formerly "council contracts"): the 201 band is for a
+route that is genuinely **contracted** — a **lifeline contract**, or a full
+**council/SPT contract** for a route with no commercial viability at all
+(§10) — not for every route a council or SPT might ever fund. A **subsidised**
+journey is explicitly **not** a contract (it is a top-up on one journey of a
+route the player already runs commercially) and keeps that route's ordinary
+commercial number; only the specific journey is topped up, never the whole
+route renumbered. The Fixed real contracts (398, Airlink 100 and so on) are
+their own real-world-fixed numbers and sit outside this sequence entirely,
+same as before.
 
 **Commercial numbers are per depot group**; **all contract numbering follows
 council areas**. A route running into more than one takes the next number free, so
@@ -1011,7 +1023,7 @@ Prefixes say what a working is before you read the number:
 | Prefix | Meaning |
 |---|---|
 | *(none)* | Commercial service, from 1 |
-| *(none)* | Council contract, from 201 |
+| *(none)* | Contracted route (lifeline, or a full council/SPT contract), from 201 |
 | *(none)* | Long distance, from 900 |
 | **X** | Express |
 | **T** | Sightseeing tour, then the city letter — TE1, TG1, TS1 |
@@ -1841,56 +1853,66 @@ cash-flow lag between running the capped fares and being reimbursed for them.
 ## 10. Contracts and economics
 
 ### Revenue
-Fares, concessionary reimbursement, council contracts and event contracts.
+Fares, concessionary reimbursement, remote/rural route subsidies, contracted
+(lifeline/SPT) routes and event contracts.
 
-### Council contracts
-Councils advertise routes connecting smaller, unprofitable towns to cities or
-larger towns.
+### Subsidies for remote and rural routes
+**Replaces the former "council contracts" bidding mechanic, dropped outright
+2026-11-19** (OPEN-ITEMS.md "Contracts redesign"). The old mechanic — councils
+advertise a brand-new route, the player bids by drawing it, judged on cost per
+passenger, paid per mile including dead mileage, with set operating-hours
+windows and occasional shopper services — never fit how the game actually
+works, since the player draws every route themselves; nothing in code ever
+implemented it, and the user's own words settled its removal directly: "I
+don't think council contracts make sense as I can't remember why they were
+first implemented, I think subsidies for remote routes I make us the better
+option."
 
-- Paid per mile on **actual miles driven**, including dead mileage.
-- The contract sets the first departure and hours of operation; the player sets
-  timings within them.
-- Judged on **cost per passenger actually carried**, against a target set
-  individually per contract, so a country route is not measured against an urban
-  one.
-- Too much waste — an over-long route, too much dead mileage — loses the
-  contract to the competitor until the next bidding round, when it can be re-bid
-  with a changed route.
-- **Failure penalties:** a service not run is penalised at **1.2x to 1.8x** what
-  it would have paid. Too many failures within a set timeframe loses the
-  contract. The multiplier, misses allowed and timeframe are set per contract.
+What replaces it is simpler, and real gameplay rather than background colour:
+a top-up on one specific journey of a route the player already designed and
+runs themselves — not a contract. No bidding, no cost-per-passenger target, no
+failure penalty.
 
-**Operating hours.** First departure **0630–0700**, last departure **1800–1900**,
-so the last bus is back by about 1930. Rural contracts sit tighter — **0700–1800**.
+**Scope: remote and rural routes only**, not every route. A route qualifies by
+**low passenger density along its own length** — its own average per-stop
+busy-hour boardings (the same real metric behind the stop-upgrade thresholds,
+OPERATIONS.md §16) sitting below the Seating tier's own threshold (20
+boardings). A busy urban or suburban route never qualifies, however thin one
+early or late journey on it might run on its own.
 
-**Shopper services.** Some contracts want only **1 or 2 services a week in each
-direction**, always ending at a shopping centre or supermarket, returning an hour
-to an hour and a half later the same day. Offered **only in rural areas**, and
-**never at a weekend**.
+**The mechanic.** Where a qualifying route's service stops running at some
+point in the day — an early-morning or late-evening journey — because it would
+genuinely lose money, but real demand still exists, the council (or SPT,
+within its own zone, see below) can offer to fund that one journey.
 
-**Evening and morning subsidy.** Where a service stops in the late afternoon
-because the evening is unprofitable but demand remains, the council can offer to
-fund later journeys — and the same for an early start. Offered **automatically**;
-the player accepts or declines. It only applies to journeys that would otherwise
-lose money, so it cannot be gamed. It is a **subsidy on those journeys, not a
-contract**, and the council **warns before withdrawing** it if the journey stops
-losing money.
+- **Offered automatically.** The player accepts or declines; it is never
+  requested.
+- **Only ever applies to a journey that would otherwise genuinely lose
+  money** — judged against that journey's own real fare revenue and real
+  running cost, so it cannot be gamed.
+- **A break-even top-up, nothing more.** It tops the journey up to exactly
+  cover its own loss, never beyond — a subsidy paying any margin above
+  break-even would reward deliberately running a loss to extract profit from
+  the council, exactly the abuse "cannot be gamed" above rules out.
+- **The council warns before withdrawing** a subsidy if the journey stops
+  losing money — it does not vanish the instant performance improves. A
+  recovered journey is warned first; if it stays recovered through a real
+  grace period it loses the subsidy, but a journey that dips back into a loss
+  during that window keeps it instead.
 
-A **contracted** route can also get journeys funded beyond its set hours — but as
-an **extension to the contract** rather than a subsidy, since the route is
+A **contracted** route (the Fixed real contracts below, or a full SPT/lifeline
+contract) can also get journeys funded beyond its set hours — but as an
+**extension to the contract** rather than a subsidy, since the route is
 already a contract.
 
-**SPT as the contracting body.** Within the SPT zone (§9), any contract that
+**SPT as the subsidising body.** Within the SPT zone (§9), any subsidy that
 would otherwise come from the council instead comes from **SPT**, the real
 regional transport authority — matching how it actually works, since SPT
-rather than individual councils awards these contracts there.
+rather than individual councils funds this kind of thing there.
 
-SPT mostly **subsidises** routes rather than awarding full contracts — a
-genuinely different mechanism, closer in shape to the evening/morning
-subsidy above than to an ordinary council contract: it tops up a route
-that's already running, rather than paying for the whole thing to be run on
-SPT's behalf. SPT can still award a **full contract** for a route with no
-commercial viability at all, alongside this main subsidy mechanism.
+SPT can still award a **full contract** for a route with no commercial
+viability at all, alongside this subsidy mechanism — that is a Remote depots
+and lifeline contracts matter (§10 below), not this per-journey top-up.
 
 **SPT branding.** A contract requires a **full dedicated SPT livery** on the
 vehicle — the same treatment as Airlink 100 or the long distance company
@@ -1950,9 +1972,31 @@ only worth generalising if a third ever comes along.
 - Offered alongside council, event, lifeline and cruise contracts
   through a single **contracts menu** — one screen covering all four
   contract types, not four separate screens.
-- Same **warning-and-review** penalty pattern as other contracts: the
-  contract cannot be lost outright, but is heavily fined for any condition
-  not met.
+- **Failure handling (rebuilt 2026-11-19, replacing the old "cannot be
+  lost outright, heavily fined" line, OPEN-ITEMS.md "Contracts
+  redesign")** — applies uniformly to 398, Airlink 100, Express 500 and
+  SkyLink, no special-casing between them:
+  - A departure the depot group genuinely can't field a vehicle for is
+    **missed, and fined**.
+  - If failures continue, **some of the contract's services are
+    suspended for exactly 1 year**, then return to the player
+    automatically — not lost permanently, not re-tendered. This lets the
+    player fix the underlying problem without being too harshly
+    punished.
+  - **Never more than 60% of a contract's services suspended at once.**
+    (The planned Dounreay contracts, OPEN-ITEMS.md — not yet built — are
+    the one confirmed future exception to this cap, for routes with too
+    few daily services for a 60% cap to mean anything.)
+  - The unit of "a service" lost is always a **whole return journey or a
+    whole circular route**, never a single one-way leg.
+  - **Thistle Coaches** (§10, "The competitor") covers the suspended
+    services for the year — no fare revenue or cost to the player for
+    them while suspended.
+  - **AIR and Railair are exempt from this mechanic entirely** — AIR is
+    a reward contract with genuinely zero fines for anything (its own
+    section below), and Railair is a player-created product, not a
+    fixed contract at all (UK-EXPANSION.md §9a). Oxford Tube was never
+    one of these named contracts in the first place and is unaffected.
 - Once accepted, a contract **starts on the first Monday after a minimum of
   10 days have passed** — the same lead time as activating a new route.
 
@@ -2480,10 +2524,27 @@ side rather than the road network.
   cap's government payments (above).
 
 ### The competitor
-A named rival with no network of its own, existing only in one area, purely to
-punish failed contracts. It runs the route in a made-up livery while it holds
-it. There is no head-to-head commercial competition. **There is no competitor on
-islands** — lost lifeline contracts are re-tendered instead (see above).
+A single named rival, **Thistle Coaches**, with no network of its own,
+used everywhere rather than one per region — it only ever shows up
+wherever it's currently actually holding something. It exists purely to
+pick up a service the player genuinely lost through failure, never to
+compete head-to-head: there is no proactive bidding against the player.
+**There is no competitor on islands** — lost lifeline contracts are
+re-tendered instead (see above).
+
+**Livery:** plain white with a thistle-purple accent — simple, but a real
+colour pair rather than the bare fallback-grey every other livery falls
+back to with no confirmed colours set.
+
+Covers two genuinely different situations, confirmed 2026-11-19
+(OPEN-ITEMS.md "The competitor" / "Contracts redesign"):
+- A Fixed real contract (398, Airlink 100, Express 500 or SkyLink) that's
+  had some of its services **suspended** for persistent failure (above):
+  Thistle Coaches runs those specific suspended services for exactly 1
+  year, then hands them back to the player automatically.
+- A council/event contract genuinely **lost** outright for over-long
+  routes or too much dead mileage: Thistle Coaches runs it until the next
+  bidding round, the same as before.
 
 ### Skipping time
 A **skip button** appears when no vehicle is on a duty, jumping to the next

@@ -112,6 +112,11 @@ import {
   listRouteAdvertisingBookingsForStop,
   deleteRouteAdvertisingBooking,
   listGeneratedRouteAdvertisingMonths,
+  listAllRemoteRouteSubsidies,
+  getRemoteRouteSubsidy,
+  upsertRemoteRouteSubsidy,
+  deleteRemoteRouteSubsidy,
+  type RemoteRouteSubsidyState,
   recordRouteAdvertisingMonthsBilled,
   type RouteAdvertisingMode,
   listAllRepowerBookings,
@@ -708,6 +713,25 @@ function registerStopUpgradeHandlers(): void {
   );
 }
 
+function registerRemoteRouteSubsidyHandlers(): void {
+  ipcMain.handle("remoteRouteSubsidy:listAll", () => listAllRemoteRouteSubsidies(save));
+  ipcMain.handle("remoteRouteSubsidy:get", (_e, routeId: number, departureMinutes: number, weekdayMask: number) => getRemoteRouteSubsidy(save, routeId, departureMinutes, weekdayMask));
+  ipcMain.handle(
+    "remoteRouteSubsidy:upsert",
+    (
+      _e,
+      routeId: number,
+      departureMinutes: number,
+      weekdayMask: number,
+      state: RemoteRouteSubsidyState | null,
+      offeredGameDay: number,
+      decidedGameDay: number | null,
+      warningStartedGameDay: number | null,
+    ) => upsertRemoteRouteSubsidy(save, routeId, departureMinutes, weekdayMask, state, offeredGameDay, decidedGameDay, warningStartedGameDay),
+  );
+  ipcMain.handle("remoteRouteSubsidy:delete", (_e, routeId: number, departureMinutes: number, weekdayMask: number) => deleteRemoteRouteSubsidy(save, routeId, departureMinutes, weekdayMask));
+}
+
 function registerRouteAdvertisingHandlers(): void {
   ipcMain.handle("routeAdvertising:listAll", () => listAllRouteAdvertisingBookings(save));
   ipcMain.handle("routeAdvertising:listForStop", (_e, stopOsmId: number) => listRouteAdvertisingBookingsForStop(save, stopOsmId));
@@ -945,6 +969,7 @@ app.whenReady().then(async () => {
   registerRepowerBookingHandlers();
   registerStopUpgradeHandlers();
   registerRouteAdvertisingHandlers();
+  registerRemoteRouteSubsidyHandlers();
   registerDeadMileageHandlers();
   registerDutyHandlers();
   registerDriverHandlers();

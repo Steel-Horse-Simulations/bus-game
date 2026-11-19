@@ -1182,6 +1182,94 @@ CREATE TABLE IF NOT EXISTS route_advertising_billing_months (
   month_key TEXT NOT NULL,
   PRIMARY KEY (booking_id, month_key)
 );
+
+-- Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
+-- settled 2026-11-19; src/renderer/remote-route-subsidy.mts has the full
+-- real design). Replaces the dropped council-contracts bidding mechanic —
+-- this is a per-JOURNEY top-up on a route the player already runs, not a
+-- contract, so it needs no cost-per-passenger target or failure penalty,
+-- just the real offer/accept/decline/withdrawal state.
+--
+-- One row per real SCHEDULED journey (a specific departure time on a
+-- specific route, for a specific day-type), identified by
+-- (route_id, departure_minutes, weekday_mask) — the same scheduled-
+-- journey identity vehicle-simulation.ts's own timetable generation
+-- already uses, NOT the live per-instance key
+-- (routeId:departureMinutes:dayOffsetSeconds) that key also carries,
+-- since the subsidy decision belongs to the schedule itself and must
+-- persist across real calendar days, not to one single ephemeral running
+-- instance of it.
+--
+-- Tables created unconditionally via this SCHEMA string (CREATE TABLE IF
+-- NOT EXISTS), not a dedicated version-gated migration branch — same
+-- precedent route_advertising_bookings' own comment above already
+-- established: SCHEMA_VERSION's v66->v67 slot may be claimed by other
+-- work landing in the same session, and this is pure new-table creation
+-- with no existing data to migrate, so the unconditional IF-NOT-EXISTS
+-- create is sufficient and safe on every openSave() call.
+CREATE TABLE IF NOT EXISTS remote_route_subsidies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  route_id INTEGER NOT NULL REFERENCES routes(id),
+  departure_minutes INTEGER NOT NULL,
+  weekday_mask INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('offered', 'accepted', 'declined', 'withdrawal_warned', 'withdrawn')),
+  offered_game_day INTEGER NOT NULL,
+  decided_game_day INTEGER,
+  warning_started_game_day INTEGER,
+  UNIQUE (route_id, departure_minutes, weekday_mask)
+);
+
+-- Fixed real contract failure handling (DESIGN.md "Fixed real contracts";
+-- OPEN-ITEMS.md "Contracts redesign," confirmed 2026-11-19) — see
+-- src/renderer/fixed-contract-failures.mts for the real fine/suspension
+-- logic this stores; this layer is plain storage only, same split as
+-- remote_route_subsidies just above. Applies to 398, Airlink 100,
+-- Express 500 and SkyLink only: AIR is explicitly exempt (DESIGN.md §10,
+-- "genuinely zero fines for anything") and Railair isn't a fixed contract
+-- at all (UK-EXPANSION.md §9a, a player-created product) — neither is
+-- enforced at the schema level (route_id alone can't tell one route type
+-- from another), the renderer-side module is what actually gates which
+-- routes this applies to before ever calling these.
+--
+-- Tables created unconditionally via this SCHEMA string (CREATE TABLE IF
+-- NOT EXISTS), same precedent as remote_route_subsidies/
+-- route_advertising_bookings just above: SCHEMA_VERSION's next slot may be
+-- claimed by other work landing in the same session, and this is pure
+-- new-table creation with no existing data to migrate, so the
+-- unconditional IF-NOT-EXISTS create is sufficient and safe on every
+-- openSave() call.
+--
+-- One row per real fine actually issued (one per route per real game day
+-- it happened on, UNIQUE below) — not one row per missed departure, since
+-- fixed-contract-failures.mts's own missedUnitsForDay already collapses a
+-- day's shortfall into one whole-day figure.
+CREATE TABLE IF NOT EXISTS fixed_contract_fine_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  route_id INTEGER NOT NULL REFERENCES routes(id),
+  game_day INTEGER NOT NULL,
+  scheduled_units INTEGER NOT NULL,
+  missed_units INTEGER NOT NULL,
+  fine_gbp_pence INTEGER NOT NULL,
+  UNIQUE (route_id, game_day)
+);
+
+-- One row per suspended BATCH (fixed-contract-failures.mts's own
+-- ContractSuspension) — an escalation while an earlier batch is still
+-- active creates a SECOND row with its own fresh 1-year return date,
+-- rather than mutating the first, so each batch returns to the player on
+-- its own real date independently (see that module's own header comment
+-- on this choice, flagged as not explicitly confirmed by the user either
+-- way).
+CREATE TABLE IF NOT EXISTS fixed_contract_suspensions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  route_id INTEGER NOT NULL REFERENCES routes(id),
+  weekday_mask INTEGER NOT NULL,
+  suspended_units INTEGER NOT NULL,
+  total_units INTEGER NOT NULL,
+  start_game_day INTEGER NOT NULL,
+  return_game_day INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
 `;
 
 export function openSave(path: string): SaveDb {
@@ -5743,4 +5831,258 @@ export function listFinanceTransactions(db: SaveDb, depotGroupId?: number): Fina
           .prepare("SELECT id, amount_gbp_pence, category, depot_group_id, description, game_day FROM finance_transactions WHERE depot_group_id = ? ORDER BY id DESC")
           .all(depotGroupId) as unknown as FinanceTransactionRow[]);
   return rows.map(financeTransactionFromRow);
+}
+
+// --- Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
+// settled 2026-11-19; see remote_route_subsidies' own CREATE TABLE
+// comment above for the full real design, and
+// src/renderer/remote-route-subsidy.mts for the pure offer/accept/
+// decline/withdrawal state machine this storage layer persists) ---
+
+export type RemoteRouteSubsidyState = "offered" | "accepted" | "declined" | "withdrawal_warned" | "withdrawn";
+
+export interface RemoteRouteSubsidy {
+  id: number;
+  routeId: number;
+  departureMinutes: number;
+  weekdayMask: number;
+  state: RemoteRouteSubsidyState;
+  offeredGameDay: number;
+  decidedGameDay: number | null;
+  warningStartedGameDay: number | null;
+}
+
+interface RemoteRouteSubsidyRow {
+  id: number;
+  route_id: number;
+  departure_minutes: number;
+  weekday_mask: number;
+  state: RemoteRouteSubsidyState;
+  offered_game_day: number;
+  decided_game_day: number | null;
+  warning_started_game_day: number | null;
+}
+
+const REMOTE_ROUTE_SUBSIDY_COLUMNS = "id, route_id, departure_minutes, weekday_mask, state, offered_game_day, decided_game_day, warning_started_game_day";
+
+function remoteRouteSubsidyFromRow(row: RemoteRouteSubsidyRow): RemoteRouteSubsidy {
+  return {
+    id: row.id,
+    routeId: row.route_id,
+    departureMinutes: row.departure_minutes,
+    weekdayMask: row.weekday_mask,
+    state: row.state,
+    offeredGameDay: row.offered_game_day,
+    decidedGameDay: row.decided_game_day,
+    warningStartedGameDay: row.warning_started_game_day,
+  };
+}
+
+export function listAllRemoteRouteSubsidies(db: SaveDb): RemoteRouteSubsidy[] {
+  const rows = db.prepare(`SELECT ${REMOTE_ROUTE_SUBSIDY_COLUMNS} FROM remote_route_subsidies`).all() as unknown as RemoteRouteSubsidyRow[];
+  return rows.map(remoteRouteSubsidyFromRow);
+}
+
+export function getRemoteRouteSubsidy(db: SaveDb, routeId: number, departureMinutes: number, weekdayMask: number): RemoteRouteSubsidy | null {
+  const row = db
+    .prepare(`SELECT ${REMOTE_ROUTE_SUBSIDY_COLUMNS} FROM remote_route_subsidies WHERE route_id = ? AND departure_minutes = ? AND weekday_mask = ?`)
+    .get(routeId, departureMinutes, weekdayMask) as unknown as RemoteRouteSubsidyRow | undefined;
+  return row ? remoteRouteSubsidyFromRow(row) : null;
+}
+
+// Upserts the full real record for one scheduled journey — the caller
+// (vehicle-simulation.ts, via remote-route-subsidy.mts's pure
+// evaluateSubsidyDay/acceptOffer/declineOffer) already computed the
+// complete next state; this layer just persists it, same "pure logic
+// decides, storage just saves" split as every other mechanic in this
+// file. `null` for `state` deletes the record outright (evaluateSubsidyDay
+// returns `null` for "no subsidy relationship exists at all," e.g. a
+// retracted unanswered offer — there is nothing meaningful to store for
+// that case, the same way a brand-new scheduled journey has no row
+// either).
+export function upsertRemoteRouteSubsidy(
+  db: SaveDb,
+  routeId: number,
+  departureMinutes: number,
+  weekdayMask: number,
+  state: RemoteRouteSubsidyState | null,
+  offeredGameDay: number,
+  decidedGameDay: number | null,
+  warningStartedGameDay: number | null,
+): RemoteRouteSubsidy | null {
+  if (state === null) {
+    db.prepare("DELETE FROM remote_route_subsidies WHERE route_id = ? AND departure_minutes = ? AND weekday_mask = ?").run(routeId, departureMinutes, weekdayMask);
+    return null;
+  }
+  db.prepare(
+    `INSERT INTO remote_route_subsidies (route_id, departure_minutes, weekday_mask, state, offered_game_day, decided_game_day, warning_started_game_day)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(route_id, departure_minutes, weekday_mask) DO UPDATE SET
+       state = excluded.state,
+       offered_game_day = excluded.offered_game_day,
+       decided_game_day = excluded.decided_game_day,
+       warning_started_game_day = excluded.warning_started_game_day`,
+  ).run(routeId, departureMinutes, weekdayMask, state, offeredGameDay, decidedGameDay, warningStartedGameDay);
+  return getRemoteRouteSubsidy(db, routeId, departureMinutes, weekdayMask);
+}
+
+export function deleteRemoteRouteSubsidy(db: SaveDb, routeId: number, departureMinutes: number, weekdayMask: number): void {
+  db.prepare("DELETE FROM remote_route_subsidies WHERE route_id = ? AND departure_minutes = ? AND weekday_mask = ?").run(routeId, departureMinutes, weekdayMask);
+}
+
+// --- Fixed real contract fine/suspension storage (DESIGN.md "Fixed real
+// contracts"; OPEN-ITEMS.md "Contracts redesign," confirmed 2026-11-19;
+// see fixed_contract_fine_events'/fixed_contract_suspensions' own CREATE
+// TABLE comments above, and src/renderer/fixed-contract-failures.mts for
+// the real fine/suspension logic this persists) — plain storage only,
+// same "pure logic decides, storage just saves" split as
+// remote_route_subsidies above. No IPC wiring exists for this yet (no
+// screen calls it) — see this feature's own handover report for that
+// flagged gap.
+
+export interface FixedContractFineEvent {
+  id: number;
+  routeId: number;
+  gameDay: number;
+  scheduledUnits: number;
+  missedUnits: number;
+  fineGBPPence: number;
+}
+
+interface FixedContractFineEventRow {
+  id: number;
+  route_id: number;
+  game_day: number;
+  scheduled_units: number;
+  missed_units: number;
+  fine_gbp_pence: number;
+}
+
+function fixedContractFineEventFromRow(row: FixedContractFineEventRow): FixedContractFineEvent {
+  return {
+    id: row.id,
+    routeId: row.route_id,
+    gameDay: row.game_day,
+    scheduledUnits: row.scheduled_units,
+    missedUnits: row.missed_units,
+    fineGBPPence: row.fine_gbp_pence,
+  };
+}
+
+// Records the fine event AND posts it to the real finance ledger in one
+// call (finance_transactions, via recordFinanceTransaction below) — a
+// fine that only existed as a row in this table and never actually
+// touched the company's money would not be "a real, working mechanic," so
+// this deliberately does both rather than leaving the caller to remember
+// to post the finance side separately. `depotGroupId` is the route's own
+// owning depot group, passed by the caller (this layer doesn't join
+// against routes itself, same "caller already has the real data" pattern
+// as createRepaintBooking above).
+export function recordFixedContractFineEvent(
+  db: SaveDb,
+  routeId: number,
+  routeNumber: string,
+  depotGroupId: number,
+  gameDay: number,
+  scheduledUnits: number,
+  missedUnits: number,
+  fineGBPPence: number,
+): FixedContractFineEvent {
+  const result = db
+    .prepare("INSERT INTO fixed_contract_fine_events (route_id, game_day, scheduled_units, missed_units, fine_gbp_pence) VALUES (?, ?, ?, ?, ?)")
+    .run(routeId, gameDay, scheduledUnits, missedUnits, fineGBPPence);
+  recordFinanceTransaction(
+    db,
+    -fineGBPPence,
+    "Fixed contract fines",
+    depotGroupId,
+    `Route ${routeNumber} missed ${missedUnits} of ${scheduledUnits} scheduled departures`,
+    gameDay,
+  );
+  return { id: Number(result.lastInsertRowid), routeId, gameDay, scheduledUnits, missedUnits, fineGBPPence };
+}
+
+export function listFixedContractFineEvents(db: SaveDb, routeId: number): FixedContractFineEvent[] {
+  const rows = db
+    .prepare("SELECT id, route_id, game_day, scheduled_units, missed_units, fine_gbp_pence FROM fixed_contract_fine_events WHERE route_id = ? ORDER BY game_day")
+    .all(routeId) as unknown as FixedContractFineEventRow[];
+  return rows.map(fixedContractFineEventFromRow);
+}
+
+export interface FixedContractSuspensionRecord {
+  id: number;
+  routeId: number;
+  weekdayMask: number;
+  suspendedUnits: number;
+  totalUnits: number;
+  startGameDay: number;
+  returnGameDay: number;
+  active: boolean;
+}
+
+interface FixedContractSuspensionRow {
+  id: number;
+  route_id: number;
+  weekday_mask: number;
+  suspended_units: number;
+  total_units: number;
+  start_game_day: number;
+  return_game_day: number;
+  active: number;
+}
+
+function fixedContractSuspensionFromRow(row: FixedContractSuspensionRow): FixedContractSuspensionRecord {
+  return {
+    id: row.id,
+    routeId: row.route_id,
+    weekdayMask: row.weekday_mask,
+    suspendedUnits: row.suspended_units,
+    totalUnits: row.total_units,
+    startGameDay: row.start_game_day,
+    returnGameDay: row.return_game_day,
+    active: row.active !== 0,
+  };
+}
+
+// Creates one new suspension BATCH — see fixed_contract_suspensions' own
+// CREATE TABLE comment for why an escalation is a new row, not an update
+// to an existing one.
+export function createFixedContractSuspension(
+  db: SaveDb,
+  routeId: number,
+  weekdayMask: number,
+  suspendedUnits: number,
+  totalUnits: number,
+  startGameDay: number,
+  returnGameDay: number,
+): FixedContractSuspensionRecord {
+  const result = db
+    .prepare("INSERT INTO fixed_contract_suspensions (route_id, weekday_mask, suspended_units, total_units, start_game_day, return_game_day, active) VALUES (?, ?, ?, ?, ?, ?, 1)")
+    .run(routeId, weekdayMask, suspendedUnits, totalUnits, startGameDay, returnGameDay);
+  return { id: Number(result.lastInsertRowid), routeId, weekdayMask, suspendedUnits, totalUnits, startGameDay, returnGameDay, active: true };
+}
+
+export function listFixedContractSuspensions(db: SaveDb, routeId: number): FixedContractSuspensionRecord[] {
+  const rows = db
+    .prepare(
+      "SELECT id, route_id, weekday_mask, suspended_units, total_units, start_game_day, return_game_day, active FROM fixed_contract_suspensions WHERE route_id = ? ORDER BY start_game_day",
+    )
+    .all(routeId) as unknown as FixedContractSuspensionRow[];
+  return rows.map(fixedContractSuspensionFromRow);
+}
+
+export function listAllActiveFixedContractSuspensions(db: SaveDb): FixedContractSuspensionRecord[] {
+  const rows = db
+    .prepare("SELECT id, route_id, weekday_mask, suspended_units, total_units, start_game_day, return_game_day, active FROM fixed_contract_suspensions WHERE active = 1")
+    .all() as unknown as FixedContractSuspensionRow[];
+  return rows.map(fixedContractSuspensionFromRow);
+}
+
+// The 1-year automatic return (fixed-contract-failures.mts's own
+// isExpired, checked by the caller before deciding to call this) — flips
+// the batch inactive rather than deleting the row, so its own history
+// (when it started, how many units, when it returned) stays in the save
+// rather than vanishing.
+export function deactivateFixedContractSuspension(db: SaveDb, id: number): void {
+  db.prepare("UPDATE fixed_contract_suspensions SET active = 0 WHERE id = ?").run(id);
 }

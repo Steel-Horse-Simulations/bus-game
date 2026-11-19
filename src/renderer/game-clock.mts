@@ -127,6 +127,25 @@ export function gameDayFromCivil(year: number, month: number, day: number): numb
   return daysFromCivil(year, month, day) - GAME_EPOCH_DAYS_SINCE_1970;
 }
 
+// Exactly one calendar year later — same real month/day, year + 1 — for the
+// Fixed-real-contract suspension mechanic's own "suspended for exactly 1
+// year" rule (OPEN-ITEMS.md "Contracts redesign," confirmed directly: "The
+// player can get the lost services back after 1 year"). Deliberately NOT
+// "+365 days" — that would drift against the real calendar across a leap
+// year, and "exactly 1 year" is the user's own wording, so this reuses the
+// real civil-calendar conversion above rather than a flat day-count
+// approximation. The one genuine edge case, a 29 February suspension start
+// (leap day) with a non-leap return year, clamps to 28 February rather than
+// overflowing into March — same "nearest valid real date" behaviour most
+// real calendar software uses for this edge case, not independently
+// sourced.
+export function addOneYear(gameDay: number): number {
+  const { y, m, d } = civilFromDays(gameDay + GAME_EPOCH_DAYS_SINCE_1970);
+  const nextYear = y + 1;
+  const clampedDay = m === 2 && d === 29 && !isLeapYear(nextYear) ? 28 : d;
+  return daysFromCivil(nextYear, m, clampedDay) - GAME_EPOCH_DAYS_SINCE_1970;
+}
+
 // "Wages are paid every Thursday (weekly)" — weekday 3 (0=Monday).
 export function isWageDay(dt: GameDateTime): boolean {
   return dt.weekday === 3;

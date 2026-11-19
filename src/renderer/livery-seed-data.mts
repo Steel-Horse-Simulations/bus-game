@@ -43,6 +43,27 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   "Lothian Girraffe": { primary: "#a06030", secondary: "#f0e0c0" },
   MegaBus: { primary: "#104090", secondary: "#ffd020" },
   "Midland Bluebird": { primary: "#0070c0", secondary: "#fff0e0" },
+  // TaithCymru added 2026-11-19 — the real Welsh long-distance coach
+  // operator (swapped in for MegaBus's old Wales role, see
+  // LONG_DISTANCE_LIVERY_NAMES's own comment below). Colour pair is this
+  // model's own read of the real vehicle photo the user supplied (black
+  // body, bright green ring-and-bars "T" logo, white "TaithCymru"
+  // wordmark) — not sampled by the usual from-scratch PNG decoder this
+  // file's header note describes (no standalone badge PNG was supplied),
+  // so flagged as a rougher estimate than this file's other auto-sampled
+  // entries, same as every other un-confirmed colour here: fine to
+  // correct by hand later via the Liveries panel if it looks wrong.
+  TaithCymru: { primary: "#111111", secondary: "#00a551" },
+  // TrawsCymru added 2026-11-19 — the real LOCAL Welsh bus operator
+  // (Transport for Wales's own regional network, distinct from
+  // TaithCymru's long-distance coach role above). No standalone badge PNG
+  // found to sample from — real-world sources describe the branding as
+  // built on a "green, white and red" palette (traditional TrawsCymru
+  // colours, one forum report of a recent smart-new-look update), not one
+  // single confirmed hex pair, so this is this model's own reasonable
+  // green/white read of that description rather than a precise sample —
+  // flagged the same as every other uncertain colour in this file.
+  TrawsCymru: { primary: "#00693e", secondary: "#ffffff" },
   "North Uist Transport": { primary: "#f0f0f0", secondary: "#203030" },
   "Orkney Council": { primary: "#ffffff", secondary: "#003080" },
   Rapsons: { primary: "#107080", secondary: "#ff5010" },
@@ -65,6 +86,23 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // placeholder pair, not a guess at the real Oxford Tube livery, so
   // nothing here implies a colour that hasn't actually been confirmed.
   // Replace with real sampled colours once a reference photo is supplied.
+  // Not a Fixed real contract (2026-11-19 — "Oxford Tube isn't being
+  // dropped from the game only as a contract"): the livery itself stays,
+  // it's just excluded from the contract-failure mechanic (fines/60%
+  // suspension/Thistle Coaches/1-year return) other named routes get.
+  // Real-world requirement, not yet enforceable in code (2026-11-19):
+  // "can only be used on long distance routes that stop at Oxford
+  // Gloucester Green Bus Station and Victoria Green Line Coach Station" —
+  // vehicle (Volvo 9700DD only, liveryVehicleLockReason) and route-type
+  // (long_distance, LIVERY_ROUTE_TYPES) locks are built; the two-named-
+  // stops requirement is NOT, since the real Oxford Tube route doesn't
+  // exist in any save yet (same placeholder status as Air/SkyLink — see
+  // LIVERY_SPECIFIC_ROUTE's own comment) and this project's own route-
+  // point model already carries real stop osmIds once a route is drawn
+  // (route-advertising.mts's `longDistanceRoutesAtStop`, matching
+  // `p.kind === "stop" && p.osmId === stopOsmId`) — same build approach
+  // as 398 (DESIGN.md: built once in the real editor against real stop
+  // codes, then bundled as fixed content), not guessable ahead of it.
   "Oxford Tube": { primary: "#4b5563", secondary: "#e5e7eb" },
 
   // Re-added 2026-11-07 (user request, "we now have England and Wales
@@ -124,6 +162,26 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // block below for both liveries' real constraints.
   "Irish Citylink": { primary: "#fce908", secondary: "#1eadfb" },
   Translink: { primary: "#eb167e", secondary: "#ffffff" },
+
+  // Thistle Coaches added 2026-11-19 — the game's single competitor
+  // entity (OPEN-ITEMS.md "The competitor," fully settled 2026-11-19),
+  // built for real for the first time here as part of the Fixed real
+  // contracts failure mechanic (fixed-contract-failures.mts): never
+  // player-selectable (see LIVERY_SPECIFIC_ROUTE below — locked to a
+  // route number no player route can ever actually have), only ever
+  // system-assigned to a suspended fixed-contract service while Thistle
+  // Coaches is covering it. The user's own settled wording: "plain white
+  // livery with a thistle at the rear as a livery, simple but better than
+  // just white." No real per-livery badge artwork exists anywhere in this
+  // game yet (OPERATIONS.md §4's badge PNGs are specified but never wired
+  // up for ANY livery) and none is invented here — white primary is the
+  // real, confirmed colour; the secondary is this model's own flagged
+  // estimate of a heraldic "thistle purple" (there is no single
+  // universally-cited hex for this), not a sourced figure, same
+  // "flagged estimate" treatment this file already gives TaithCymru/
+  // TrawsCymru above. Correct by hand later via the Liveries panel if it
+  // looks wrong, or once real reference artwork is supplied.
+  "Thistle Coaches": { primary: "#ffffff", secondary: "#6b3fa0" },
 };
 
 // DESIGN.md "Island and remote-area review" — transcribed directly from the
@@ -189,6 +247,13 @@ export const OPERATOR_LIVERIES: Record<string, string[]> = {
   "West Coast Motors": ["West Coast Motors", "Borders Buses", "Citylink/West Coast Motors"],
   Citylink: ["Citylink", "Air"],
   MegaBus: ["MegaBus"],
+  // Added 2026-11-19 — standalone operator, same shape as Citylink/MegaBus
+  // above (not a National Express sub-brand — TaithCymru is a genuinely
+  // separate real Welsh coach operator).
+  TaithCymru: ["TaithCymru"],
+  // Added 2026-11-19 — the real LOCAL Welsh operator, standalone, same
+  // shape as every other entry here.
+  TrawsCymru: ["TrawsCymru"],
   // National Express Scottish added T190 (2026-11-14) — sits alongside
   // its two siblings under the same operator group.
   // National Express Welsh added 2026-11-15 — sits alongside its three
@@ -216,6 +281,13 @@ export const OPERATOR_LIVERIES: Record<string, string[]> = {
   // operator; neither is a variant of anything already in this file).
   "Irish Citylink": ["Irish Citylink"],
   Translink: ["Translink"],
+  // Thistle Coaches added 2026-11-19 — a standalone operator, same shape
+  // as Citylink/MegaBus above, for consistency with this file's own
+  // established "every real livery belongs to exactly one operator, even
+  // a singleton of just itself" rule. Membership here doesn't actually
+  // make it selectable anywhere, though — see LIVERY_SPECIFIC_ROUTE
+  // below, which blocks it regardless of operator-enabled status.
+  "Thistle Coaches": ["Thistle Coaches"],
 };
 
 export function liveryOperator(liveryName: string): string | null {
@@ -349,7 +421,28 @@ export function depotNarrowingReason(liveryName: string, narrowedLiveryNames: re
 // isn't: its restriction is on route TERMINUS (can run to/from Wales),
 // not depot location — a depot-nation lock would contradict that, same
 // reasoning as Scottish's own comment above.
-export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "MegaBus", "National Express", "National Express Scottish", "National Express Welsh", "Citylink/West Coast Motors", "Irish Citylink"];
+// "TaithCymru" added 2026-11-19 — the user's own instruction: "swap
+// Megabus for TaithCymru in Wales as that's the actual operator in
+// Wales, Megabus will still be kept with no restrictions on use apart
+// from coaches and long distance routes." TaithCymru is a genuinely
+// separate real operator (not a National Express sub-brand), so it's a
+// standalone entry in OPERATOR_LIVERIES above rather than sitting
+// alongside National Express Welsh — but its own NATION restriction is
+// a real route-geometry check (`taithCymruWalesFractionReason` below,
+// updated 2026-11-19 to a stricter 85%-of-route-length rule), not a
+// depot-region lock,
+// since `longDistanceNationLockReason`'s region type only has a single
+// combined "england-wales" bucket and can't tell Wales apart from
+// England on its own — a depot-region lock here would wrongly also
+// allow it from English depots. Deliberately given NO special-cased
+// branch in `longDistanceNationLockReason` below for that reason.
+// MegaBus's own former England/Wales nation lock is REMOVED as part of
+// this same change (see `longDistanceNationLockReason` below) — the
+// user's own words, "no restrictions on use apart from coaches and long
+// distance routes," i.e. MegaBus keeps its existing coach-only vehicle
+// lock and its long-distance-only route-type note, but no nation/area
+// lock at all any more.
+export const LONG_DISTANCE_LIVERY_NAMES = ["Citylink", "MegaBus", "National Express", "National Express Scottish", "National Express Welsh", "TaithCymru", "Citylink/West Coast Motors", "Irish Citylink"];
 
 export function isLongDistanceLiveryName(name: string): boolean {
   return LONG_DISTANCE_LIVERY_NAMES.includes(name);
@@ -402,15 +495,19 @@ export function nationForRegion(region: string): Nation {
 }
 
 // Returns why a long-distance livery can't be used from a depot group in
-// this region, or null if it's allowed there. Only Citylink/MegaBus/
-// National Express are nation-locked — every other livery goes through the
-// area-lock table instead (liveryRestrictionForArea).
+// this region, or null if it's allowed there. Only Citylink/National
+// Express are nation-locked — every other livery goes through the
+// area-lock table instead (liveryRestrictionForArea). MegaBus's own former
+// branch here was removed 2026-11-19 (user's own instruction — "no
+// restrictions on use apart from coaches and long distance routes"), so it
+// now falls through to the final `return null` below, same as National
+// Express Scottish/Welsh/TaithCymru: no depot-region nation lock at all.
 export function longDistanceNationLockReason(liveryName: string, depotGroupRegion: string): string | null {
   const nation = nationForRegion(depotGroupRegion);
   if (liveryName === "Citylink" && nation !== "scotland") {
     return `${liveryName} is a Scotland-only livery.`;
   }
-  if ((liveryName === "MegaBus" || liveryName === "National Express") && nation !== "england-wales") {
+  if (liveryName === "National Express" && nation !== "england-wales") {
     return `${liveryName} is an England/Wales-only livery.`;
   }
   // Added 2026-11-15 — see LONG_DISTANCE_LIVERY_NAMES's own comment above.
@@ -514,6 +611,9 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   "Stagecoach Electric": ["local_night"],
   "Stagecoach Jet": ["airport"],
   "West Coast Motors": ["local_night"],
+  // Added 2026-11-19 — the real LOCAL Welsh operator, same category as
+  // every other plain local livery above.
+  TrawsCymru: ["local_night"],
   // Highland Council (the livery) dropped T190 (2026-11-14) — removed
   // from this map.
   Citylink: ["long_distance"],
@@ -527,6 +627,9 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   // long-distance operator variant, only its Wales-terminus restriction
   // differs (checked separately, see nationalExpressWelshTerminusReason).
   "National Express Welsh": ["long_distance"],
+  // Added 2026-11-19 — same category as every other long-distance
+  // operator, see LONG_DISTANCE_LIVERY_NAMES's own comment above.
+  TaithCymru: ["long_distance"],
   "National Express Local": ["local_night"],
   "Citylink/West Coast Motors": ["long_distance"],
   // Added 2026-11-15 — see LONG_DISTANCE_LIVERY_NAMES's own comment.
@@ -536,6 +639,10 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   // "not part of this general system, genuinely unrestricted" per
   // `liveryRouteTypeReason`'s own comment below, exactly what's wanted.
   "Irish Citylink": ["long_distance"],
+  // Added 2026-11-19 — user's own instruction: "used on long distance
+  // routes." Vehicle lock (Volvo 9700DD only, not any coach) is a
+  // separate, more specific check in liveryVehicleLockReason below.
+  "Oxford Tube": ["long_distance"],
 };
 
 // Liveries locked to one specific named route rather than a general
@@ -553,6 +660,17 @@ export const LIVERY_SPECIFIC_ROUTE: Record<string, string> = {
   Air: "Air",
   SkyLink: "SkyLink",
   "Oxford Tube": "Oxford Tube",
+  // Thistle Coaches added 2026-11-19 — unlike every other entry above
+  // (each waiting for ITS OWN real route of that exact number/name to
+  // exist), this one is a deliberate, permanent sentinel: no real route
+  // will ever be numbered "Thistle Coaches," so this livery can never
+  // pass liveryUnavailableReason's requiredRoute check and never appears
+  // in the buy/configure livery picker, in or out of any depot group's
+  // enabled operators. It's "selectable nowhere, system-assigned only" —
+  // fixed-contract-failures.mts assigns it directly to a suspended
+  // service's own display/finance handling without ever going through
+  // this picker at all.
+  "Thistle Coaches": "Thistle Coaches",
 };
 
 export function liveryRouteTypeReason(liveryName: string, routeType: RouteTypeCategory): string | null {
@@ -647,6 +765,91 @@ export function nationalExpressWelshTerminusReason(liveryName: string, points: {
   return "National Express Welsh only runs to/from Wales.";
 }
 
+// Plain haversine distance in metres — same small self-contained helper
+// every other file that needs real-world distance already carries its own
+// copy of (area-cluster.mts, island-detection.mts, fare-zone-road-
+// pushout.mts, polyline-geometry.mts, dead-mileage-preview.ts), rather
+// than a shared module none of them actually use.
+function haversineM(a: { lon: number; lat: number }, b: { lon: number; lat: number }): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const dLat = lat2 - lat1;
+  const dLon = toRad(b.lon - a.lon);
+  const x = dLon * Math.cos((lat1 + lat2) / 2);
+  return R * Math.sqrt(dLat * dLat + x * x);
+}
+
+// Real fraction of a route's own length that falls inside Wales (2026-11-19,
+// for TaithCymru's own rule below) — distance-weighted along the whole
+// polyline, not just the two endpoints (unlike the Scottish/Welsh National
+// Express terminus checks above, which only ever look at the first/last
+// point). Each segment's MIDPOINT decides whether that segment counts as
+// "in Wales" — a deliberate, flagged approximation (no real line/polygon
+// clip exists here) rather than a true polygon intersection, acceptable
+// for a short-ish road segment between two consecutive route points.
+// Returns null when the route isn't known yet (fewer than 2 points), same
+// "can't check it, don't block on it" convention as every other optional
+// axis in this file.
+export function routeWalesFraction(points: { lon: number; lat: number }[] | undefined): number | null {
+  if (!points || points.length < 2) return null;
+  let totalM = 0;
+  let walesM = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const segM = haversineM(a, b);
+    totalM += segM;
+    const midpoint = { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };
+    if (isPointInWales(midpoint.lon, midpoint.lat)) walesM += segM;
+  }
+  return totalM > 0 ? walesM / totalM : null;
+}
+
+// TaithCymru's own nation lock (2026-11-19, replacing its original
+// terminus-only check — user's own direct instruction): "TaithCymru
+// should only operate routes that are 85% or more in Wales, otherwise it
+// should be National Express." A real, stricter proportional threshold
+// rather than National Express Welsh's "at least one terminus" rule —
+// deliberately different from its sibling, since a long-distance coach
+// route can touch Wales at one end while running mostly through England,
+// which should default to plain National Express instead (already always
+// eligible wherever TaithCymru isn't — no separate fallback logic needed,
+// it's simply the next already-available long-distance choice once
+// TaithCymru itself is blocked here).
+const TAITH_CYMRU_WALES_FRACTION = 0.85;
+
+export function taithCymruWalesFractionReason(liveryName: string, points: { lon: number; lat: number }[] | undefined): string | null {
+  if (liveryName !== "TaithCymru") return null;
+  const fraction = routeWalesFraction(points);
+  if (fraction === null) return null;
+  return fraction >= TAITH_CYMRU_WALES_FRACTION ? null : `TaithCymru is locked to routes at least ${TAITH_CYMRU_WALES_FRACTION * 100}% in Wales.`;
+}
+
+// TrawsCymru's own nation lock (2026-11-19) — the real LOCAL Welsh bus
+// operator (Transport for Wales's own network of local/regional services,
+// as distinct from TaithCymru's long-distance coach role above — user's
+// own direct instruction: "let's use TrawsCymru as the local operator
+// that is used in Wales"). Same terminus-check shape as National Express
+// Welsh (not the stricter 85%-of-route rule above, which was only ever
+// specified for TaithCymru) — a local route is far less likely to clip
+// through Wales at one end only the way a long-distance coach route can,
+// so the simpler "at least one terminus" rule is the closer match to its
+// long-distance-route sibling's own established pattern. Flagged as an
+// inferred choice, not explicitly confirmed — correct by hand if wrong.
+// Checked unconditionally, same shape as `translinkNationReason` below
+// (TrawsCymru is a LOCAL livery, so it never goes through
+// `isLongDistanceLiveryName`'s own pathway at all).
+export function trawsCymruTerminusReason(liveryName: string, points: { lon: number; lat: number }[] | undefined): string | null {
+  if (liveryName !== "TrawsCymru") return null;
+  if (!points || points.length === 0) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (isPointInWales(first.lon, first.lat) || isPointInWales(last.lon, last.lat)) return null;
+  return "TrawsCymru only runs to/from Wales.";
+}
+
 // Translink's own nation lock (2026-11-15) — unlike Irish Citylink,
 // Translink isn't a long-distance livery (see LIVERY_ROUTE_TYPES's own
 // comment), so it never goes through `isLongDistanceLiveryName`'s
@@ -719,7 +922,11 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
     liveryName === "Citylink/West Coast Motors" ||
     // Irish Citylink added 2026-11-15 — same coach-only lock as every
     // other long-distance operator in this branch.
-    liveryName === "Irish Citylink"
+    liveryName === "Irish Citylink" ||
+    // TaithCymru added 2026-11-19 — same coach-only lock as every other
+    // long-distance operator in this branch; MegaBus's own entry above
+    // keeps its coach-only lock unchanged by this same change.
+    liveryName === "TaithCymru"
   ) {
     return vehicle.category === "Coaches" ? null : `${liveryName} is locked to coaches only.`;
   }
@@ -728,6 +935,13 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   // its own check rather than reusing it.
   if (liveryName === "Translink") {
     return vehicle.category === "Coaches" ? "Translink can't be used on coaches." : null;
+  }
+  // Oxford Tube added 2026-11-19 — user's own words: "can only be used on
+  // 9700DD coaches." A specific MODEL lock, not the general "any coach"
+  // rule every other long-distance livery above gets, so it needs its own
+  // branch rather than joining theirs.
+  if (liveryName === "Oxford Tube") {
+    return vehicle.id === "volvo-9700dd" ? null : "Oxford Tube is locked to the Volvo 9700DD only.";
   }
   if (liveryName === "ScotRail") {
     return scotRailVehicleReason(vehicle, powerType);
@@ -798,6 +1012,10 @@ export function liveryUnavailableReason(
   if (scottishTerminusReason) return scottishTerminusReason;
   const welshTerminusReason = nationalExpressWelshTerminusReason(liveryName, route?.points);
   if (welshTerminusReason) return welshTerminusReason;
+  const taithCymruReason = taithCymruWalesFractionReason(liveryName, route?.points);
+  if (taithCymruReason) return taithCymruReason;
+  const trawsCymruReason = trawsCymruTerminusReason(liveryName, route?.points);
+  if (trawsCymruReason) return trawsCymruReason;
   const translinkReason = translinkNationReason(liveryName, depotGroup?.region);
   if (translinkReason) return translinkReason;
   const operatorReason = operatorNotEnabledReason(liveryName, enabledOperators);
@@ -885,6 +1103,10 @@ export function liveryEligibleForRoute(
     // nationalExpressWelshTerminusReason above; a no-op for every other
     // long-distance livery.
     if (nationalExpressWelshTerminusReason(liveryName, route.points)) return false;
+    // TaithCymru's own mirror restriction (2026-11-19) — see
+    // taithCymruWalesFractionReason above; a no-op for every other
+    // long-distance livery.
+    if (taithCymruWalesFractionReason(liveryName, route.points)) return false;
     return true;
   }
   if (isLocalOnlyLiveryName(liveryName) && route.routeType === "long_distance") return false;
@@ -892,6 +1114,9 @@ export function liveryEligibleForRoute(
   if (route.routeType === "sightseeing") return false;
   if (liverySpecificRouteReason(liveryName, route)) return false;
   if (translinkNationReason(liveryName, depotGroup?.region)) return false;
+  // TrawsCymru's own unconditional nation check (2026-11-19) — same shape
+  // as the Translink check directly above, see trawsCymruTerminusReason.
+  if (trawsCymruTerminusReason(liveryName, route.points)) return false;
   const category = routeTypeCategoryFor(route.routeType);
   if (category && liveryRouteTypeReason(liveryName, category)) return false;
   if (depotGroup) {
