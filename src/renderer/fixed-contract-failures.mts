@@ -8,11 +8,11 @@
 //     is "missed" and fined.
 //  2. Persistent failure suspends some of the contract's services —
 //     always whole return-journey/circular-route units, never a single
-//     one-way leg — for exactly 1 year, then they return automatically.
+//     one-way leg — for exactly 6 months, then they return automatically.
 //  3. Never more than 60% of a contract's services suspended at once.
 //  4. Thistle Coaches (the game's one competitor, OPEN-ITEMS.md "The
 //     competitor") covers the suspended services meanwhile — no fare
-//     revenue or cost to the player for them during that year.
+//     revenue or cost to the player for them during that time.
 //  5. Applies uniformly to the four contracts above, no special-casing —
 //     this module deliberately has no per-contract branch anywhere in it.
 //
@@ -50,11 +50,13 @@
 // confirmed by the user — flagged individually at each constant, the same
 // way this codebase already flags every other unconfirmed numeric
 // threshold (see stop-upgrades.mts's own threshold comments). Only the
-// 60% cap and the exactly-1-year return are real, confirmed numbers.
+// 60% cap and the exactly-6-month return (revised 2026-11-19 from an
+// initial 1 year, the user's own words: "I think 6 months to get a route
+// back might be better") are real, confirmed numbers.
 import { overlapsWindow, type AwayBooking } from "./workshop-booking.mts";
 import { computePeakVehicleRequirement, type PvrRoute, type PvrTimetable } from "./route-statistics.mts";
 import { generateDepartureMinutesForBands, applyExcludedDepartures, mergeCustomDepartures, type TimeBand } from "./route-timetable.mts";
-import { addOneYear } from "./game-clock.mts";
+import { addMonths } from "./game-clock.mts";
 
 // --- Which routes this mechanic applies to --------------------------------
 
@@ -277,18 +279,18 @@ export function unitsToSuspendToday(totalUnits: number, alreadySuspended: number
   return Math.min(room, missedUnitsToday);
 }
 
-// --- Suspension records: exactly 1 year, then automatic return -----------
+// --- Suspension records: exactly 6 months, then automatic return ---------
 //
 // Each escalation is its own independent batch, not a merge into one
 // running total: if a route is suspended further while an earlier batch is
-// still active, the new batch gets its OWN fresh 1-year timer, so the
+// still active, the new batch gets its OWN fresh 6-month timer, so the
 // earlier batch still returns on its own original date rather than being
 // reset. Not explicitly confirmed by the user either way — this is this
-// model's own reading of "the player can get the lost services back after
-// 1 year" as meaning each lost BATCH individually, which seems the more
-// generous/consistent reading (an escalation shouldn't restart an
-// already-ticking clock) — flagged in case the intended behaviour is a
-// single combined timer instead.
+// model's own reading of "the player can get the lost services back after"
+// the suspension length as meaning each lost BATCH individually, which
+// seems the more generous/consistent reading (an escalation shouldn't
+// restart an already-ticking clock) — flagged in case the intended
+// behaviour is a single combined timer instead.
 export interface ContractSuspension {
   routeId: number;
   weekdayMask: number;
@@ -299,6 +301,11 @@ export interface ContractSuspension {
   active: boolean;
 }
 
+// Suspension length: 6 months (revised 2026-11-19 from an initial 1 year —
+// the user's own words: "I think 6 months to get a route back might be
+// better"), via game-clock.mts's general addMonths helper.
+const SUSPENSION_LENGTH_MONTHS = 6;
+
 export function createSuspension(routeId: number, weekdayMask: number, suspendedUnits: number, totalUnits: number, startGameDay: number): ContractSuspension {
   return {
     routeId,
@@ -306,7 +313,7 @@ export function createSuspension(routeId: number, weekdayMask: number, suspended
     suspendedUnits: Math.min(suspendedUnits, totalUnits),
     totalUnits,
     startGameDay,
-    returnGameDay: addOneYear(startGameDay),
+    returnGameDay: addMonths(startGameDay, SUSPENSION_LENGTH_MONTHS),
     active: true,
   };
 }

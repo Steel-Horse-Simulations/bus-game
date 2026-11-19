@@ -15,7 +15,7 @@ import {
   DAYS_PER_PERIOD,
   PERIODS_PER_COMPANY_YEAR,
   DAYS_PER_COMPANY_YEAR,
-  addOneYear,
+  addMonths,
   gameDayFromCivil,
 } from "./game-clock.mts";
 
@@ -125,33 +125,63 @@ assert(DAYS_PER_PERIOD === 28 && PERIODS_PER_COMPANY_YEAR === 13 && DAYS_PER_COM
   assert(Math.abs(realMsForOneGameDayAt60x - 144000) < 1, "a full game day at 60x takes 144 real seconds (2.4 real minutes)");
 }
 
-// --- addOneYear (fixed-contract-failures.mts's suspension-return timer) ---
+// --- addMonths (fixed-contract-failures.mts's suspension-return timer,
+// currently called with 6 — revised 2026-11-19 from an initial 1 year) ---
 {
   const start = gameDayFromCivil(5, 6, 15); // an ordinary date, Year 5, 15 June
-  const returned = addOneYear(start);
+  const returned = addMonths(start, 12);
   const dt = gameDateTimeFromSeconds(returned * 86400);
-  assert(dt.year === 6 && dt.month === 6 && dt.day === 15, "an ordinary date returns on the same month/day, one year later");
+  assert(dt.year === 6 && dt.month === 6 && dt.day === 15, "an ordinary date returns on the same month/day, 12 months later");
 
   // Leap day: Year 4 is a leap year (isLeapYear(4) === true), Year 5 is not.
   const leapDay = gameDayFromCivil(4, 2, 29);
-  const leapReturn = addOneYear(leapDay);
+  const leapReturn = addMonths(leapDay, 12);
   const dtLeap = gameDateTimeFromSeconds(leapReturn * 86400);
-  assert(dtLeap.year === 5 && dtLeap.month === 2 && dtLeap.day === 28, "a 29 February suspension start clamps to 28 February when the return year isn't a leap year");
+  assert(dtLeap.year === 5 && dtLeap.month === 2 && dtLeap.day === 28, "a 29 February start clamps to 28 February when the return year isn't a leap year, 12 months on");
 
   // Leap day returning into another leap year (Year 4 -> Year 8, also a
   // leap year) keeps the real 29 February, no clamping needed.
-  const leapToLeapReturn = addOneYear(gameDayFromCivil(4, 2, 29));
-  // addOneYear only steps forward ONE year (4 -> 5), so re-run it from the
-  // already-clamped 28 Feb Year 5 to reach Year 6, not a double-step check
-  // of 4 -> 8 (isLeapYear(8) === true but that's 4 years forward, not 1).
-  assert(leapToLeapReturn === leapReturn, "addOneYear is deterministic for the same input");
+  const leapToLeapReturn = addMonths(gameDayFromCivil(4, 2, 29), 12);
+  // addMonths(x, 12) only steps forward ONE year (4 -> 5), so re-run it
+  // from the already-clamped 28 Feb Year 5 to reach Year 6, not a
+  // double-step check of 4 -> 8 (isLeapYear(8) === true but that's 4 years
+  // forward, not 1).
+  assert(leapToLeapReturn === leapReturn, "addMonths is deterministic for the same input");
 
   // Crossing into a genuine leap year on the FAR end (not a leap source
   // date) is the easy, unclamped case.
   const intoLeapYear = gameDayFromCivil(3, 3, 1); // Year 3 -> Year 4 (a leap year), ordinary date, no clamping involved
-  const intoLeapReturn = addOneYear(intoLeapYear);
+  const intoLeapReturn = addMonths(intoLeapYear, 12);
   const dtIntoLeap = gameDateTimeFromSeconds(intoLeapReturn * 86400);
-  assert(dtIntoLeap.year === 4 && dtIntoLeap.month === 3 && dtIntoLeap.day === 1, "an ordinary date landing in a real leap year on the far end is unaffected");
+  assert(dtIntoLeap.year === 4 && dtIntoLeap.month === 3 && dtIntoLeap.day === 1, "an ordinary date landing in a real leap year on the far end is unaffected, 12 months on");
+
+  // --- The real call shape this mechanic actually uses: 6 months ---
+  const sixMonthsOrdinary = addMonths(gameDayFromCivil(5, 1, 15), 6);
+  const dtSixOrdinary = gameDateTimeFromSeconds(sixMonthsOrdinary * 86400);
+  assert(dtSixOrdinary.year === 5 && dtSixOrdinary.month === 7 && dtSixOrdinary.day === 15, "6 months after 15 January is 15 July, same year");
+
+  // Crossing a calendar year boundary: 6 months after a date in the back
+  // half of the year lands in the NEXT year.
+  const sixMonthsAcrossYear = addMonths(gameDayFromCivil(5, 9, 10), 6);
+  const dtSixAcrossYear = gameDateTimeFromSeconds(sixMonthsAcrossYear * 86400);
+  assert(dtSixAcrossYear.year === 6 && dtSixAcrossYear.month === 3 && dtSixAcrossYear.day === 10, "6 months after 10 September Year 5 is 10 March Year 6");
+
+  // The genuinely new edge case a 6-month step needs that a 1-year step
+  // never did: landing on a SHORTER month, not just the one Feb-29 case —
+  // 31 August + 6 months lands in February, which never has 31 days.
+  const thirtyFirstAugust = addMonths(gameDayFromCivil(5, 8, 31), 6);
+  const dtThirtyFirstAugust = gameDateTimeFromSeconds(thirtyFirstAugust * 86400);
+  assert(dtThirtyFirstAugust.year === 6 && dtThirtyFirstAugust.month === 2 && dtThirtyFirstAugust.day === 28, "31 August + 6 months clamps to 28 February in a non-leap target year, not an overflow into March");
+
+  // Same case landing in a leap year instead — clamps to 29, not 28.
+  const thirtyFirstAugustIntoLeap = addMonths(gameDayFromCivil(3, 8, 31), 6); // Year 3 -> Year 4, a leap year
+  const dtThirtyFirstAugustIntoLeap = gameDateTimeFromSeconds(thirtyFirstAugustIntoLeap * 86400);
+  assert(dtThirtyFirstAugustIntoLeap.year === 4 && dtThirtyFirstAugustIntoLeap.month === 2 && dtThirtyFirstAugustIntoLeap.day === 29, "31 August + 6 months clamps to 29 February when the target year IS a leap year");
+
+  // 31 March + 6 months lands in September, which only has 30 days.
+  const thirtyFirstMarch = addMonths(gameDayFromCivil(5, 3, 31), 6);
+  const dtThirtyFirstMarch = gameDateTimeFromSeconds(thirtyFirstMarch * 86400);
+  assert(dtThirtyFirstMarch.year === 5 && dtThirtyFirstMarch.month === 9 && dtThirtyFirstMarch.day === 30, "31 March + 6 months clamps to 30 September, which has no 31st");
 }
 
 console.log("\nAll game-clock checks passed.");

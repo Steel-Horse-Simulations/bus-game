@@ -127,23 +127,34 @@ export function gameDayFromCivil(year: number, month: number, day: number): numb
   return daysFromCivil(year, month, day) - GAME_EPOCH_DAYS_SINCE_1970;
 }
 
-// Exactly one calendar year later — same real month/day, year + 1 — for the
-// Fixed-real-contract suspension mechanic's own "suspended for exactly 1
-// year" rule (OPEN-ITEMS.md "Contracts redesign," confirmed directly: "The
-// player can get the lost services back after 1 year"). Deliberately NOT
-// "+365 days" — that would drift against the real calendar across a leap
-// year, and "exactly 1 year" is the user's own wording, so this reuses the
-// real civil-calendar conversion above rather than a flat day-count
-// approximation. The one genuine edge case, a 29 February suspension start
-// (leap day) with a non-leap return year, clamps to 28 February rather than
-// overflowing into March — same "nearest valid real date" behaviour most
-// real calendar software uses for this edge case, not independently
-// sourced.
-export function addOneYear(gameDay: number): number {
+const DAYS_IN_MONTH_NON_LEAP = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2 && isLeapYear(year)) return 29;
+  return DAYS_IN_MONTH_NON_LEAP[month - 1];
+}
+
+// Exactly N calendar months later, clamped to the nearest valid real date if
+// the original day doesn't exist in the target month (e.g. 31 August + 6
+// months -> 28/29 February, not an overflow into March) — same "nearest
+// valid real date" behaviour most real calendar software uses for this edge
+// case, not independently sourced. Originally built as addOneYear (a
+// simpler year+1 version only ever needing the single Feb-29 edge case) for
+// the Fixed-real-contract suspension mechanic's own "suspended for exactly
+// 1 year" rule; generalised 2026-11-19 when the user revised that to 6
+// months instead ("I think 6 months to get a route back might be better"),
+// since a 6-month step needs the full day-in-month clamp (any month can
+// land on a shorter one), not just the one leap-year case. Deliberately NOT
+// a flat day-count approximation ("+365 days"/"+182 days") — that would
+// drift against the real calendar, and the user's own wording ("1 year,"
+// now "6 months") is a real calendar duration.
+export function addMonths(gameDay: number, months: number): number {
   const { y, m, d } = civilFromDays(gameDay + GAME_EPOCH_DAYS_SINCE_1970);
-  const nextYear = y + 1;
-  const clampedDay = m === 2 && d === 29 && !isLeapYear(nextYear) ? 28 : d;
-  return daysFromCivil(nextYear, m, clampedDay) - GAME_EPOCH_DAYS_SINCE_1970;
+  const totalMonths = y * 12 + (m - 1) + months;
+  const nextYear = Math.floor(totalMonths / 12);
+  const nextMonth = (totalMonths % 12) + 1;
+  const clampedDay = Math.min(d, daysInMonth(nextYear, nextMonth));
+  return daysFromCivil(nextYear, nextMonth, clampedDay) - GAME_EPOCH_DAYS_SINCE_1970;
 }
 
 // "Wages are paid every Thursday (weekly)" — weekday 3 (0=Monday).

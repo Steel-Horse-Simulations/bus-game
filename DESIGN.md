@@ -1979,7 +1979,7 @@ only worth generalising if a third ever comes along.
   - A departure the depot group genuinely can't field a vehicle for is
     **missed, and fined**.
   - If failures continue, **some of the contract's services are
-    suspended for exactly 1 year**, then return to the player
+    suspended for exactly 6 months**, then return to the player
     automatically — not lost permanently, not re-tendered. This lets the
     player fix the underlying problem without being too harshly
     punished.
@@ -2540,8 +2540,8 @@ Covers two genuinely different situations, confirmed 2026-11-19
 (OPEN-ITEMS.md "The competitor" / "Contracts redesign"):
 - A Fixed real contract (398, Airlink 100, Express 500 or SkyLink) that's
   had some of its services **suspended** for persistent failure (above):
-  Thistle Coaches runs those specific suspended services for exactly 1
-  year, then hands them back to the player automatically.
+  Thistle Coaches runs those specific suspended services for exactly 6
+  months, then hands them back to the player automatically.
 - A council/event contract genuinely **lost** outright for over-long
   routes or too much dead mileage: Thistle Coaches runs it until the next
   bidding round, the same as before.

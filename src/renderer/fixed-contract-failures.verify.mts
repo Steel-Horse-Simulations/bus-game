@@ -26,7 +26,7 @@ import {
   type ContractSuspension,
   type FixedContractTimetableComponent,
 } from "./fixed-contract-failures.mts";
-import { addOneYear } from "./game-clock.mts";
+import { addMonths } from "./game-clock.mts";
 import type { PvrRoute, PvrTimetable } from "./route-statistics.mts";
 import { generateDepartureMinutesForBands } from "./route-timetable.mts";
 
@@ -132,10 +132,10 @@ assert(unitsToSuspendToday(61, Math.floor(61 * 0.6), 20) === 0, "once the ceilin
 assert(unitsToSuspendToday(2, 0, 2) === 1, "a Dounreay-shaped 2-unit day can only lose 1 of its 2 units under this general 60% rule (floor(2*0.6)=1) — the real reason Dounreay needed its own separate exception, OPEN-ITEMS.md");
 assert(unitsToSuspendToday(1, 0, 1) === 0, "a single-unit-a-day route can NEVER be suspended under the general 60% rule at all (floor(1*0.6)=0) — confirms the general mechanism genuinely cannot touch a very sparse route");
 
-// --- Suspensions: exactly 1 year, via the real calendar -------------------
+// --- Suspensions: exactly 6 months, via the real calendar -----------------
 const startDay = 10_000;
 const suspension = createSuspension(42, 0b0011111, 20, 61, startDay);
-assert(suspension.returnGameDay === addOneYear(startDay), "a suspension's return day is exactly addOneYear(startGameDay), the real calendar helper, not a flat +365");
+assert(suspension.returnGameDay === addMonths(startDay, 6), "a suspension's return day is exactly addMonths(startGameDay, 6), the real calendar helper, not a flat day-count approximation");
 assert(isExpired(suspension, startDay) === false, "not expired on the very day it starts");
 assert(isExpired(suspension, suspension.returnGameDay - 1) === false, "not expired the day before its return day");
 assert(isExpired(suspension, suspension.returnGameDay) === true, "expired exactly on its return day");
@@ -159,7 +159,7 @@ assert(isUnitSuspended([earlierBatch, laterBatch, saturdayBatch], 0b0100000, 5, 
 assert(totalActiveSuspendedUnits([earlierBatch, laterBatch, saturdayBatch].filter((s) => s.weekdayMask === 0b0011111), 350) === 25, "filtering to just the weekday-mask group first (as isUnitSuspended does) excludes the Saturday batch from the weekday total");
 
 // --- The full daily pipeline, including escalation across several days
-// and the eventual 1-year return -------------------------------------------
+// and the eventual 6-month return -------------------------------------------
 {
   const weekdayMask = 0b0011111;
   // A 398-shaped loop: route-statistics.mts's own T159 convention is that
@@ -216,14 +216,14 @@ assert(totalActiveSuspendedUnits([earlierBatch, laterBatch, saturdayBatch].filte
   assert(totalSoFar <= Math.floor(result.scheduledUnits * MAX_SUSPENDED_FRACTION), "across multiple escalations, the combined suspended total still never exceeds 60%");
   assert(totalSoFar >= firstSuspension.suspendedUnits, "escalation only ever adds to the suspended total, never removes from it while still failing");
 
-  // Jump forward exactly 1 year from the first suspension's own start day —
-  // it must return automatically, independently of any later batch.
-  const oneYearLater = firstSuspension.returnGameDay;
-  const stillActiveBeforeReturn = totalActiveSuspendedUnits(suspensions, oneYearLater - 1);
-  const activeOnReturnDay = totalActiveSuspendedUnits(suspensions, oneYearLater);
+  // Jump forward exactly 6 months from the first suspension's own start day
+  // — it must return automatically, independently of any later batch.
+  const sixMonthsLater = firstSuspension.returnGameDay;
+  const stillActiveBeforeReturn = totalActiveSuspendedUnits(suspensions, sixMonthsLater - 1);
+  const activeOnReturnDay = totalActiveSuspendedUnits(suspensions, sixMonthsLater);
   assert(activeOnReturnDay < stillActiveBeforeReturn, "on the first batch's own exact return day, its units stop counting as suspended — a real automatic return, not a lost-forever contract");
 
-  const resultOnReturnDay = evalDay(oneYearLater, 2, []);
+  const resultOnReturnDay = evalDay(sixMonthsLater, 2, []);
   assert(resultOnReturnDay.justExpired.some((s) => s.startGameDay === firstSuspension.startGameDay), "evaluateFixedContractDay itself reports the first batch as justExpired on its own real return day");
 }
 
