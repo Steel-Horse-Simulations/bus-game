@@ -117,8 +117,23 @@ import {
   upsertRemoteRouteSubsidy,
   deleteRemoteRouteSubsidy,
   type RemoteRouteSubsidyState,
+  recordFixedContractFineEvent,
+  listFixedContractFineEvents,
+  createFixedContractSuspension,
+  listFixedContractSuspensions,
+  listAllActiveFixedContractSuspensions,
+  deactivateFixedContractSuspension,
+  createFixedContractAcceptance,
+  getFixedContractAcceptance,
+  listFixedContractAcceptances,
+  ensureRouteMilestone,
+  getRouteMilestone,
   recordRouteAdvertisingMonthsBilled,
   type RouteAdvertisingMode,
+  createStopRouteLock,
+  listAllStopRouteLocks,
+  getStopRouteLock,
+  type StopRouteLockSource,
   listAllRepowerBookings,
   createRepowerBooking,
   collectRepowerBooking,
@@ -186,6 +201,11 @@ import {
   recordGeneratedPrivateHireMonths,
   listGeneratedLeaseBillingMonths,
   recordLeaseBillingMonths,
+  listGeneratedGreenroadBillingMonths,
+  recordGreenroadBillingMonths,
+  createGreenroadRetrofitBooking,
+  listAllGreenroadRetrofitBookings,
+  collectGreenroadRetrofitBooking,
   type FareConfig,
   setCountryZoneBand,
   deleteCountryZoneBand,
@@ -636,6 +656,7 @@ function registerBasketAndOrderHandlers(): void {
       isUsed: boolean,
       usedCondition: number | null,
       boughtForRouteId: number | null,
+      greenroadFitted: boolean,
     ) =>
       addBasketItem(
         save,
@@ -653,6 +674,7 @@ function registerBasketAndOrderHandlers(): void {
         isUsed,
         usedCondition,
         boughtForRouteId,
+        greenroadFitted,
       ),
   );
   ipcMain.handle("basket:list", () => listBasket(save));
@@ -732,17 +754,74 @@ function registerRemoteRouteSubsidyHandlers(): void {
   ipcMain.handle("remoteRouteSubsidy:delete", (_e, routeId: number, departureMinutes: number, weekdayMask: number) => deleteRemoteRouteSubsidy(save, routeId, departureMinutes, weekdayMask));
 }
 
+// Contracts menu (DESIGN.md "Fixed real contracts"; OPEN-ITEMS.md
+// "Contracts redesign"/"Dounreay contracts"/"Three further contracts —
+// 800, 803 & 805") — wires up the fine/suspension storage
+// fixed-contract-failures.mts already had (previously unwired — no
+// screen called it, OPEN-ITEMS.md's own flagged gap) plus the new
+// acceptance/milestone tables this feature added, so contracts-panel.ts
+// has a real IPC surface to read and write against.
+function registerFixedContractHandlers(): void {
+  ipcMain.handle(
+    "fixedContracts:recordFineEvent",
+    (_e, routeId: number, routeNumber: string, depotGroupId: number, gameDay: number, scheduledUnits: number, missedUnits: number, fineGBPPence: number) =>
+      recordFixedContractFineEvent(save, routeId, routeNumber, depotGroupId, gameDay, scheduledUnits, missedUnits, fineGBPPence),
+  );
+  ipcMain.handle("fixedContracts:listFineEvents", (_e, routeId: number) => listFixedContractFineEvents(save, routeId));
+  ipcMain.handle(
+    "fixedContracts:createSuspension",
+    (_e, routeId: number, weekdayMask: number, suspendedUnits: number, totalUnits: number, startGameDay: number, returnGameDay: number) =>
+      createFixedContractSuspension(save, routeId, weekdayMask, suspendedUnits, totalUnits, startGameDay, returnGameDay),
+  );
+  ipcMain.handle("fixedContracts:listSuspensions", (_e, routeId: number) => listFixedContractSuspensions(save, routeId));
+  ipcMain.handle("fixedContracts:listAllActiveSuspensions", () => listAllActiveFixedContractSuspensions(save));
+  ipcMain.handle("fixedContracts:deactivateSuspension", (_e, id: number) => deactivateFixedContractSuspension(save, id));
+  ipcMain.handle(
+    "fixedContracts:createAcceptance",
+    (_e, contractKey: string, routeIds: number[], depotGroupId: number, acceptedGameDay: number, activationGameDay: number, grantedDepotId: number | null) =>
+      createFixedContractAcceptance(save, contractKey, routeIds, depotGroupId, acceptedGameDay, activationGameDay, grantedDepotId),
+  );
+  ipcMain.handle("fixedContracts:getAcceptance", (_e, contractKey: string) => getFixedContractAcceptance(save, contractKey));
+  ipcMain.handle("fixedContracts:listAcceptances", () => listFixedContractAcceptances(save));
+  ipcMain.handle("fixedContracts:ensureRouteMilestone", (_e, routeId: number, todayGameDay: number) => ensureRouteMilestone(save, routeId, todayGameDay));
+  ipcMain.handle("fixedContracts:getRouteMilestone", (_e, routeId: number) => getRouteMilestone(save, routeId));
+}
+
 function registerRouteAdvertisingHandlers(): void {
   ipcMain.handle("routeAdvertising:listAll", () => listAllRouteAdvertisingBookings(save));
   ipcMain.handle("routeAdvertising:listForStop", (_e, stopOsmId: number) => listRouteAdvertisingBookingsForStop(save, stopOsmId));
   ipcMain.handle(
     "routeAdvertising:create",
-    (_e, stopOsmId: number, depotGroupId: number, mode: RouteAdvertisingMode, routeId: number | null, operatorName: string | null, bookedGameDay: number, liveFromGameDay: number) =>
-      createRouteAdvertisingBooking(save, stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay),
+    (
+      _e,
+      stopOsmId: number,
+      depotGroupId: number,
+      mode: RouteAdvertisingMode,
+      routeId: number | null,
+      operatorName: string | null,
+      bookedGameDay: number,
+      liveFromGameDay: number,
+      isContractBundle?: boolean,
+    ) => createRouteAdvertisingBooking(save, stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay, isContractBundle ?? false),
   );
   ipcMain.handle("routeAdvertising:delete", (_e, id: number) => deleteRouteAdvertisingBooking(save, id));
   ipcMain.handle("routeAdvertising:listGeneratedMonths", (_e, bookingId: number) => listGeneratedRouteAdvertisingMonths(save, bookingId));
   ipcMain.handle("routeAdvertising:recordMonthsBilled", (_e, bookingId: number, monthKeys: string[]) => recordRouteAdvertisingMonthsBilled(save, bookingId, monthKeys));
+}
+
+// Stop route locks (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+// dropped..." — contract-stop bundling + airport-stop purchase). See
+// stop_route_locks' own CREATE TABLE comment in db.mts for the full real
+// design; this just wires it up for contracts-panel.ts (contract-stop
+// bundling) and stops-layer.ts (airport-stop purchase).
+function registerStopRouteLockHandlers(): void {
+  ipcMain.handle("stopRouteLocks:listAll", () => listAllStopRouteLocks(save));
+  ipcMain.handle("stopRouteLocks:get", (_e, stopOsmId: number) => getStopRouteLock(save, stopOsmId));
+  ipcMain.handle(
+    "stopRouteLocks:create",
+    (_e, stopOsmId: number, lockedRouteId: number, source: StopRouteLockSource, contractKey: string | null, purchasePriceGbpPence: number | null, lockedGameDay: number) =>
+      createStopRouteLock(save, stopOsmId, lockedRouteId, source, contractKey, purchasePriceGbpPence, lockedGameDay),
+  );
 }
 
 function registerRepowerBookingHandlers(): void {
@@ -865,6 +944,16 @@ function registerLeaseBillingHandlers(): void {
   ipcMain.handle("leaseBilling:recordMonthsBilled", (_e, vehicleId: number, monthKeys: string[], flipToOutright: boolean) =>
     recordLeaseBillingMonths(save, vehicleId, monthKeys, flipToOutright),
   );
+  ipcMain.handle("greenroadBilling:listGeneratedMonths", (_e, vehicleId: number) => listGeneratedGreenroadBillingMonths(save, vehicleId));
+  ipcMain.handle("greenroadBilling:recordMonthsBilled", (_e, vehicleId: number, monthKeys: string[]) => recordGreenroadBillingMonths(save, vehicleId, monthKeys));
+}
+
+function registerGreenroadRetrofitHandlers(): void {
+  ipcMain.handle("greenroadRetrofit:create", (_e, vehicleId: number, depotId: number, depotGroupId: number, bookedGameDay: number, readyGameDay: number) =>
+    createGreenroadRetrofitBooking(save, vehicleId, depotId, depotGroupId, bookedGameDay, readyGameDay),
+  );
+  ipcMain.handle("greenroadRetrofit:listAll", () => listAllGreenroadRetrofitBookings(save));
+  ipcMain.handle("greenroadRetrofit:collect", (_e, id: number) => collectGreenroadRetrofitBooking(save, id));
 }
 
 function registerStopGroupHandlers(): void {
@@ -969,7 +1058,9 @@ app.whenReady().then(async () => {
   registerRepowerBookingHandlers();
   registerStopUpgradeHandlers();
   registerRouteAdvertisingHandlers();
+  registerStopRouteLockHandlers();
   registerRemoteRouteSubsidyHandlers();
+  registerFixedContractHandlers();
   registerDeadMileageHandlers();
   registerDutyHandlers();
   registerDriverHandlers();
@@ -983,6 +1074,7 @@ app.whenReady().then(async () => {
   registerFinanceHandlers();
   registerPrivateHireIncomeHandlers();
   registerLeaseBillingHandlers();
+  registerGreenroadRetrofitHandlers();
   startMapDataServer();
   if (app.isPackaged) {
     if (!(await downloadMapDataFirst())) {

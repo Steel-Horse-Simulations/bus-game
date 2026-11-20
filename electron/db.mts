@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fleetCategoryDigit, powerTypeSuffix, formatFleetNumber, generatePlate, repowerFleetNumber } from "../src/renderer/fleet-numbering.mts";
 import { SECONDS_PER_DAY } from "../src/renderer/game-clock.mts";
 import { minimumStartingTier, TICKET_MACHINE_PRICE_GBP, type TicketMachineTier } from "../src/renderer/ticket-machine.mts";
-import { OPERATOR_LIVERIES } from "../src/renderer/livery-seed-data.mts";
+import { OPERATOR_LIVERIES, ELECTRIC_LIVERY_VARIANT } from "../src/renderer/livery-seed-data.mts";
 import type { VehicleCategory, PowerType } from "../src/renderer/vehicle-catalogue.mts";
 import { randomDriverName } from "../src/renderer/driver-names.mts";
 import type { PaymentMethod } from "../src/renderer/vehicle-buy-pricing.mts";
@@ -15,7 +15,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 67;
+export const SCHEMA_VERSION = 70;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -867,7 +867,17 @@ CREATE TABLE IF NOT EXISTS vehicles (
   -- column existed (an already-owned vehicle in an existing save is
   -- simply always treated as fully paid for, the same player-friendly
   -- backfill precedent as bought_game_day's own default above).
-  payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own'))
+  payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
+  -- greenroad_fitted (schema v68->v69, user request 2026-11-20): whether
+  -- this vehicle was bought/ordered with the GreenRoad driver-behaviour
+  -- option (vehicle-catalogue.mts's "greenroad" GeneralOption) selected —
+  -- the one option in that whole catalogue that needs a lasting per-
+  -- vehicle record, since it carries an ongoing recurring charge
+  -- (greenroad-billing.mts) rather than just a one-off price folded into
+  -- unit_price_gbp like every other option. Defaults to 0 for any vehicle
+  -- bought before this column existed, the same player-friendly backfill
+  -- precedent as bought_game_day/payment_method's own defaults above.
+  greenroad_fitted INTEGER NOT NULL DEFAULT 0
 );
 
 -- Tracks which calendar months have already had their real monthly lease
@@ -885,6 +895,50 @@ CREATE TABLE IF NOT EXISTS lease_billing_months (
   vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
   month_key TEXT NOT NULL,
   PRIMARY KEY (vehicle_id, month_key)
+);
+
+-- Tracks which calendar months have already had their real GreenRoad
+-- recurring charge billed (schema v68->v69, user request 2026-11-20) —
+-- identical shape/lazy-billing pattern to lease_billing_months above,
+-- except the AMOUNT charged for a given month isn't a flat per-month
+-- figure: it's (real days in that calendar month) x 10p, the user's own
+-- literal "10p per day" rather than a rounded flat monthly fee (confirmed
+-- directly — this game has no daily billing tick anywhere, so every
+-- recurring charge is billed in calendar-month chunks lazily; this is a
+-- new variant of that same pattern, not a new tick mechanism). See
+-- greenroad-billing.mts for the real day-count math.
+CREATE TABLE IF NOT EXISTS greenroad_billing_months (
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  month_key TEXT NOT NULL,
+  PRIMARY KEY (vehicle_id, month_key)
+);
+
+-- Retrofitting GreenRoad onto an already-owned vehicle (user request
+-- 2026-11-20: "Greenroad also needs to be retro-fitable for the same
+-- fee. It will be installed overnight by a Greenroad Engineer" —
+-- refined the same day: "Greenroad should take 14 days after retro-
+-- fitting it for the engineer to come out, they can do 6 buses per
+-- night" then "That 6 per night should drop by 1 for each extra depot
+-- in a group the engineer has to visit," confirmed per depot GROUP, not
+-- company-wide). The same £350 one-off fee as a new purchase (vehicle-
+-- catalogue.mts's "greenroad" GeneralOption), charged at booking time.
+-- ready_game_day is no longer a flat booked_game_day+1 — it's the real
+-- scheduled night (greenroad-retrofit-scheduling.mts's own
+-- scheduleGreenroadRetrofit), which can land well past the 14-day lead
+-- time if the depot group's own nightly capacity is already full.
+-- depot_id/depot_group_id are captured at booking time (the vehicle's
+-- own values then, a stable snapshot — same reasoning as unit_price_gbp
+-- elsewhere — not re-derived from a live vehicle lookup later, which
+-- could drift if the vehicle is ever transferred before collection).
+-- One row per booking, deleted on collection (same "collect, then gone"
+-- convention as repower_bookings/repaint_bookings).
+CREATE TABLE IF NOT EXISTS greenroad_retrofit_bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  depot_id INTEGER NOT NULL REFERENCES depots(id),
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  booked_game_day INTEGER NOT NULL,
+  ready_game_day INTEGER NOT NULL
 );
 
 -- A line in the current, uncommitted order (OPERATIONS.md §3 "Buying") —
@@ -915,7 +969,11 @@ CREATE TABLE IF NOT EXISTS basket_items (
   payment_method TEXT NOT NULL DEFAULT 'buy_outright' CHECK (payment_method IN ('buy_outright', 'lease', 'lease_to_own')),
   is_used INTEGER NOT NULL DEFAULT 0,
   used_condition REAL,
-  bought_for_route_id INTEGER REFERENCES routes(id)
+  bought_for_route_id INTEGER REFERENCES routes(id),
+  -- greenroad_fitted (schema v68->v69) — see vehicles' own column comment.
+  -- Carried from the configure screen's checkbox through to the real
+  -- vehicle row via placeOrder/collectOrder below.
+  greenroad_fitted INTEGER NOT NULL DEFAULT 0
 );
 
 -- One vehicle "placed" (OPERATIONS.md §3 "Delivery and transfers") after
@@ -943,7 +1001,9 @@ CREATE TABLE IF NOT EXISTS vehicle_orders (
   is_used INTEGER NOT NULL DEFAULT 0,
   used_condition REAL,
   ordered_at TEXT NOT NULL,
-  bought_for_route_id INTEGER REFERENCES routes(id)
+  bought_for_route_id INTEGER REFERENCES routes(id),
+  -- greenroad_fitted (schema v68->v69) — see vehicles' own column comment.
+  greenroad_fitted INTEGER NOT NULL DEFAULT 0
 );
 
 -- Fare zones (DESIGN.md §9, Phase 4 increment 1 of the fares build):
@@ -1087,7 +1147,18 @@ CREATE TABLE IF NOT EXISTS company_upgrades (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   has_upgradable_ticket_app INTEGER NOT NULL DEFAULT 0,
   has_mobile_app_live_data INTEGER NOT NULL DEFAULT 0,
-  has_upgraded_avl_data INTEGER NOT NULL DEFAULT 0
+  has_upgraded_avl_data INTEGER NOT NULL DEFAULT 0,
+  -- has_adopted_greenroad (schema v68->v69, user request 2026-11-20:
+  -- "Once this starts to be installed then all vehicles purchased from
+  -- that point onwards have to be fitted with no option to remove it or
+  -- opt-out when buying.") — one-way, company-wide, never cleared once
+  -- set. buyVehicle (below) sets it to true the moment any vehicle is
+  -- first bought with greenroad_fitted — the real "installed" moment,
+  -- not merely added to basket (which can still be removed before
+  -- checkout). Once true, the configure screen forces GreenRoad's own
+  -- checkbox permanently on and disabled for every future purchase, the
+  -- same "lockedOnForCoach" pattern seatbelts already uses for coaches.
+  has_adopted_greenroad INTEGER NOT NULL DEFAULT 0
 );
 
 -- The finance ledger (DESIGN.md §10 "Money"/"Finance screen") — first
@@ -1157,6 +1228,16 @@ CREATE TABLE IF NOT EXISTS finance_transactions (
 -- re-power shop-bay bookings use, since nothing here has a capacity
 -- constraint (any number of stops can have advertising ordered on the
 -- same day; there's no "fitter bay" bottleneck for printing a sign).
+-- is_contract_bundle (added v67->v68, "Contract-stop bundling" —
+-- OPEN-ITEMS.md's own "exactly ONE stop per contract" entry): true for
+-- the one free, permanent booking a Fixed real contract (398/Airlink
+-- 100/Express 500/AIR) grants its own real terminus stop automatically
+-- on acceptance — bypasses the normal £500 setup fee / £20-a-month /
+-- 14-day delay model entirely (live_from_game_day is set equal to
+-- booked_game_day for these rows, not +14). Reuses this table's own
+-- real shape rather than a parallel "free forever" record, per
+-- CLAUDE.md's "build it once" convention — see stop_route_locks below
+-- for the sibling lock this always comes paired with.
 CREATE TABLE IF NOT EXISTS route_advertising_bookings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   stop_osm_id INTEGER NOT NULL,
@@ -1166,6 +1247,7 @@ CREATE TABLE IF NOT EXISTS route_advertising_bookings (
   operator_name TEXT,
   booked_game_day INTEGER NOT NULL,
   live_from_game_day INTEGER NOT NULL,
+  is_contract_bundle INTEGER NOT NULL DEFAULT 0,
   CHECK ((mode = 'specific_route' AND route_id IS NOT NULL AND operator_name IS NULL)
       OR (mode = 'long_distance' AND route_id IS NULL AND operator_name IS NOT NULL))
 );
@@ -1269,6 +1351,99 @@ CREATE TABLE IF NOT EXISTS fixed_contract_suspensions (
   start_game_day INTEGER NOT NULL,
   return_game_day INTEGER NOT NULL,
   active INTEGER NOT NULL DEFAULT 1
+);
+
+-- The real "Contracts" menu (DESIGN.md "Fixed real contracts": "Offered
+-- alongside council, event, lifeline and cruise contracts through a
+-- single contracts menu"; OPEN-ITEMS.md "Contracts redesign"/"Dounreay
+-- contracts"/"Three further contracts — 800, 803 & 805", settled
+-- 2026-11-19/20). One row per contract EVER accepted (eligibility itself
+-- is computed live, not stored — see fixed-contract-eligibility.mts; this
+-- table only remembers the player's own Accept action, permanently).
+-- "contract_key" is a stable string identity — "398"/"airlink100"/
+-- "express500"/"air" for the four real fixed-content contracts (the same
+-- FixedContractKey strings fixed-contract-failures.mts already uses for
+-- the first three, extended here with "air"), "dounreay_74".."dounreay_921"
+-- for Dounreay's 8 real routes, and "800"/"803"/"805" for the three
+-- Dounreay-progression contracts — never a plain route NUMBER. This is
+-- deliberate, not incidental: 398/500/74/etc are all plain numeric
+-- strings a player could otherwise choose for an ordinary route of their
+-- own, so "is this contract accepted" must never be answered by scanning
+-- routes.number, only by this table. "route_ids" is a JSON array of every
+-- route id actually created for this contract (via
+-- fixed-contract-route-seed-data.mts, NEW ids in THIS save, never the ids
+-- the content was originally extracted from) — empty for Dounreay/
+-- 800/803/805 today, since their real route content doesn't exist yet
+-- (the user's own pending research); accepting one of those just records
+-- that the player accepted it, ready for whenever real content lands.
+-- "activation_game_day" is DESIGN.md's own "starts on the first Monday
+-- after a minimum of 10 days have passed" rule, computed once at accept
+-- time and stored rather than recomputed differently by different
+-- callers. "granted_depot_id" is non-null only for 800/803/805 (the
+-- user's own words: "this contract will provide it's own depot at the
+-- end of the road" — DOUNREAY_END_OF_ROAD_DEPOT,
+-- fixed-contract-eligibility.mts), set once at accept time; null for
+-- every other contract, which grants no depot.
+CREATE TABLE IF NOT EXISTS fixed_contract_acceptances (
+  contract_key TEXT PRIMARY KEY,
+  route_ids TEXT NOT NULL DEFAULT '[]',
+  depot_group_id INTEGER NOT NULL REFERENCES depot_groups(id),
+  accepted_game_day INTEGER NOT NULL,
+  activation_game_day INTEGER NOT NULL,
+  granted_depot_id INTEGER REFERENCES depots(id)
+);
+
+-- Generic "first real game day this route was observed" tracker — built
+-- for Route 77's own Express 500 gate ("Route 77 has been running for 1
+-- month," DESIGN.md "Route 77 — Glasgow Airport commercial service"):
+-- unlike 398/Airlink 100/Express 500/AIR, Route 77 is NOT one of the
+-- Contracts-menu's own fixed-content contracts (DESIGN.md: "Not a fixed
+-- real contract... runs on ordinary commercial economics") — it's an
+-- ordinary player-drawn route with a fixed livery/colour/vehicle, so it
+-- has no Accept event of its own to time its "running for" period from.
+-- Populated lazily (same "lazy catch-up" convention as
+-- private-hire-income.mts/route-advertising-billing — CLAUDE.md's own
+-- precedent), the first time any caller checks eligibility and finds a
+-- route numbered "77" with no row here yet. Kept generic (keyed by any
+-- route_id, not hardcoded to "77") in case a future fixed-content gate
+-- needs the same "how long has this plain route existed" signal.
+CREATE TABLE IF NOT EXISTS route_milestones (
+  route_id INTEGER PRIMARY KEY REFERENCES routes(id),
+  first_seen_game_day INTEGER NOT NULL
+);
+
+-- Stop route locks (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+-- dropped...", confirmed 2026-11-16) — the one shared "a stop is
+-- exclusively tied to one route" primitive behind two features:
+-- contract-stop bundling (398/Airlink 100/Express 500/AIR's own real
+-- terminus stop, locked automatically and for free as a term of the
+-- contract) and player-initiated airport-stop purchase (flat £15,000
+-- placeholder, see stop-route-locks.mts's own AIRPORT_STOP_PURCHASE_
+-- PRICE_GBP_PENCE — unlocks locking the bought stop to whichever of the
+-- player's own routes they choose). stop_osm_id is PRIMARY KEY, not
+-- just indexed — that IS the real exclusivity rule, enforced at the
+-- schema level rather than only in application logic: a stop can only
+-- ever be locked once, full stop, never per-route. contract_key is set
+-- only when source = 'contract' (which real fixed contract this came
+-- bundled with — "398"/"airlink100"/"express500"/"air", the same keys
+-- fixed_contract_acceptances.contract_key already uses); purchase_
+-- price_gbp_pence only when source = 'purchased' (what the player
+-- actually paid) — CHECK below enforces exactly one of the two per row,
+-- same convention as route_advertising_bookings' own mode/route_id/
+-- operator_name CHECK above. New table only — no existing data to
+-- migrate, since no stop-lock state existed anywhere before this; same
+-- "pure new-table creation, unconditional IF-NOT-EXISTS create, no
+-- dedicated version-gated branch needed" precedent as route_milestones/
+-- route_advertising_bookings/fixed_contract_acceptances above.
+CREATE TABLE IF NOT EXISTS stop_route_locks (
+  stop_osm_id INTEGER PRIMARY KEY,
+  locked_route_id INTEGER NOT NULL REFERENCES routes(id),
+  source TEXT NOT NULL CHECK (source IN ('contract', 'purchased')),
+  contract_key TEXT,
+  purchase_price_gbp_pence INTEGER,
+  locked_game_day INTEGER NOT NULL,
+  CHECK ((source = 'contract' AND contract_key IS NOT NULL AND purchase_price_gbp_pence IS NULL)
+      OR (source = 'purchased' AND contract_key IS NULL AND purchase_price_gbp_pence IS NOT NULL))
 );
 `;
 
@@ -2334,6 +2509,92 @@ export function openSave(path: string): SaveDb {
       )
     `);
     db.exec("PRAGMA user_version = 67");
+  } else if (currentVersion === 67) {
+    // v67 -> v68 (2026-11-20): contract-stop bundling/airport-stop
+    // purchase (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+    // dropped..."). stop_route_locks itself is a brand-new table,
+    // already created unconditionally by the SCHEMA string above on
+    // every openSave() call (same precedent as route_milestones etc.).
+    //
+    // route_advertising_bookings is trickier: it was ITSELF added without
+    // a dedicated version-gated branch (unconditional CREATE TABLE IF NOT
+    // EXISTS), so a save that never had the table at all (anything older
+    // than this session's own v66/v67 work) gets it created FRESH, with
+    // is_contract_bundle already included, by the unconditional
+    // `db.exec(SCHEMA)` at the very top of openSave() — before this
+    // migration loop even runs. Only a save where the table already
+    // existed ON DISK without this column (a real save saved sometime
+    // between route_advertising_bookings' own introduction and this
+    // column being added) genuinely needs the ALTER. Checked directly via
+    // PRAGMA table_info rather than assumed either way — found as a real
+    // crash ("duplicate column name") against this file's own v58
+    // migration fixture, which has no route_advertising_bookings table at
+    // all going in and so gets the complete current shape for free.
+    const existingColumns = db.prepare("PRAGMA table_info(route_advertising_bookings)").all() as unknown as { name: string }[];
+    if (!existingColumns.some((c) => c.name === "is_contract_bundle")) {
+      db.exec("ALTER TABLE route_advertising_bookings ADD COLUMN is_contract_bundle INTEGER NOT NULL DEFAULT 0");
+    }
+    // Steps to exactly the next version (68), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's own branch
+    // (this used to be the terminal branch when SCHEMA_VERSION was still
+    // 68 itself, which is why it previously jumped straight there; now
+    // that v68->v69 exists below, this must stop at 68 or a save sitting
+    // at v67 would skip the v68 migration entirely).
+    db.exec("PRAGMA user_version = 68");
+  } else if (currentVersion === 68) {
+    // v68 -> v69 (2026-11-20): GreenRoad driver-behaviour system, user's
+    // own request by name. greenroad_billing_months is a brand-new table,
+    // already created unconditionally by the SCHEMA string above on every
+    // openSave() call (same precedent as stop_route_locks/route_milestones
+    // etc.). The 3 ancient tables below predate this column, so they
+    // normally need a real ALTER — EXCEPT for a fixture/save old enough
+    // that one of them didn't exist on disk at all going in, which the
+    // unconditional `CREATE TABLE IF NOT EXISTS` at the top of openSave()
+    // (running before this loop) then creates fresh with the complete
+    // CURRENT shape, greenroad_fitted already included. Same real crash
+    // and same PRAGMA table_info guard as route_advertising_bookings'
+    // is_contract_bundle column above (confirmed directly against this
+    // file's own v19 migration fixture, which has no basket_items table
+    // at all going in).
+    for (const table of ["vehicles", "basket_items", "vehicle_orders"]) {
+      const existingColumns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+      if (!existingColumns.some((c) => c.name === "greenroad_fitted")) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN greenroad_fitted INTEGER NOT NULL DEFAULT 0`);
+      }
+    }
+    // company_upgrades' own new column (has_adopted_greenroad) — same
+    // guard, different column name, since this table predates GreenRoad
+    // too.
+    const companyUpgradeColumns = db.prepare("PRAGMA table_info(company_upgrades)").all() as unknown as { name: string }[];
+    if (!companyUpgradeColumns.some((c) => c.name === "has_adopted_greenroad")) {
+      db.exec("ALTER TABLE company_upgrades ADD COLUMN has_adopted_greenroad INTEGER NOT NULL DEFAULT 0");
+    }
+    // Steps to exactly the next version (69), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as v58's/v67's own
+    // branches (this used to be the terminal branch when SCHEMA_VERSION
+    // was still 69 itself; now that v69->v70 exists below, this must
+    // stop at 69 or a save sitting at v68 would skip it entirely).
+    db.exec("PRAGMA user_version = 69");
+  } else if (currentVersion === 69) {
+    // v69 -> v70 (2026-11-20, same day as v68->v69): the retrofit
+    // booking's own real engineer-scheduling needs each booking's depot
+    // and depot group (greenroad_retrofit_bookings' own SCHEMA comment
+    // above) — added after v68->v69 had already shipped (and already
+    // migrated the real live save, confirmed directly), so this is a
+    // genuine second ALTER, not foldable into the branch above. No
+    // existing row needs backfilling in practice — nothing had actually
+    // called createGreenroadRetrofitBooking against any real save before
+    // this column existed (checked directly) — but the columns are left
+    // nullable regardless, the honest reading for a hypothetical old row
+    // with no real depot to backfill from.
+    const retrofitColumns = db.prepare("PRAGMA table_info(greenroad_retrofit_bookings)").all() as unknown as { name: string }[];
+    if (!retrofitColumns.some((c) => c.name === "depot_id")) {
+      db.exec("ALTER TABLE greenroad_retrofit_bookings ADD COLUMN depot_id INTEGER REFERENCES depots(id)");
+    }
+    if (!retrofitColumns.some((c) => c.name === "depot_group_id")) {
+      db.exec("ALTER TABLE greenroad_retrofit_bookings ADD COLUMN depot_group_id INTEGER REFERENCES depot_groups(id)");
+    }
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
       `Save file schema version ${currentVersion} is not supported (expected ${SCHEMA_VERSION})`,
@@ -4064,6 +4325,12 @@ export interface RouteAdvertisingBooking {
   operatorName: string | null;
   bookedGameDay: number;
   liveFromGameDay: number;
+  // True only for the one free, permanent booking a Fixed real contract
+  // grants its own terminus stop on acceptance (see stop_route_locks'
+  // own CREATE TABLE comment and contracts-panel.ts's acceptRealContract)
+  // — bypasses the setup fee/monthly fee/14-day delay entirely. False
+  // for every ordinary player-bought booking.
+  isContractBundle: boolean;
 }
 
 interface RouteAdvertisingBookingRow {
@@ -4075,9 +4342,10 @@ interface RouteAdvertisingBookingRow {
   operator_name: string | null;
   booked_game_day: number;
   live_from_game_day: number;
+  is_contract_bundle: number;
 }
 
-const ROUTE_ADVERTISING_COLUMNS = "id, stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day";
+const ROUTE_ADVERTISING_COLUMNS = "id, stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day, is_contract_bundle";
 
 function routeAdvertisingBookingFromRow(row: RouteAdvertisingBookingRow): RouteAdvertisingBooking {
   return {
@@ -4089,6 +4357,7 @@ function routeAdvertisingBookingFromRow(row: RouteAdvertisingBookingRow): RouteA
     operatorName: row.operator_name,
     bookedGameDay: row.booked_game_day,
     liveFromGameDay: row.live_from_game_day,
+    isContractBundle: row.is_contract_bundle === 1,
   };
 }
 
@@ -4101,13 +4370,14 @@ export function createRouteAdvertisingBooking(
   operatorName: string | null,
   bookedGameDay: number,
   liveFromGameDay: number,
+  isContractBundle: boolean = false,
 ): RouteAdvertisingBooking {
   const result = db
     .prepare(
-      `INSERT INTO route_advertising_bookings (stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO route_advertising_bookings (stop_osm_id, depot_group_id, mode, route_id, operator_name, booked_game_day, live_from_game_day, is_contract_bundle)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay);
+    .run(stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay, isContractBundle ? 1 : 0);
   return {
     id: Number(result.lastInsertRowid),
     stopOsmId,
@@ -4117,6 +4387,7 @@ export function createRouteAdvertisingBooking(
     operatorName,
     bookedGameDay,
     liveFromGameDay,
+    isContractBundle,
   };
 }
 
@@ -4237,6 +4508,41 @@ export function deleteRepowerBooking(db: SaveDb, id: number): void {
   db.prepare("DELETE FROM repower_bookings WHERE id = ?").run(id);
 }
 
+// Auto-switches a vehicle's livery to/from an electric-only variant on
+// repower (2026-11-20, user's own words: "I would like this livery to
+// automatically apply if a vehicle gets repowered") — reads
+// ELECTRIC_LIVERY_VARIANT (livery-seed-data.mts), keyed by base livery
+// name, built as a lookup rather than a single hardcoded pair so a future
+// electric-only variant needs nothing else touched. Only acts on a
+// vehicle whose CURRENT livery is actually one side of a known pair —
+// any other livery (including Stagecoach Electric, deliberately excluded
+// from the map itself, not special-cased here) is untouched, matching
+// the "can't tell, don't guess" convention used throughout this
+// codebase. Repowering TO electric switches a base livery to its
+// electric variant; repowering AWAY from electric switches an electric
+// variant back to its own base livery — the natural symmetric case, not
+// explicitly asked for but left stuck in an "Electric"-branded livery
+// after leaving electric power would be a real, visible inconsistency.
+function autoSwitchElectricLiveryVariant(db: SaveDb, vehicleId: number, toPowerType: RepowerPowerType): void {
+  const vehicle = db.prepare("SELECT livery_id FROM vehicles WHERE id = ?").get(vehicleId) as { livery_id: number | null } | undefined;
+  if (!vehicle || vehicle.livery_id === null) return;
+  const currentLivery = db.prepare("SELECT name FROM liveries WHERE id = ?").get(vehicle.livery_id) as { name: string } | undefined;
+  if (!currentLivery) return;
+
+  let targetName: string | null = null;
+  if (toPowerType === "electric") {
+    targetName = ELECTRIC_LIVERY_VARIANT[currentLivery.name] ?? null;
+  } else {
+    const baseName = Object.entries(ELECTRIC_LIVERY_VARIANT).find(([, variant]) => variant === currentLivery.name)?.[0];
+    targetName = baseName ?? null;
+  }
+  if (targetName === null) return;
+
+  const targetLivery = db.prepare("SELECT id FROM liveries WHERE name = ?").get(targetName) as { id: number } | undefined;
+  if (!targetLivery) return; // the variant livery hasn't been seeded into this save yet — can't switch to something that doesn't exist here
+  db.prepare("UPDATE vehicles SET livery_id = ? WHERE id = ?").run(targetLivery.id, vehicleId);
+}
+
 // Applies the actual conversion once a booking's completion day has
 // passed — unlike a repaint booking (display/scheduling only, nothing on
 // the vehicle itself changes), a re-power really does change what the
@@ -4254,10 +4560,11 @@ export function collectRepowerBooking(db: SaveDb, id: number): Vehicle {
   if (!vehicle) throw new Error(`collectRepowerBooking: no vehicle with id ${booking.vehicle_id}`);
   const newFleetNumber = repowerFleetNumber(vehicle.fleet_number, booking.to_power_type);
   db.prepare("UPDATE vehicles SET power_type = ?, fleet_number = ?, condition = 100 WHERE id = ?").run(booking.to_power_type, newFleetNumber, booking.vehicle_id);
+  autoSwitchElectricLiveryVariant(db, booking.vehicle_id, booking.to_power_type);
   db.prepare("DELETE FROM repower_bookings WHERE id = ?").run(id);
   const row = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted
        FROM vehicles WHERE id = ?`,
     )
     .get(booking.vehicle_id) as {
@@ -4277,6 +4584,7 @@ export function collectRepowerBooking(db: SaveDb, id: number): Vehicle {
     livery_id: number | null;
     bought_for_route_id: number | null;
     payment_method: "buy_outright" | "lease" | "lease_to_own";
+    greenroad_fitted: number;
   };
   return {
     id: row.id,
@@ -4295,6 +4603,7 @@ export function collectRepowerBooking(db: SaveDb, id: number): Vehicle {
     liveryId: row.livery_id,
     boughtForRouteId: row.bought_for_route_id,
     paymentMethod: row.payment_method,
+    greenroadFitted: !!row.greenroad_fitted,
   };
 }
 
@@ -4680,6 +4989,9 @@ export interface Vehicle {
   // SCHEMA comment for why this exists and why it defaults to
   // buy_outright for a vehicle bought before this column existed.
   paymentMethod: "buy_outright" | "lease" | "lease_to_own";
+  // Whether GreenRoad is fitted (schema v68->v69) — see the vehicles
+  // table's own SCHEMA comment.
+  greenroadFitted: boolean;
 }
 
 // Buys one vehicle: computes its real category digit from the model/
@@ -4709,6 +5021,10 @@ export function buyVehicle(
   // method before this) keeps compiling unchanged at its default of
   // buy_outright; collectOrder below passes the order's own real value.
   paymentMethod: PaymentMethod = "buy_outright",
+  // Whether GreenRoad is fitted (schema v68->v69) — same "appended at the
+  // end, default false, so every existing call site keeps compiling"
+  // reasoning as paymentMethod above.
+  greenroadFitted: boolean = false,
 ): Vehicle {
   const depot = db.prepare("SELECT lon, lat FROM depots WHERE id = ?").get(depotId) as { lon: number; lat: number } | undefined;
   if (!depot) throw new Error(`buyVehicle: depot ${depotId} not found`);
@@ -4731,10 +5047,15 @@ export function buyVehicle(
   const result = db
     .prepare(
       `INSERT INTO vehicles
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, category_digit, sequential_number, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), boughtGameDay, liveryId, boughtForRouteId, paymentMethod);
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, categoryDigit, sequentialNumber, fleetNumber, plate, condition, purchasePriceGBP, boughtAt.toISOString(), boughtGameDay, liveryId, boughtForRouteId, paymentMethod, greenroadFitted ? 1 : 0);
+
+  // The real "installed" moment (user request 2026-11-20) — a NEW
+  // vehicle bought with GreenRoad fitted is what starts the one-way
+  // company-wide adoption, not merely adding it to a basket line.
+  if (greenroadFitted) markGreenroadAdopted(db);
 
   return {
     id: Number(result.lastInsertRowid),
@@ -4753,13 +5074,14 @@ export function buyVehicle(
     liveryId,
     boughtForRouteId,
     paymentMethod,
+    greenroadFitted,
   };
 }
 
 export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted
        FROM vehicles WHERE depot_group_id = ? ORDER BY bought_at`,
     )
     .all(depotGroupId) as {
@@ -4779,6 +5101,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     livery_id: number | null;
     bought_for_route_id: number | null;
     payment_method: "buy_outright" | "lease" | "lease_to_own";
+    greenroad_fitted: number;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -4797,6 +5120,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
     liveryId: r.livery_id,
     boughtForRouteId: r.bought_for_route_id,
     paymentMethod: r.payment_method,
+    greenroadFitted: !!r.greenroad_fitted,
   }));
 }
 
@@ -4806,7 +5130,7 @@ export function listVehiclesForDepotGroup(db: SaveDb, depotGroupId: number): Veh
 export function listAllVehicles(db: SaveDb): Vehicle[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted
        FROM vehicles ORDER BY fleet_number`,
     )
     .all() as {
@@ -4826,6 +5150,7 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     livery_id: number | null;
     bought_for_route_id: number | null;
     payment_method: "buy_outright" | "lease" | "lease_to_own";
+    greenroad_fitted: number;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -4844,6 +5169,7 @@ export function listAllVehicles(db: SaveDb): Vehicle[] {
     liveryId: r.livery_id,
     boughtForRouteId: r.bought_for_route_id,
     paymentMethod: r.payment_method,
+    greenroadFitted: !!r.greenroad_fitted,
   }));
 }
 
@@ -4865,6 +5191,8 @@ export function deleteVehicle(db: SaveDb, vehicleId: number): void {
   // violation, not just leave stale data behind.
   db.prepare("DELETE FROM private_hire_income_months WHERE vehicle_id = ?").run(vehicleId);
   db.prepare("DELETE FROM lease_billing_months WHERE vehicle_id = ?").run(vehicleId);
+  db.prepare("DELETE FROM greenroad_billing_months WHERE vehicle_id = ?").run(vehicleId);
+  db.prepare("DELETE FROM greenroad_retrofit_bookings WHERE vehicle_id = ?").run(vehicleId);
   db.prepare("DELETE FROM vehicles WHERE id = ?").run(vehicleId);
 }
 
@@ -4882,7 +5210,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
   db.prepare("UPDATE vehicles SET depot_id = ?, depot_group_id = ? WHERE id = ?").run(newDepotId, depot.depot_group_id, vehicleId);
   const row = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted
        FROM vehicles WHERE id = ?`,
     )
     .get(vehicleId) as {
@@ -4902,6 +5230,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     livery_id: number | null;
     bought_for_route_id: number | null;
     payment_method: "buy_outright" | "lease" | "lease_to_own";
+    greenroad_fitted: number;
   };
   return {
     id: row.id,
@@ -4920,6 +5249,7 @@ export function transferVehicle(db: SaveDb, vehicleId: number, newDepotId: numbe
     liveryId: row.livery_id,
     boughtForRouteId: row.bought_for_route_id,
     paymentMethod: row.payment_method,
+    greenroadFitted: !!row.greenroad_fitted,
   };
 }
 
@@ -4945,6 +5275,10 @@ export interface BasketItem {
   // 2026-11-07) — carried through basket -> order -> the real vehicle,
   // recorded for reference only (see Vehicle.boughtForRouteId).
   boughtForRouteId: number | null;
+  // Whether GreenRoad is selected (schema v68->v69) — see the vehicles
+  // table's own SCHEMA comment; carried through basket -> order -> the
+  // real vehicle, same as boughtForRouteId above.
+  greenroadFitted: boolean;
 }
 
 interface BasketItemRow {
@@ -4963,6 +5297,7 @@ interface BasketItemRow {
   is_used: number;
   used_condition: number | null;
   bought_for_route_id: number | null;
+  greenroad_fitted: number;
 }
 
 function basketItemFromRow(r: BasketItemRow): BasketItem {
@@ -4982,6 +5317,7 @@ function basketItemFromRow(r: BasketItemRow): BasketItem {
     isUsed: !!r.is_used,
     usedCondition: r.used_condition,
     boughtForRouteId: r.bought_for_route_id,
+    greenroadFitted: !!r.greenroad_fitted,
   };
 }
 
@@ -5001,14 +5337,18 @@ export function addBasketItem(
   isUsed: boolean,
   usedCondition: number | null,
   boughtForRouteId: number | null = null,
+  // Whether GreenRoad is selected (schema v68->v69) — appended at the end,
+  // default false, same "every existing call site keeps compiling"
+  // reasoning as boughtForRouteId above.
+  greenroadFitted: boolean = false,
 ): BasketItem {
   const result = db
     .prepare(
       `INSERT INTO basket_items
-        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id, greenroad_fitted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, liveryId, manufacturer, quantity, unitPriceGBP, paymentMethod, isUsed ? 1 : 0, usedCondition, boughtForRouteId);
+    .run(depotGroupId, depotId, modelId, lengthM, variantLabel, powerType, liveryId, manufacturer, quantity, unitPriceGBP, paymentMethod, isUsed ? 1 : 0, usedCondition, boughtForRouteId, greenroadFitted ? 1 : 0);
   return {
     id: Number(result.lastInsertRowid),
     depotGroupId,
@@ -5025,13 +5365,14 @@ export function addBasketItem(
     isUsed,
     usedCondition,
     boughtForRouteId,
+    greenroadFitted,
   };
 }
 
 export function listBasket(db: SaveDb): BasketItem[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, manufacturer, quantity, unit_price_gbp, payment_method, is_used, used_condition, bought_for_route_id, greenroad_fitted
        FROM basket_items ORDER BY id`,
     )
     .all() as unknown as BasketItemRow[];
@@ -5066,8 +5407,8 @@ export function placeOrder(db: SaveDb): number {
   const orderedAt = new Date().toISOString();
   const insert = db.prepare(
     `INSERT INTO vehicle_orders
-      (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id, greenroad_fitted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   let count = 0;
   for (const item of items) {
@@ -5086,6 +5427,7 @@ export function placeOrder(db: SaveDb): number {
         item.usedCondition,
         orderedAt,
         item.boughtForRouteId,
+        item.greenroadFitted ? 1 : 0,
       );
       count++;
     }
@@ -5113,6 +5455,7 @@ export interface VehicleOrder {
   usedCondition: number | null;
   orderedAt: string;
   boughtForRouteId: number | null;
+  greenroadFitted: boolean;
 }
 
 interface VehicleOrderRow {
@@ -5130,6 +5473,7 @@ interface VehicleOrderRow {
   used_condition: number | null;
   ordered_at: string;
   bought_for_route_id: number | null;
+  greenroad_fitted: number;
 }
 
 function vehicleOrderFromRow(r: VehicleOrderRow): VehicleOrder {
@@ -5148,13 +5492,14 @@ function vehicleOrderFromRow(r: VehicleOrderRow): VehicleOrder {
     usedCondition: r.used_condition,
     orderedAt: r.ordered_at,
     boughtForRouteId: r.bought_for_route_id,
+    greenroadFitted: !!r.greenroad_fitted,
   };
 }
 
 export function listOrders(db: SaveDb): VehicleOrder[] {
   const rows = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id, greenroad_fitted
        FROM vehicle_orders ORDER BY ordered_at`,
     )
     .all() as unknown as VehicleOrderRow[];
@@ -5171,7 +5516,7 @@ export function listOrders(db: SaveDb): VehicleOrder[] {
 export function collectOrder(db: SaveDb, orderId: number): Vehicle {
   const order = db
     .prepare(
-      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, livery_id, unit_price_gbp, payment_method, is_used, used_condition, ordered_at, bought_for_route_id, greenroad_fitted
        FROM vehicle_orders WHERE id = ?`,
     )
     .get(orderId) as VehicleOrderRow | undefined;
@@ -5193,6 +5538,7 @@ export function collectOrder(db: SaveDb, orderId: number): Vehicle {
     // buyVehicle until now, so every collected order silently became a
     // buy_outright vehicle regardless of what was actually ordered.
     order.payment_method,
+    !!order.greenroad_fitted,
   );
   db.prepare("DELETE FROM vehicle_orders WHERE id = ?").run(orderId);
   maybeAutoHireDriverForPrivateHire(db, vehicle);
@@ -5266,6 +5612,127 @@ export function recordLeaseBillingMonths(db: SaveDb, vehicleId: number, monthKey
   if (flipToOutright) {
     db.prepare("UPDATE vehicles SET payment_method = 'buy_outright' WHERE id = ?").run(vehicleId);
   }
+}
+
+// --- GreenRoad billing tracking (greenroad_billing_months' own SCHEMA
+// comment above; user request 2026-11-20) — plain storage only, identical
+// shape/purpose to the lease-billing tracking immediately above: which
+// months have already had their real GreenRoad charge billed for a given
+// vehicle, so a re-open of the Fleet screen never double-charges the same
+// month. The real month math/charge-amount calculation (days-in-month x
+// 10p, not a flat figure) is all in the renderer's pure greenroad-
+// billing.mts.
+export function listGeneratedGreenroadBillingMonths(db: SaveDb, vehicleId: number): string[] {
+  const rows = db.prepare("SELECT month_key FROM greenroad_billing_months WHERE vehicle_id = ?").all(vehicleId) as { month_key: string }[];
+  return rows.map((r) => r.month_key);
+}
+
+export function recordGreenroadBillingMonths(db: SaveDb, vehicleId: number, monthKeys: string[]): void {
+  const stmt = db.prepare("INSERT OR IGNORE INTO greenroad_billing_months (vehicle_id, month_key) VALUES (?, ?)");
+  for (const monthKey of monthKeys) stmt.run(vehicleId, monthKey);
+}
+
+// --- GreenRoad retrofit bookings (greenroad_retrofit_bookings' own SCHEMA
+// comment above; user request 2026-11-20) — the £350 fee itself is
+// charged by the renderer (fleet-list-panel.ts) in the same call as
+// this create, same "pure storage here, finance orchestration in the
+// renderer" split as every other paid booking in this file.
+export interface GreenroadRetrofitBooking {
+  id: number;
+  vehicleId: number;
+  depotId: number;
+  depotGroupId: number;
+  bookedGameDay: number;
+  readyGameDay: number;
+}
+
+// readyGameDay is computed by the CALLER (fleet-list-panel.ts, using the
+// renderer's own pure greenroad-retrofit-scheduling.mts) and passed in
+// rather than derived here — the real 14-day-lead-time-plus-nightly-
+// capacity-per-depot-group math needs to see every other currently
+// pending booking in the same depot group, which this plain storage
+// function has no reason to know about (same "pure logic in the
+// renderer, dumb storage here" split as every other paid booking).
+export function createGreenroadRetrofitBooking(
+  db: SaveDb,
+  vehicleId: number,
+  depotId: number,
+  depotGroupId: number,
+  bookedGameDay: number,
+  readyGameDay: number,
+): GreenroadRetrofitBooking {
+  const result = db
+    .prepare("INSERT INTO greenroad_retrofit_bookings (vehicle_id, depot_id, depot_group_id, booked_game_day, ready_game_day) VALUES (?, ?, ?, ?, ?)")
+    .run(vehicleId, depotId, depotGroupId, bookedGameDay, readyGameDay);
+  return { id: Number(result.lastInsertRowid), vehicleId, depotId, depotGroupId, bookedGameDay, readyGameDay };
+}
+
+export function listAllGreenroadRetrofitBookings(db: SaveDb): GreenroadRetrofitBooking[] {
+  const rows = db.prepare("SELECT id, vehicle_id, depot_id, depot_group_id, booked_game_day, ready_game_day FROM greenroad_retrofit_bookings ORDER BY booked_game_day").all() as {
+    id: number;
+    vehicle_id: number;
+    depot_id: number;
+    depot_group_id: number;
+    booked_game_day: number;
+    ready_game_day: number;
+  }[];
+  return rows.map((r) => ({ id: r.id, vehicleId: r.vehicle_id, depotId: r.depot_id, depotGroupId: r.depot_group_id, bookedGameDay: r.booked_game_day, readyGameDay: r.ready_game_day }));
+}
+
+// Fits GreenRoad onto the booking's own vehicle (greenroad_fitted = 1),
+// marks the one-way company-wide adoption flag (the first-ever retrofit
+// counts as "starting to be installed," same as a fresh purchase does in
+// buyVehicle), removes the booking, and returns the updated vehicle —
+// same "collect, then gone" shape as collectRepowerBooking.
+export function collectGreenroadRetrofitBooking(db: SaveDb, id: number): Vehicle {
+  const booking = db.prepare("SELECT vehicle_id FROM greenroad_retrofit_bookings WHERE id = ?").get(id) as { vehicle_id: number } | undefined;
+  if (!booking) throw new Error(`collectGreenroadRetrofitBooking: no booking with id ${id}`);
+  db.prepare("UPDATE vehicles SET greenroad_fitted = 1 WHERE id = ?").run(booking.vehicle_id);
+  markGreenroadAdopted(db);
+  db.prepare("DELETE FROM greenroad_retrofit_bookings WHERE id = ?").run(id);
+  const row = db
+    .prepare(
+      `SELECT id, depot_group_id, depot_id, model_id, length_m, variant_label, power_type, fleet_number, plate, condition, purchase_price_gbp, bought_at, bought_game_day, livery_id, bought_for_route_id, payment_method, greenroad_fitted
+       FROM vehicles WHERE id = ?`,
+    )
+    .get(booking.vehicle_id) as {
+    id: number;
+    depot_group_id: number;
+    depot_id: number;
+    model_id: string;
+    length_m: number;
+    variant_label: string | null;
+    power_type: "diesel" | "electric" | "hybrid" | "hydrogen";
+    fleet_number: string;
+    plate: string;
+    condition: number;
+    purchase_price_gbp: number;
+    bought_at: string;
+    bought_game_day: number;
+    livery_id: number | null;
+    bought_for_route_id: number | null;
+    payment_method: "buy_outright" | "lease" | "lease_to_own";
+    greenroad_fitted: number;
+  };
+  return {
+    id: row.id,
+    depotGroupId: row.depot_group_id,
+    depotId: row.depot_id,
+    modelId: row.model_id,
+    lengthM: row.length_m,
+    variantLabel: row.variant_label,
+    powerType: row.power_type,
+    fleetNumber: row.fleet_number,
+    plate: row.plate,
+    condition: row.condition,
+    purchasePriceGBP: row.purchase_price_gbp,
+    boughtAt: row.bought_at,
+    boughtGameDay: row.bought_game_day,
+    liveryId: row.livery_id,
+    boughtForRouteId: row.bought_for_route_id,
+    paymentMethod: row.payment_method,
+    greenroadFitted: !!row.greenroad_fitted,
+  };
 }
 
 // --- Fare zones (DESIGN.md §9) — see fare_zones' own SCHEMA comment above
@@ -5722,23 +6189,33 @@ export interface CompanyUpgrades {
   hasUpgradableTicketApp: boolean;
   hasMobileAppLiveData: boolean;
   hasUpgradedAvlData: boolean;
+  // One-way, never cleared once true (user request 2026-11-20) — see
+  // company_upgrades' own SCHEMA comment above for the full reasoning.
+  hasAdoptedGreenroad: boolean;
 }
 
-const DEFAULT_COMPANY_UPGRADES: CompanyUpgrades = { hasUpgradableTicketApp: false, hasMobileAppLiveData: false, hasUpgradedAvlData: false };
+const DEFAULT_COMPANY_UPGRADES: CompanyUpgrades = { hasUpgradableTicketApp: false, hasMobileAppLiveData: false, hasUpgradedAvlData: false, hasAdoptedGreenroad: false };
 
 export function getCompanyUpgrades(db: SaveDb): CompanyUpgrades {
   const row = db
-    .prepare("SELECT has_upgradable_ticket_app, has_mobile_app_live_data, has_upgraded_avl_data FROM company_upgrades WHERE id = 1")
-    .get() as { has_upgradable_ticket_app: number; has_mobile_app_live_data: number; has_upgraded_avl_data: number } | undefined;
+    .prepare("SELECT has_upgradable_ticket_app, has_mobile_app_live_data, has_upgraded_avl_data, has_adopted_greenroad FROM company_upgrades WHERE id = 1")
+    .get() as
+    | { has_upgradable_ticket_app: number; has_mobile_app_live_data: number; has_upgraded_avl_data: number; has_adopted_greenroad: number }
+    | undefined;
   if (!row) return DEFAULT_COMPANY_UPGRADES;
   return {
     hasUpgradableTicketApp: row.has_upgradable_ticket_app !== 0,
     hasMobileAppLiveData: row.has_mobile_app_live_data !== 0,
     hasUpgradedAvlData: row.has_upgraded_avl_data !== 0,
+    hasAdoptedGreenroad: row.has_adopted_greenroad !== 0,
   };
 }
 
-function setCompanyUpgradeFlag(db: SaveDb, column: "has_upgradable_ticket_app" | "has_mobile_app_live_data" | "has_upgraded_avl_data", value: boolean): void {
+function setCompanyUpgradeFlag(
+  db: SaveDb,
+  column: "has_upgradable_ticket_app" | "has_mobile_app_live_data" | "has_upgraded_avl_data" | "has_adopted_greenroad",
+  value: boolean,
+): void {
   db.prepare(
     `INSERT INTO company_upgrades (id, ${column}) VALUES (1, ?)
      ON CONFLICT(id) DO UPDATE SET ${column} = excluded.${column}`,
@@ -5751,6 +6228,16 @@ export function setHasUpgradableTicketApp(db: SaveDb, value: boolean): void {
 
 export function setHasMobileAppLiveData(db: SaveDb, value: boolean): void {
   setCompanyUpgradeFlag(db, "has_mobile_app_live_data", value);
+}
+
+// One-way by construction — there's no "value: boolean" parameter, so
+// nothing can ever set this back to false (user request 2026-11-20:
+// once adopted, GreenRoad is permanent company policy). Called from
+// buyVehicle (a new purchase arrives with it fitted) and from
+// collectGreenroadRetrofitBooking (the first-ever retrofit also counts
+// as "starting to be installed"). A safe no-op once already true.
+export function markGreenroadAdopted(db: SaveDb): void {
+  setCompanyUpgradeFlag(db, "has_adopted_greenroad", true);
 }
 
 export function setHasUpgradedAvlData(db: SaveDb, value: boolean): void {
@@ -6085,4 +6572,159 @@ export function listAllActiveFixedContractSuspensions(db: SaveDb): FixedContract
 // rather than vanishing.
 export function deactivateFixedContractSuspension(db: SaveDb, id: number): void {
   db.prepare("UPDATE fixed_contract_suspensions SET active = 0 WHERE id = ?").run(id);
+}
+
+// --- Contracts menu: acceptance storage (see fixed_contract_acceptances'
+// own CREATE TABLE comment above for the full reasoning) ------------------
+
+export interface FixedContractAcceptance {
+  contractKey: string;
+  routeIds: number[];
+  depotGroupId: number;
+  acceptedGameDay: number;
+  activationGameDay: number;
+  grantedDepotId: number | null;
+}
+
+interface FixedContractAcceptanceRow {
+  contract_key: string;
+  route_ids: string;
+  depot_group_id: number;
+  accepted_game_day: number;
+  activation_game_day: number;
+  granted_depot_id: number | null;
+}
+
+function fixedContractAcceptanceFromRow(row: FixedContractAcceptanceRow): FixedContractAcceptance {
+  return {
+    contractKey: row.contract_key,
+    routeIds: JSON.parse(row.route_ids) as number[],
+    depotGroupId: row.depot_group_id,
+    acceptedGameDay: row.accepted_game_day,
+    activationGameDay: row.activation_game_day,
+    grantedDepotId: row.granted_depot_id,
+  };
+}
+
+const FIXED_CONTRACT_ACCEPTANCE_COLUMNS = "contract_key, route_ids, depot_group_id, accepted_game_day, activation_game_day, granted_depot_id";
+
+// Records a contract as accepted — permanent, never deleted (the menu's
+// own "accepted" list is read straight off this table, same "once
+// accepted, always shows real status" shape as the fine/suspension
+// tables above). Safe to call only once per contract_key in practice (the
+// menu only offers Accept while no acceptance row exists yet) — a second
+// call would violate the PRIMARY KEY and throw, which is the correct
+// behaviour (a contract can't be accepted twice), not guarded against
+// here with an upsert.
+export function createFixedContractAcceptance(
+  db: SaveDb,
+  contractKey: string,
+  routeIds: number[],
+  depotGroupId: number,
+  acceptedGameDay: number,
+  activationGameDay: number,
+  grantedDepotId: number | null,
+): FixedContractAcceptance {
+  db.prepare(
+    `INSERT INTO fixed_contract_acceptances (${FIXED_CONTRACT_ACCEPTANCE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(contractKey, JSON.stringify(routeIds), depotGroupId, acceptedGameDay, activationGameDay, grantedDepotId);
+  return { contractKey, routeIds, depotGroupId, acceptedGameDay, activationGameDay, grantedDepotId };
+}
+
+export function getFixedContractAcceptance(db: SaveDb, contractKey: string): FixedContractAcceptance | null {
+  const row = db.prepare(`SELECT ${FIXED_CONTRACT_ACCEPTANCE_COLUMNS} FROM fixed_contract_acceptances WHERE contract_key = ?`).get(contractKey) as unknown as FixedContractAcceptanceRow | undefined;
+  return row ? fixedContractAcceptanceFromRow(row) : null;
+}
+
+export function listFixedContractAcceptances(db: SaveDb): FixedContractAcceptance[] {
+  const rows = db.prepare(`SELECT ${FIXED_CONTRACT_ACCEPTANCE_COLUMNS} FROM fixed_contract_acceptances`).all() as unknown as FixedContractAcceptanceRow[];
+  return rows.map(fixedContractAcceptanceFromRow);
+}
+
+// --- Route milestones: generic "first observed" tracker (see
+// route_milestones' own CREATE TABLE comment above) ------------------------
+
+// INSERT OR IGNORE, not an upsert — the whole point is to remember the
+// EARLIEST day a route was observed; a later call on an already-tracked
+// route must never push its own first-seen day forward.
+export function ensureRouteMilestone(db: SaveDb, routeId: number, todayGameDay: number): void {
+  db.prepare("INSERT OR IGNORE INTO route_milestones (route_id, first_seen_game_day) VALUES (?, ?)").run(routeId, todayGameDay);
+}
+
+export function getRouteMilestone(db: SaveDb, routeId: number): number | null {
+  const row = db.prepare("SELECT first_seen_game_day FROM route_milestones WHERE route_id = ?").get(routeId) as unknown as { first_seen_game_day: number } | undefined;
+  return row ? row.first_seen_game_day : null;
+}
+
+// --- Stop route locks (see stop_route_locks' own CREATE TABLE comment
+// above for the full real design) -----------------------------------------
+
+export type StopRouteLockSource = "contract" | "purchased";
+
+export interface StopRouteLock {
+  stopOsmId: number;
+  lockedRouteId: number;
+  source: StopRouteLockSource;
+  contractKey: string | null;
+  purchasePriceGbpPence: number | null;
+  lockedGameDay: number;
+}
+
+interface StopRouteLockRow {
+  stop_osm_id: number;
+  locked_route_id: number;
+  source: StopRouteLockSource;
+  contract_key: string | null;
+  purchase_price_gbp_pence: number | null;
+  locked_game_day: number;
+}
+
+const STOP_ROUTE_LOCK_COLUMNS = "stop_osm_id, locked_route_id, source, contract_key, purchase_price_gbp_pence, locked_game_day";
+
+function stopRouteLockFromRow(row: StopRouteLockRow): StopRouteLock {
+  return {
+    stopOsmId: row.stop_osm_id,
+    lockedRouteId: row.locked_route_id,
+    source: row.source,
+    contractKey: row.contract_key,
+    purchasePriceGbpPence: row.purchase_price_gbp_pence,
+    lockedGameDay: row.locked_game_day,
+  };
+}
+
+// PRIMARY KEY on stop_osm_id (see the CREATE TABLE comment) enforces the
+// real exclusivity rule at the schema level — a second lock on an
+// already-locked stop throws rather than silently overwriting it. Callers
+// (contracts-panel.ts, stops-layer.ts) check getStopRouteLock first and
+// skip calling this when a lock already exists, same "check don't
+// upsert" convention as createFixedContractAcceptance above, so the
+// throw is a genuine bug signal, not expected control flow.
+export function createStopRouteLock(
+  db: SaveDb,
+  stopOsmId: number,
+  lockedRouteId: number,
+  source: StopRouteLockSource,
+  contractKey: string | null,
+  purchasePriceGbpPence: number | null,
+  lockedGameDay: number,
+): StopRouteLock {
+  db.prepare(`INSERT INTO stop_route_locks (${STOP_ROUTE_LOCK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`).run(
+    stopOsmId,
+    lockedRouteId,
+    source,
+    contractKey,
+    purchasePriceGbpPence,
+    lockedGameDay,
+  );
+  return { stopOsmId, lockedRouteId, source, contractKey, purchasePriceGbpPence, lockedGameDay };
+}
+
+export function listAllStopRouteLocks(db: SaveDb): StopRouteLock[] {
+  const rows = db.prepare(`SELECT ${STOP_ROUTE_LOCK_COLUMNS} FROM stop_route_locks`).all() as unknown as StopRouteLockRow[];
+  return rows.map(stopRouteLockFromRow);
+}
+
+export function getStopRouteLock(db: SaveDb, stopOsmId: number): StopRouteLock | null {
+  const row = db.prepare(`SELECT ${STOP_ROUTE_LOCK_COLUMNS} FROM stop_route_locks WHERE stop_osm_id = ?`).get(stopOsmId) as unknown as StopRouteLockRow | undefined;
+  return row ? stopRouteLockFromRow(row) : null;
 }

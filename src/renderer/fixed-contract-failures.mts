@@ -88,6 +88,52 @@ export function isFixedContractRouteNumber(routeNumber: string): boolean {
   return fixedContractKeyForRoute(routeNumber) !== null;
 }
 
+// --- The "accepted" gate (added once the Contracts menu existed to make
+// this question real, OPEN-ITEMS.md "Contracts redesign"/"Dounreay
+// contracts") --------------------------------------------------------------
+//
+// DECIDED, with real reasoning, not guessed: fixedContractKeyForRoute
+// above matches by NUMBER ALONE, and that's still correct for what it was
+// built for — identifying which contract a route's fixed livery/colour
+// lock belongs to (livery-seed-data.mts's LIVERY_SPECIFIC_ROUTE already
+// works the same way, by design, predating this module). But the
+// FAILURE/SUSPENSION mechanic this file drives is a different question:
+// "should THIS route's missed departures actually get fined and
+// suspended as a real contract?" — and for that, number-matching alone is
+// provably wrong. "398" and "500" (398/Express 500's own real numbers)
+// are plain numeric strings nothing stops an ordinary player-drawn route
+// from also being numbered — and Dounreay makes this far worse, not
+// hypothetical: its own 8 real route numbers (74, 274, 275, 276, 280,
+// 281, 282, 921) are exactly the kind of small, ordinary-looking numbers
+// a player assigns to routes of their own all the time. The task brief's
+// own worked example is exactly this: "a route literally numbered '74'
+// shouldn't trigger Dounreay's own no-60%-cap exception until it's
+// genuinely been accepted as that specific contract."
+//
+// So: evaluateFixedContractDay below must only ever be called for a route
+// the caller has ALREADY confirmed is the real accepted route for that
+// contract — via the Contracts menu's own acceptance record
+// (fixed_contract_acceptances.route_ids, electron/db.mts;
+// window.fixedContracts.getAcceptance), identified by ROUTE ID, never by
+// number. isAcceptedFixedContractRoute below is that check, meant to run
+// BEFORE evaluateFixedContractDay is ever reached for a given route — this
+// module doesn't call it internally (evaluateFixedContractDay has no
+// acceptance data to check against, by design, same "pure logic, caller
+// supplies real data" split as everywhere else here), so the real
+// enforcement lives in whatever wires this mechanic up to a live tick
+// (contracts-panel.ts / fixed-contract-eligibility.mts's own callers).
+// fixedContractKeyForRoute/isFixedContractRouteNumber above are NOT
+// changed by this — they stay number-only, exactly as livery-seed-data.mts
+// already relies on them being.
+export interface AcceptedFixedContractRouteRef {
+  readonly contractKey: string;
+  readonly routeIds: readonly number[];
+}
+
+export function isAcceptedFixedContractRoute(routeId: number, acceptances: readonly AcceptedFixedContractRouteRef[]): boolean {
+  return acceptances.some((a) => a.routeIds.includes(routeId));
+}
+
 // --- Unit shape: a return journey or a circular route ---------------------
 //
 // "The unit of 'a service' lost is always a whole return journey or a

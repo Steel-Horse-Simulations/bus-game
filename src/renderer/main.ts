@@ -28,6 +28,7 @@ import { mountFareZones } from "./fare-zone-drawing";
 import { mountFarePricingPanel } from "./fare-pricing-panel";
 import { mountLongDistanceSectionsTool } from "./long-distance-sections-panel";
 import { mountRouteStatisticsPanel } from "./route-statistics-panel";
+import { mountContractsPanel } from "./contracts-panel";
 import { mountFleetScreen } from "./fleet-screen";
 import { mountFaresScreen } from "./fares-screen";
 import { mountDepotsScreen } from "./depots-screen";
@@ -236,6 +237,7 @@ init().then(async () => {
   await mountDeadMileagePreview(map, router);
   await mountDutyPanel(router);
   await mountRouteStatisticsPanel();
+  await mountContractsPanel();
   // Live request, 2026-11-08: "get all menus working... instead of
   // temporary ones" — the bottom bar (bottom-bar.ts) was shipped as a
   // visual shell only, with switching what's actually shown for each

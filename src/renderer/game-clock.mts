@@ -129,7 +129,10 @@ export function gameDayFromCivil(year: number, month: number, day: number): numb
 
 const DAYS_IN_MONTH_NON_LEAP = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-function daysInMonth(year: number, month: number): number {
+// Exported (2026-11-20) for greenroad-billing.mts, which needs the real
+// day count of an elapsed calendar month to compute a literal "10p per
+// day" charge — every other caller in this file still uses it privately.
+export function daysInMonth(year: number, month: number): number {
   if (month === 2 && isLeapYear(year)) return 29;
   return DAYS_IN_MONTH_NON_LEAP[month - 1];
 }

@@ -394,11 +394,23 @@ contextBridge.exposeInMainWorld("routeAdvertising", {
     operatorName: string | null,
     bookedGameDay: number,
     liveFromGameDay: number,
+    isContractBundle: boolean = false,
   ) =>
-    ipcRenderer.invoke("routeAdvertising:create", stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay) as Promise<RouteAdvertisingBooking>,
+    ipcRenderer.invoke("routeAdvertising:create", stopOsmId, depotGroupId, mode, routeId, operatorName, bookedGameDay, liveFromGameDay, isContractBundle) as Promise<RouteAdvertisingBooking>,
   delete: (id: number) => ipcRenderer.invoke("routeAdvertising:delete", id) as Promise<void>,
   listGeneratedMonths: (bookingId: number) => ipcRenderer.invoke("routeAdvertising:listGeneratedMonths", bookingId) as Promise<string[]>,
   recordMonthsBilled: (bookingId: number, monthKeys: string[]) => ipcRenderer.invoke("routeAdvertising:recordMonthsBilled", bookingId, monthKeys) as Promise<void>,
+});
+
+// Stop route locks (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+// dropped..." — contract-stop bundling + airport-stop purchase). See
+// stop_route_locks' own CREATE TABLE comment in db.mts for the full real
+// design.
+contextBridge.exposeInMainWorld("stopRouteLocks", {
+  listAll: () => ipcRenderer.invoke("stopRouteLocks:listAll") as Promise<StopRouteLock[]>,
+  get: (stopOsmId: number) => ipcRenderer.invoke("stopRouteLocks:get", stopOsmId) as Promise<StopRouteLock | null>,
+  create: (stopOsmId: number, lockedRouteId: number, source: StopRouteLockSource, contractKey: string | null, purchasePriceGbpPence: number | null, lockedGameDay: number) =>
+    ipcRenderer.invoke("stopRouteLocks:create", stopOsmId, lockedRouteId, source, contractKey, purchasePriceGbpPence, lockedGameDay) as Promise<StopRouteLock>,
 });
 
 // Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
@@ -421,6 +433,29 @@ contextBridge.exposeInMainWorld("remoteRouteSubsidy", {
     ipcRenderer.invoke("remoteRouteSubsidy:upsert", routeId, departureMinutes, weekdayMask, state, offeredGameDay, decidedGameDay, warningStartedGameDay) as Promise<RemoteRouteSubsidy | null>,
   delete: (routeId: number, departureMinutes: number, weekdayMask: number) =>
     ipcRenderer.invoke("remoteRouteSubsidy:delete", routeId, departureMinutes, weekdayMask) as Promise<void>,
+});
+
+// The real "Contracts" menu (DESIGN.md "Fixed real contracts";
+// OPEN-ITEMS.md "Contracts redesign"/"Dounreay contracts"/"Three further
+// contracts — 800, 803 & 805") — wires up fixed-contract-failures.mts's
+// own fine/suspension storage (previously unwired, OPEN-ITEMS.md's own
+// flagged gap) plus the new acceptance/milestone tables, for
+// contracts-panel.ts.
+contextBridge.exposeInMainWorld("fixedContracts", {
+  recordFineEvent: (routeId: number, routeNumber: string, depotGroupId: number, gameDay: number, scheduledUnits: number, missedUnits: number, fineGBPPence: number) =>
+    ipcRenderer.invoke("fixedContracts:recordFineEvent", routeId, routeNumber, depotGroupId, gameDay, scheduledUnits, missedUnits, fineGBPPence) as Promise<FixedContractFineEvent>,
+  listFineEvents: (routeId: number) => ipcRenderer.invoke("fixedContracts:listFineEvents", routeId) as Promise<FixedContractFineEvent[]>,
+  createSuspension: (routeId: number, weekdayMask: number, suspendedUnits: number, totalUnits: number, startGameDay: number, returnGameDay: number) =>
+    ipcRenderer.invoke("fixedContracts:createSuspension", routeId, weekdayMask, suspendedUnits, totalUnits, startGameDay, returnGameDay) as Promise<FixedContractSuspensionRecord>,
+  listSuspensions: (routeId: number) => ipcRenderer.invoke("fixedContracts:listSuspensions", routeId) as Promise<FixedContractSuspensionRecord[]>,
+  listAllActiveSuspensions: () => ipcRenderer.invoke("fixedContracts:listAllActiveSuspensions") as Promise<FixedContractSuspensionRecord[]>,
+  deactivateSuspension: (id: number) => ipcRenderer.invoke("fixedContracts:deactivateSuspension", id) as Promise<void>,
+  createAcceptance: (contractKey: string, routeIds: number[], depotGroupId: number, acceptedGameDay: number, activationGameDay: number, grantedDepotId: number | null) =>
+    ipcRenderer.invoke("fixedContracts:createAcceptance", contractKey, routeIds, depotGroupId, acceptedGameDay, activationGameDay, grantedDepotId) as Promise<FixedContractAcceptance>,
+  getAcceptance: (contractKey: string) => ipcRenderer.invoke("fixedContracts:getAcceptance", contractKey) as Promise<FixedContractAcceptance | null>,
+  listAcceptances: () => ipcRenderer.invoke("fixedContracts:listAcceptances") as Promise<FixedContractAcceptance[]>,
+  ensureRouteMilestone: (routeId: number, todayGameDay: number) => ipcRenderer.invoke("fixedContracts:ensureRouteMilestone", routeId, todayGameDay) as Promise<void>,
+  getRouteMilestone: (routeId: number) => ipcRenderer.invoke("fixedContracts:getRouteMilestone", routeId) as Promise<number | null>,
 });
 
 // Re-power bookings (T179, OPEN-ITEMS.md) — same capacity/scheduling
@@ -506,6 +541,7 @@ contextBridge.exposeInMainWorld("basket", {
     isUsed: boolean,
     usedCondition: number | null,
     boughtForRouteId: number | null = null,
+    greenroadFitted: boolean = false,
   ) =>
     ipcRenderer.invoke(
       "basket:add",
@@ -523,6 +559,7 @@ contextBridge.exposeInMainWorld("basket", {
       isUsed,
       usedCondition,
       boughtForRouteId,
+      greenroadFitted,
     ) as Promise<BasketItem>,
   list: () => ipcRenderer.invoke("basket:list") as Promise<BasketItem[]>,
   setQuantity: (basketItemId: number, quantity: number) => ipcRenderer.invoke("basket:setQuantity", basketItemId, quantity) as Promise<void>,
@@ -612,4 +649,21 @@ contextBridge.exposeInMainWorld("leaseBilling", {
   listGeneratedMonths: (vehicleId: number) => ipcRenderer.invoke("leaseBilling:listGeneratedMonths", vehicleId) as Promise<string[]>,
   recordMonthsBilled: (vehicleId: number, monthKeys: string[], flipToOutright: boolean) =>
     ipcRenderer.invoke("leaseBilling:recordMonthsBilled", vehicleId, monthKeys, flipToOutright) as Promise<void>,
+});
+
+// GreenRoad recurring billing (user request 2026-11-20) — plain storage
+// only, see greenroad_billing_months' own SCHEMA comment in db.mts.
+contextBridge.exposeInMainWorld("greenroadBilling", {
+  listGeneratedMonths: (vehicleId: number) => ipcRenderer.invoke("greenroadBilling:listGeneratedMonths", vehicleId) as Promise<string[]>,
+  recordMonthsBilled: (vehicleId: number, monthKeys: string[]) =>
+    ipcRenderer.invoke("greenroadBilling:recordMonthsBilled", vehicleId, monthKeys) as Promise<void>,
+});
+
+// GreenRoad retrofit bookings (user request 2026-11-20) — "installed
+// overnight by a GreenRoad Engineer," same £350 fee as a new purchase.
+contextBridge.exposeInMainWorld("greenroadRetrofit", {
+  create: (vehicleId: number, depotId: number, depotGroupId: number, bookedGameDay: number, readyGameDay: number) =>
+    ipcRenderer.invoke("greenroadRetrofit:create", vehicleId, depotId, depotGroupId, bookedGameDay, readyGameDay) as Promise<GreenroadRetrofitBooking>,
+  listAll: () => ipcRenderer.invoke("greenroadRetrofit:listAll") as Promise<GreenroadRetrofitBooking[]>,
+  collect: (id: number) => ipcRenderer.invoke("greenroadRetrofit:collect", id) as Promise<Vehicle>,
 });

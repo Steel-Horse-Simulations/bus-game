@@ -22,10 +22,15 @@ standing capacity on some vehicles (noted per-vehicle where confirmed).
 automatically from a coach's length**: up to and including 12.9m is
 twin-axle; over 12.9m must be tri-axle by law.
 
-**Top speed.** Not a per-vehicle figure — a simple rule by category:
+**Top speed.** Not a per-vehicle figure — a simple rule by category
+(briefly made a genuine per-model field 2026-11-19 at the user's own
+request, "we will go through later" — dropped again 2026-11-20, "Lets
+drop the max speed of individual vehicles... I can't find real figures
+for most," back to this plain rule):
 - **50mph** — buses (single-deck, double-deck, open-top)
-- **62mph** — coaches, and the EVM Cityline minibus (van-based, not a bus
-  chassis)
+- **60mph** — coaches, and the EVM Cityline minibus (van-based, not a bus
+  chassis), confirmed kept in this bucket rather than moved to the bus
+  figure
 
 **Tip-up seats.** Not a general mechanic — real sources don't consistently
 say whether they're included in published seat counts, so don't add tip-ups
@@ -107,6 +112,7 @@ twice) unless the option's own row says otherwise.
 | Next-stop audio | All | £2,500 flat | Satisfaction + marketing boost. Matters **more** than screens (accessibility: essential for visually impaired passengers) |
 | Passenger info screens | All | £3,500 flat | Satisfaction + marketing boost, smaller than audio |
 | Premium driver seat | All | £1,800 flat | Driver happiness boost **and** reduces sickness/turnover — feeds into the existing warning/dismissal system |
+| GreenRoad driver-behaviour system | All | **£350 flat install** + **10p/day recurring** while fitted (added 2026-11-20 at the user's own request, by name, revised to these figures from an original £600-flat-only placeholder — GreenRoad publishes no real per-vehicle fitting price anywhere, so £350 is the user's own call; the 10p/day is billed via this game's existing calendar-month mechanism, (real days in that month) × 10p, since there's no daily tick anywhere to hang a literal daily charge off — see greenroad-billing.mts) | Real in-cab driver-behaviour telematics (traffic-light-style indicator, accelerometer/GPS). **Real sourced effect** — East Yorkshire Motor Services' own GreenRoad case study: ~5% lower fuel/energy consumption, ~40% fewer driver-fault accidents (the cleanest single-source figures among several vendor case studies, not an average). Same as every other option's effect here — descriptive only, not yet live in the simulation, since the two systems it would actually feed, accidents (Phase 8) and driver score (Phase 6), don't exist yet |
 | Larger fuel tank | Diesel only | **£15 per extra litre** above the vehicle's own base tank — see §3 and the worked examples below | Per-vehicle range boost — see §3 |
 | Larger battery pack (dropdown) | Electric only | **£300 per extra kWh** above the base pack, except the Volvo 7900 Electric's own named tiers (below) — see §3 | Per-vehicle range boost — see §3 |
 | Larger hydrogen tank (dropdown) | Hydrogen only | **£1,000 per extra kg** above the base tank — see §3 (Kite and StreetDeck Hydroliners already have their tank tiers recorded there) | Per-vehicle range boost — see §3 |
@@ -116,6 +122,22 @@ twice) unless the option's own row says otherwise.
 | Instructor mirrors | All | £400 flat | Training vehicles only. Purely functional — lets the instructor see properly. Not available/relevant on any non-training vehicle |
 | Adding seats beyond the standard layout | All | **£120 per added seat** | New, confirmed 2026-10-18 — not yet given a passenger-facing effect beyond raising capacity |
 | New luggage racks (vehicles without them) | All | **£1,500 per vehicle**, flat | New, confirmed 2026-10-18 |
+
+**GreenRoad detail:**
+- **Mandatory once adopted** (user request 2026-11-20): the first vehicle
+  ever bought — or retrofitted — with GreenRoad permanently flips a
+  one-way, company-wide flag. From then on every new purchase has the
+  option forced on and disabled, with no opt-out, for the rest of the
+  save.
+- **Retrofittable onto an already-owned vehicle, same £350 fee** — booked
+  from the Fleet screen, charged immediately. A real GreenRoad engineer
+  then has to come out: **14 days' lead time**, then fitted overnight.
+  The engineer can do **6 vehicles a night**, but that capacity is **per
+  depot group, not company-wide**, and drops by **1 for each extra depot
+  within that group** they have to visit the same night (floored at 1) —
+  see `greenroad-retrofit-scheduling.mts` for the real scheduling math.
+  Fitting any vehicle this way — not just a new purchase — also counts
+  as "adopted" for the mandatory rule above.
 
 **CCTV audio detail:**
 - **Cab-only audio** — protects the driver in a complaint (evidence), slightly

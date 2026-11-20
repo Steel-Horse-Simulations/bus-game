@@ -1,5 +1,6 @@
 import { isPointInScotland } from "./scotland-boundary.mts";
 import { isPointInWales } from "./wales-boundary.mts";
+import { DOUNREAY_800_803_805_ROUTE_NUMBERS } from "./fixed-contract-eligibility.mts";
 
 // Real liveries to seed into a fresh/existing save (OPERATIONS.md §4), so
 // the buy menu's livery picker has real, recognisable choices from the
@@ -116,6 +117,13 @@ export const REAL_LIVERY_COLOURS: Record<string, { primary: string; secondary: s
   // on screen. Recoloured T190 (2026-11-14, user-supplied real figures,
   // replacing the earlier flagged neutral placeholder pair).
   "National Express Local": { primary: "#495D70", secondary: "#64E0F7" },
+  // National Express Local Electric added 2026-11-20 — user's own words:
+  // "a second livery that applies to electric buses only using the same
+  // base livery so the current mask still works." Same real colour pair
+  // as plain National Express Local, deliberately not a new invented
+  // one — it's the same base artwork/mask, just electric-only and
+  // auto-applied on repower (see ELECTRIC_LIVERY_VARIANT below).
+  "National Express Local Electric": { primary: "#495D70", secondary: "#64E0F7" },
 
   // Added T190 (2026-11-14) — same primary as plain National Express
   // (confirmed: it's the same operator's vehicles, just restricted to
@@ -259,7 +267,7 @@ export const OPERATOR_LIVERIES: Record<string, string[]> = {
   // National Express Welsh added 2026-11-15 — sits alongside its three
   // siblings under the same operator group, exact mirror of National
   // Express Scottish per the user's own instruction.
-  "National Express": ["National Express", "National Express Local", "National Express Scottish", "National Express Welsh"],
+  "National Express": ["National Express", "National Express Local", "National Express Local Electric", "National Express Scottish", "National Express Welsh"],
   // Highland Council (the livery) dropped T190 (2026-11-14) — group key
   // stays (covers D&E), no longer offers its own plain livery choice.
   "Highland Council": ["D&E"],
@@ -316,6 +324,30 @@ export const LIVERY_LINKED_TO: Record<string, string[]> = {
   "Stagecoach Training - Blue": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
   "Stagecoach Training - Teal": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
   "Stagecoach Training - Yellow": ["Stagecoach", "Stagecoach Dark", "Stagecoach Electric"],
+  // National Express Local Electric added 2026-11-20 — same dual shape as
+  // Stagecoach Electric above (a real standalone operator-group member,
+  // see OPERATOR_LIVERIES, AND tied here so it's available wherever its
+  // base livery is, without needing separate depot-level enabling).
+  "National Express Local Electric": ["National Express Local"],
+};
+
+// Which liveries auto-switch to (or back from) an electric-only variant
+// the moment a vehicle is repowered — added 2026-11-20, user's own words:
+// "I would like this livery to automatically apply if a vehicle gets
+// repowered." Confirmed directly to apply to EVERY electric-only variant
+// EXCEPT Stagecoach Electric, which the user deliberately wants to stay a
+// manual pick: "that's a special livery only for a few selected buses."
+// So this is a genuinely new, separate mechanism from LIVERY_LINKED_TO
+// above (which only ever affects what's *available to pick*, never
+// reassigns an existing vehicle's own livery) — keyed by base livery name,
+// read by `electron/db.mts`'s `collectRepowerBooking` to find a currently-
+// assigned livery's real electric counterpart (and, in reverse, to switch
+// back to the base livery if a vehicle is repowered AWAY from electric).
+// Only one real entry exists so far; built as a lookup table rather than
+// a single hardcoded pair so a future electric-only variant just needs
+// adding here, no other code touched.
+export const ELECTRIC_LIVERY_VARIANT: Record<string, string> = {
+  "National Express Local": "National Express Local Electric",
 };
 
 // Whether a DEPOT GROUP's own enabled-operators list (db.mts's
@@ -631,6 +663,8 @@ export const LIVERY_ROUTE_TYPES: Record<string, RouteTypeCategory[]> = {
   // operator, see LONG_DISTANCE_LIVERY_NAMES's own comment above.
   TaithCymru: ["long_distance"],
   "National Express Local": ["local_night"],
+  // Added 2026-11-20 — same category as its base livery.
+  "National Express Local Electric": ["local_night"],
   "Citylink/West Coast Motors": ["long_distance"],
   // Added 2026-11-15 — see LONG_DISTANCE_LIVERY_NAMES's own comment.
   // Translink is deliberately NOT listed here: the user's own stated
@@ -897,6 +931,26 @@ function scotRailVehicleReason(vehicle: { category: string }, powerType: string 
 // omitted, only the category half of the ScotRail check applies (the
 // caller hasn't settled on a power choice yet); every other livery here
 // ignores it entirely.
+// D&E + Sprinter lock for Dounreay's own 800/803/805 contracts
+// (OPEN-ITEMS.md "Three further contracts — 800, 803 & 805", settled
+// 2026-11-19/20 — the user's own words: "these routes will only run with
+// Sprinter buses"). A genuinely new SHAPE of lock, confirmed directly by
+// the task brief: route-NUMBER-keyed, not livery-keyed outright — D&E is
+// NOT Sprinter-only everywhere (it's Caithness's own ordinary area
+// livery, RESTRICTED_AREA_LIVERIES above, worn on whatever vehicle the
+// area's own rule allows), only on these three specific route numbers.
+// This can't live in liveryVehicleLockReason below (ScotRail's own
+// blanket lock there has no route parameter at all, because ScotRail is
+// ALREADY exclusively route 398 via LIVERY_SPECIFIC_ROUTE — D&E has no
+// such exclusive tie) — it needs BOTH the livery AND the route number
+// together, so it's checked directly in liveryUnavailableReason below,
+// where `route` actually exists.
+function dAndESprinterLockReason(liveryName: string, vehicleId: string, routeNumber: string | undefined): string | null {
+  if (liveryName !== "D&E") return null;
+  if (!routeNumber || !DOUNREAY_800_803_805_ROUTE_NUMBERS.includes(routeNumber)) return null;
+  return vehicleId === "evm-cityline" ? null : `D&E on route ${routeNumber} is locked to the Sprinter (EVM Cityline) only.`;
+}
+
 export function liveryVehicleLockReason(liveryName: string, vehicle: { id: string; category: string }, powerType?: string): string | null {
   if (isSightseeingLiveryName(liveryName)) {
     return vehicle.category === SIGHTSEEING_VEHICLE_CATEGORY ? null : "Sightseeing liveries are locked to sightseeing/open-top vehicles only.";
@@ -963,6 +1017,11 @@ export function liveryVehicleLockReason(liveryName: string, vehicle: { id: strin
   if (liveryName === "Stagecoach Electric" && powerType !== undefined && powerType !== "electric") {
     return `${liveryName} is locked to electric vehicles only.`;
   }
+  // National Express Local Electric added 2026-11-20 — same shape as
+  // Stagecoach Electric above.
+  if (liveryName === "National Express Local Electric" && powerType !== undefined && powerType !== "electric") {
+    return `${liveryName} is locked to electric vehicles only.`;
+  }
   const routeTypeReason = vehicleRouteTypeReason(liveryName, vehicle.id);
   if (routeTypeReason) return routeTypeReason;
   return null;
@@ -1000,6 +1059,8 @@ export function liveryUnavailableReason(
 ): string | null {
   const vehicleReason = liveryVehicleLockReason(liveryName, vehicle, powerType);
   if (vehicleReason) return vehicleReason;
+  const sprinterReason = dAndESprinterLockReason(liveryName, vehicle.id, route?.number);
+  if (sprinterReason) return sprinterReason;
   if (currentVehicleCount !== undefined) {
     const capReason = liveryCapReason(liveryName, currentVehicleCount);
     if (capReason) return capReason;

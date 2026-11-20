@@ -29,6 +29,7 @@ import {
   type CombinePoint,
 } from "./route-combine-variations.mts";
 import { resolveSegments, type RouteSegment as ResolvedRouteSegment, type SectionSource } from "./long-distance-sections.mts";
+import { canRouteUseStop, type StopRouteLock } from "./stop-route-locks.mts";
 
 // Shared with stops-layer.ts: while drawing, a click on a stop or station
 // builds the route instead of opening its usual assignment popup. A plain
@@ -1036,6 +1037,31 @@ export async function mountRouteDrawTool(
       if (alwaysShared === true || isAirport === true) forcedIndexes.push(fi);
     }
     const finalTimingPointIndexes = [...new Set([...draftTimingPointIndexes, ...forcedIndexes])].sort((a, b) => a - b);
+
+    // Stop route lock exclusivity (OPEN-ITEMS.md "Phase 5/9 redesign:
+    // stop ownership dropped..." — contract-stop bundling/airport-stop
+    // purchase, stop-route-locks.mts). A locked stop (contract-bundled
+    // terminus, or player-bought airport stop) can never be served by a
+    // SECOND route — checked here, right before the one real place a
+    // route's own point list is actually persisted (window.routes.
+    // create/update below), rather than at draw-time click-by-click
+    // (DESIGN.md's own stop-reservation precedent blocks at save time
+    // too, not on every intermediate click). `editingRouteId ?? -1` as
+    // the "this route" id for a brand-new, not-yet-created route — no
+    // real route id is ever -1, so a brand-new route correctly can't use
+    // ANY already-locked stop, matching the real exclusivity rule (a
+    // lock can only ever belong to the route it was created for).
+    const stopLocks = await window.stopRouteLocks.listAll();
+    const thisRouteId = editingRouteId ?? -1;
+    const blockedLock = savedPoints
+      .filter((p) => p.kind === "stop" && p.osmId !== undefined)
+      .map((p) => stopLocks.find((l: StopRouteLock) => l.stopOsmId === p.osmId))
+      .find((l): l is StopRouteLock => l !== undefined && !canRouteUseStop([l], l.stopOsmId, thisRouteId));
+    if (blockedLock) {
+      const label = blockedLock.source === "contract" ? `its real fixed contract ("${blockedLock.contractKey}")` : "a route the player has already bought it for";
+      saveStatusEl.textContent = `Stop ${blockedLock.stopOsmId} is locked exclusively to route #${blockedLock.lockedRouteId} (${label}) — it can't be used by this route too.`;
+      return;
+    }
 
     let savedRouteId: number;
     if (editingRouteId !== null) {

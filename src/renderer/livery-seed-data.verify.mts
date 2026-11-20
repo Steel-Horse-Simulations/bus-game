@@ -44,6 +44,7 @@ import {
   nationForRegion,
   translinkNationReason,
   airlinkLothianFallbackEligible,
+  ELECTRIC_LIVERY_VARIANT,
   liverySpecificRouteReason,
   LIVERY_SPECIFIC_ROUTE,
 } from "./livery-seed-data.mts";
@@ -347,6 +348,32 @@ assert(
 assert(
   liveryVehicleLockReason("Oxford Tube", { id: "adl-enviro400", category: "Double-deckers" }) !== null,
   "Oxford Tube is blocked on an ordinary double-decker",
+);
+
+// --- National Express Local Electric — new livery (2026-11-20), auto-
+// applied on repower (electron/db.verify.mts has the real repower
+// round-trip test; this covers just the static livery data here). ---
+assert(REAL_LIVERY_COLOURS["National Express Local Electric"]?.primary === "#495D70", "National Express Local Electric shares its base livery's real colour pair");
+assert(REAL_LIVERY_COLOURS["National Express Local Electric"]?.secondary === "#64E0F7", "National Express Local Electric's secondary colour matches the base too");
+assert(OPERATOR_LIVERIES["National Express"]?.includes("National Express Local Electric"), "National Express Local Electric sits in the National Express operator group");
+assert(LIVERY_ROUTE_TYPES["National Express Local Electric"]?.includes("local_night"), "National Express Local Electric's route-type category matches its base livery");
+assert(LIVERY_LINKED_TO["National Express Local Electric"]?.includes("National Express Local"), "National Express Local Electric rides along wherever National Express Local is available, same shape as Stagecoach Electric");
+assert(
+  liveryVehicleLockReason("National Express Local Electric", { id: "adl-enviro400", category: "Double-deckers" }, "electric") === null,
+  "National Express Local Electric is allowed on a real electric vehicle",
+);
+assert(
+  liveryVehicleLockReason("National Express Local Electric", { id: "adl-enviro400", category: "Double-deckers" }, "diesel") !== null,
+  "National Express Local Electric is blocked on a diesel vehicle",
+);
+assert(
+  liveryVehicleLockReason("National Express Local Electric", { id: "adl-enviro400", category: "Double-deckers" }) === null,
+  "National Express Local Electric is unblocked when powerType isn't known yet (can't check it, don't block it)",
+);
+assert(ELECTRIC_LIVERY_VARIANT["National Express Local"] === "National Express Local Electric", "the real auto-switch pairing exists");
+assert(
+  !Object.values(ELECTRIC_LIVERY_VARIANT).includes("Stagecoach Electric") && !("Stagecoach" in ELECTRIC_LIVERY_VARIANT) && !("Stagecoach Dark" in ELECTRIC_LIVERY_VARIANT),
+  "Stagecoach Electric is deliberately absent from the auto-switch map — stays a manual pick, the user's own words: \"that's a special livery only for a few selected buses\"",
 );
 
 // --- Irish Citylink and Translink — new liveries (2026-11-15). ---
@@ -805,6 +832,39 @@ async function runWalesTerminusChecks(): Promise<void> {
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+// --- D&E + Sprinter lock for Dounreay's own 800/803/805 (OPEN-ITEMS.md
+// "Three further contracts — 800, 803 & 805", settled 2026-11-19/20) -----
+{
+  const sprinter = { id: "evm-cityline", category: "Minibus" };
+  const ordinaryMinibus = { id: "some-other-minibus", category: "Minibus" };
+  const caithness = { name: "Caithness", region: "North Scotland" };
+
+  assert(
+    liveryUnavailableReason("D&E", sprinter, caithness, undefined, undefined, { number: "800" }) === null,
+    "D&E on the Sprinter on route 800 is allowed",
+  );
+  assert(
+    liveryUnavailableReason("D&E", ordinaryMinibus, caithness, undefined, undefined, { number: "803" }) !== null,
+    "D&E on a non-Sprinter minibus on route 803 is blocked",
+  );
+  assert(
+    liveryUnavailableReason("D&E", ordinaryMinibus, caithness, undefined, undefined, { number: "805" }) !== null,
+    "D&E on a non-Sprinter minibus on route 805 is blocked",
+  );
+  // The whole point of this lock being route-NUMBER-keyed, not a blanket
+  // D&E rule: D&E on an ORDINARY Caithness route (any other number, or no
+  // route at all) is NOT Sprinter-locked — it keeps its existing, more
+  // general area-based behaviour untouched.
+  assert(
+    liveryUnavailableReason("D&E", ordinaryMinibus, caithness, undefined, undefined, { number: "74" }) === null,
+    "D&E on an ordinary Caithness minibus route (not 800/803/805) is NOT Sprinter-locked",
+  );
+  assert(
+    liveryUnavailableReason("D&E", ordinaryMinibus, caithness) === null,
+    "D&E with no route specified at all is NOT Sprinter-locked (only 800/803/805 specifically trigger it)",
+  );
 }
 
 await runScotlandTerminusChecks();

@@ -502,9 +502,11 @@ without editing every route that uses it.
 **Reserving a stand.** A single stand can be reserved for one route or
 company, the same general mechanic as reserving a plain stop (§4) — own
 the station, pay the flat fee, 2 weeks to apply, 7 days' notice to move
-other routes off it. A fixed real contract's reserved stand comes
-pre-owned instead, skipping that process (Express 500's Buchanan Bus
-Station Stance 46 — §10).
+other routes off it. **A fixed real contract never reserves a stand** —
+each one reserves exactly one plain stop, its own real terminus, pre-owned
+by the contract (§4/§10). Route 77's stand reservations (§10) are the
+real example of this paid mechanic in use, since Route 77 is not itself a
+fixed real contract.
 
 Stands are limited. As more routes use a station, departures must be spread out
 or buses queue for a stand. The stand a service uses is set both on the route
@@ -2024,22 +2026,28 @@ preference. (Corrected from an earlier, wrong size class — the player
 caught their own mistake.)
 
 **Route number and colour.** Fixed at **398**, colour fixed at
-**#002664**, neither changeable. Central Station Forecourt (the combined
+**#002462** (corrected 2026-11-20 to match the real built route — the
+player's own actual save, not this document's prose, is the real source
+of truth for already-built fixed content), neither changeable. Central
+Station Forecourt (the combined
 start/terminus) is shown in that colour and **reserved exclusively for
 398** — the stop reservation mechanic (§4), but pre-owned by the contract
 rather than through the normal paid process.
 
-**Timetable** (real data, confirmed against real PDFs). Real stop codes:
-Central Station Forecourt (6090194), Queen St Station (609088), Glasgow
-Buchanan (6090118). Real running times, consistent all day: Central→Queen
-St 6 min, Queen St→Buchanan 4 min, Buchanan→Central 7 min — a 17 minute
-full loop.
-- Mon–Fri: every 12 min 0800–1800, then every 20 min 1800–2000.
-- Saturday: same pattern, starting at 0900 instead of 0800.
-- Sunday: no official timetable exists. Use the same 6/4/7 minute running
-  times as Saturday, every 20 minutes 1200–1800, except from the first
-  Sunday in June to the last Sunday in September, when it starts at 1000
-  instead of 1200.
+**Timetable** (real data, confirmed against real PDFs, corrected 2026-11-20
+to match the real built route — the player's own actual save is the real
+source of truth for already-built fixed content, not this prose). Real
+stop codes: Central Station Forecourt (6090194), Queen St Station
+(609088), Glasgow Buchanan (6090118). Real running times, consistent all
+day: Central→Queen St 6 min, Queen St→Buchanan 4 min, Buchanan→Central 7
+min — a 17 minute full loop.
+- Mon–Fri: **flat every 12 min, 0800–2000** — the real built route never
+  steps down to 20 min in the evening; it runs the same 12-min frequency
+  the whole service day.
+- Saturday: same flat 12-min pattern, starting at 0900 instead of 0800.
+- Sunday: no official timetable exists. Flat every 20 min, 1200–2000 —
+  the real built route has no summer seasonal variation (an earlier
+  1000-start exception from June to September was never actually built).
 
 Timings are real, so the bus should mostly keep to them without much
 padding needed.
@@ -2124,9 +2132,22 @@ restriction doesn't exist in the editor yet — that flag only applies to
 Princes Street specifically, and can be added to the already-built route
 once the feature exists. It does not block building everything else.
 
-**Route colour and reserved stops.** Colour fixed at **#002b4e**. Airlink's
-start and terminus stops are reserved exclusively for Airlink and shown in
-that colour (§4) — pre-owned by the contract, same as 398.
+**Route colour, reserved stops and advertising.** Colour fixed at
+**#0b2b4c** (corrected 2026-11-20 to match the real built route).
+**Airlink is a confirmed exception to the general "exactly one stop
+per contract" exclusivity-lock rule** (§4/§10) every other fixed real
+contract follows — Airlink locks BOTH of its real ends, Edinburgh
+Airport and the city-centre terminus, both reserved exclusively for
+Airlink and shown in #0b2b4c (corrected 2026-11-20 across two user
+messages: "Airlink 100 lock needs to be locked at the airport" — not
+just the city-centre end the route's own recorded `terminusIndex`
+would otherwise resolve to — then "And the city centre" when asked to
+confirm, settling on both ends locked rather than either alone). Free
+permanent route advertising also covers both ends, same as every other
+fixed real contract (user correction 2026-11-20: "Route advertising
+should still be on both terminus stops... for the current
+contracts") — for Airlink this now matches the lock exactly, since
+both its ends are locked.
 
 **Livery.** Two liveries: the standard Airlink livery (badge + number box,
 no branding mask — no variations, so no variable branding region needed),
@@ -2176,15 +2197,24 @@ Airport livery family, so there's no livery mismatch either way.
   7-day £21.
 - Group fares cover up to **5 passengers**.
 
-**Route number, colour and reserved stands.** Numbered **500** (plain,
-no X — "Express" is a brand name, not the game's express-service prefix,
-same as 398 and Airlink both keeping their real numbers). Colour fixed at
-**#1e6e6f**. Reserves two stands, both pre-owned by the contract the same
-way as 398 and Airlink's stops, except these are bus station **stand**
-reservations (§5) rather than plain stop reservations (§4) — the first
-fixed real contract to reserve one, let alone two: **Buchanan Bus Station
-Stance 46** and **Glasgow Airport Stance 1**, both shown in #1e6e6f and
-locked from other use **immediately**.
+**Route number, colour, reserved stop and advertising.** Numbered **500**
+(plain, no X — "Express" is a brand name, not the game's express-service
+prefix, same as 398 and Airlink both keeping their real numbers). Colour
+fixed at **#97338c** (corrected 2026-11-20 to match the real built
+route). Reserves its own real terminus stop only — Glasgow Airport —
+pre-owned by the contract the same way as 398 and Airlink's stops
+(corrected 2026-11-20: an earlier draft of this section described two
+separate bus-station **stand** reservations, Buchanan Bus Station
+Stance 46 and Glasgow Airport Stance 1; the confirmed rule, built into
+the contracts-menu's accept flow, is **exactly one stop per contract,
+its own real terminus** for the exclusivity lock — §4 — the same as
+every other fixed real contract, not a stand reservation at all), shown
+in #97338c and locked from other use **immediately**. **Free permanent
+route advertising is separate and covers both of the route's real
+ends** (user correction 2026-11-20: "Route advertising should still be
+on both terminus stops... for the current contracts") — Glasgow Airport
+and the Buchanan-area stop at the other end — even though only the
+Glasgow Airport stop is exclusively locked.
 
 **Timetable** (real data, confirmed against the real Greater Glasgow
 service 500 timetables — Monday–Friday, Saturday and Sunday each supplied
@@ -2231,8 +2261,11 @@ Express 500 becomes available.
 - **Livery.** Carries the Glasgow Airport livery family (shared with
   Express 500, above) rather than a livery of its own.
 - **Colour.** Fixed at **#93318e**.
-- **Reserved stands**, pre-owned the same way as Express 500's: **Buchanan
-  Bus Station Stance 45** and **Glasgow Airport Stance 6**.
+- **Reserved stands.** **Buchanan Bus Station Stance 45** and **Glasgow
+  Airport Stance 6** — Route 77 is **not** a fixed real contract (above),
+  so these are not pre-owned the way a fixed contract's single terminus
+  stop is; they'd go through the ordinary paid stand-reservation process
+  (§5) once Route 77 itself is built, same as any other route.
 
 **Timetable** (real data, confirmed against the real Greater Glasgow
 service 77 timetables — Monday–Friday, Saturday and Sunday supplied
@@ -2275,8 +2308,19 @@ cap.
 averaged over 24 hours** — enforced directly on the passenger simulation,
 the same mechanism as 398's demand cap.
 
-**Reserved stops, at no cost to the player:** Stop D at Edinburgh Airport,
-and Stance 48 at Buchanan Bus Station — both shown in AIR livery colours.
+**Reserved stop and advertising, at no cost to the player:** Edinburgh
+Airport is exclusively locked to AIR, shown in AIR livery colours —
+exactly one stop per contract, its own real terminus, same as every
+other fixed real contract except Airlink 100 (corrected 2026-11-20
+across two drafts: the original draft of this section reserved two
+stops, Stop D at Edinburgh Airport and Stance 48 at Buchanan Bus
+Station; the next draft moved to Buchanan Bus Station alone; the
+confirmed rule, user: "AIR should be at the Airport end," is Edinburgh
+Airport). **Free permanent route advertising is separate and covers
+both of the route's real ends** (user correction 2026-11-20: "Route
+advertising should still be on both terminus stops... for the current
+contracts") — Edinburgh Airport and Buchanan Bus Station — even though
+only Edinburgh Airport is exclusively locked.
 
 **Timetable.** Real timetable, to be supplied and built the same way as the
 other three.
@@ -2434,6 +2478,26 @@ the operator is paid a **fixed rate per mile** (not including dead mileage),
 and that rate **scales with isolation**, the same measure used above. Lifeline
 work therefore removes farebox risk, and reward, entirely — pay is guaranteed
 regardless of how busy the route actually is.
+
+**Real rate, settled 2026-11-20.** No two-tier structure, confirmed against
+real GB bus operating-cost data (CPT Cost Monitor, ~£58.76–£60.45/bus-hour
+outside London) and sanity-checked against the real mileage of Skye's own
+actual timetabled routes (57A/57C/55/608, each roughly 70,000–80,000 real
+miles a year) before being confirmed final:
+- **£2.50/mile** — road-connected, ordinary rural (Fort William/Oban-area).
+- **£3.50/mile** — road-connected, very remote despite the road link (Skye).
+
+No separate ferry-isolation premium — confirmed directly: buses essentially
+never cross by ferry at all (the only genuine vehicle crossing anywhere in
+the game is the Corran Ferry, §2), so a general "extra ferry leg" tier made
+no sense as a broad isolation category; the areas that actually need a ferry
+crossing (Mull, Islay, Shetland, etc.) are foot-passenger continuity only,
+not a reason to pay the vehicle more. Both figures are set above real running
+cost (fuel/maintenance/driver wages, ~£3.00/mile from the same real
+bus-hour data) specifically so the margin can cover a representative
+vehicle's own lease payment (checked: an ADL Enviro200 MMC's real in-game
+lease cost, ~£27,700/year, is comfortably covered by the margin on any of
+Skye's real full-timetable routes) — not just break even on running costs.
 
 **Long distance lifeline funding.** Long distance routes to very remote places —
 Skye, Ullapool — can also attract council funding, on the whole route or just

@@ -91,9 +91,14 @@ export function mountVehicleBuyMenu(router: Router): void {
   // Only needed for the real island away-cap (2026-11-19, see
   // repower-booking-panel.ts's own identical comment).
   let fareZones: FareZone[] = [];
+  // The one-way company_upgrades flag (user request 2026-11-20) — once
+  // true, GreenRoad is forced on for every new purchase in the Configure
+  // screen below.
+  let hasAdoptedGreenroad = false;
 
   async function fetchAll(): Promise<void> {
-    [depotGroups, depots, liveries, basketItems, orders, routes, dealers, repaintBookings, repowerBookings, fareZones] = await Promise.all([
+    let companyUpgrades: CompanyUpgrades;
+    [depotGroups, depots, liveries, basketItems, orders, routes, dealers, repaintBookings, repowerBookings, fareZones, companyUpgrades] = await Promise.all([
       window.depotGroups.list(),
       window.depots.list(),
       window.liveries.list(),
@@ -104,7 +109,9 @@ export function mountVehicleBuyMenu(router: Router): void {
       window.repaintBookings.listAll(),
       window.repowerBookings.listAll(),
       window.fareZones.listAll(),
+      window.companyUpgrades.get(),
     ]);
+    hasAdoptedGreenroad = companyUpgrades.hasAdoptedGreenroad;
     const perGroup = await Promise.all(depotGroups.map((g) => window.vehicles.listForDepotGroup(g.id)));
     ownedVehicles = perGroup.flat();
   }
@@ -143,6 +150,7 @@ export function mountVehicleBuyMenu(router: Router): void {
         ownedVehicles,
         routes,
         router,
+        hasAdoptedGreenroad,
         onAddedToBasket: () => {
           configuringVehicle = null;
           activeTab = "basket";

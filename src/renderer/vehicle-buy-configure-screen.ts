@@ -42,6 +42,11 @@ interface ConfigureContext {
   // Lothian Coaches private-hire cap below, which is per-depot-group and
   // per-vehicle-class, unlike Lothian Girraffe's plain company-wide count.
   ownedVehicles?: { liveryId: number | null; depotGroupId: number; modelId: string }[];
+  // The one-way company_upgrades flag (user request 2026-11-20) — once
+  // true, GreenRoad is forced on for every new purchase, no opt-out.
+  // Optional, same "undefined means not checked" convention as
+  // ownedVehicles above, though every real caller today does pass it.
+  hasAdoptedGreenroad?: boolean;
   // Every route in the save (T153, confirmed 2026-11-07) — "buying for
   // a specific route" filters this by the selected depot GROUP (not
   // depot specifically, your own call when asked) to populate its
@@ -137,8 +142,13 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
   // Seatbelts are standard (and free — see the catalogue's own price
   // override) on every coach, not a real choice — pre-checked here so the
   // checkbox below renders ticked from the start, not just once a render
-  // pass forces it.
-  const selectedCheckboxOptionIds = new Set<string>(vehicle.category === "Coaches" ? ["seatbelts"] : []);
+  // pass forces it. GreenRoad joins this same pre-checked set once the
+  // company has adopted it (user request 2026-11-20: "Once this starts
+  // to be installed then all vehicles purchased from that point onwards
+  // have to be fitted with no option to remove it or opt-out when
+  // buying.") — ctx.hasAdoptedGreenroad is the one-way company_upgrades
+  // flag, never un-set once true.
+  const selectedCheckboxOptionIds = new Set<string>([...(vehicle.category === "Coaches" ? ["seatbelts"] : []), ...(ctx.hasAdoptedGreenroad ? ["greenroad"] : [])]);
   const selectedDropdownChoiceIndex: Record<string, number> = {};
   let selectedDepotGroupId: number | null = ctx.depotGroups[0]?.id ?? null;
   let selectedDepotId: number | null = null;
@@ -607,13 +617,18 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
       if (option.selectionType === "checkbox") {
         // Seatbelts are standard on coaches (free there too — see the
         // catalogue's own price override), not a real choice, so the
-        // checkbox is forced on and locked rather than offered.
+        // checkbox is forced on and locked rather than offered. GreenRoad
+        // is the same once the company has adopted it (user request
+        // 2026-11-20) — mandatory on every new purchase, no opt-out.
         const lockedOnForCoach = option.id === "seatbelts" && vehicle.category === "Coaches";
+        const lockedOnForGreenroad = option.id === "greenroad" && ctx.hasAdoptedGreenroad === true;
+        const forcedOn = lockedOnForCoach || lockedOnForGreenroad;
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
-        checkbox.checked = lockedOnForCoach ? true : selectedCheckboxOptionIds.has(option.id);
-        checkbox.disabled = lockedOnForCoach;
+        checkbox.checked = forcedOn ? true : selectedCheckboxOptionIds.has(option.id);
+        checkbox.disabled = forcedOn;
         if (lockedOnForCoach) left.title = "Standard on coaches — can't be unticked.";
+        if (lockedOnForGreenroad) left.title = "Mandatory on every vehicle since GreenRoad was adopted — can't be unticked.";
         checkbox.addEventListener("change", () => {
           if (checkbox.checked) selectedCheckboxOptionIds.add(option.id);
           else selectedCheckboxOptionIds.delete(option.id);
@@ -881,6 +896,7 @@ export function renderConfigureScreen(container: HTMLElement, vehicle: VehicleMo
           false,
           null,
           boughtForRouteId,
+          selectedCheckboxOptionIds.has("greenroad"),
         );
         ctx.onAddedToBasket();
       } finally {

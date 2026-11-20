@@ -165,7 +165,6 @@ export interface VehicleModel {
   chassis?: string;
   category: string; // a broad vehicle class now (Double-deckers, Single-deckers/midibuses, Minibus, Coaches, Specialised) — the old fleet-number-range categories are superseded (UK-EXPANSION.md §14) and no longer make sense once a model can span what used to be several different ranges by power alone
   powerOptions: PowerOption[];
-  topSpeedMph: 50 | 62;
   basePriceGBP: number | null; // null when priced as a donor vehicle (open-top) — prices the model's own base power type
   priceNote?: string;
   lengths: LengthVariant[];
@@ -225,7 +224,7 @@ export const GENERAL_RULES = {
     "Every vehicle has exactly 1 wheelchair space, always additional to the seated/standing figures below — never included within them.",
   axleRule:
     "Twin-axle up to and including 12.9m; tri-axle is required by law over 12.9m. Not a selectable option — derived from the coach's length.",
-  topSpeed: "50mph for buses (single-deck, double-deck, open-top); 62mph for coaches and the EVM Cityline.",
+  topSpeed: "50mph for buses (single-deck, double-deck, open-top); 60mph for coaches and the EVM Cityline/Sprinter minibus.",
   maxSeatingMaxStanding:
     "Where a vehicle publishes a max capacity that isn't max seated + max standing, those are two different configuration modes: max-seating mode fills the remainder with standing to reach max capacity, max-standing mode fills the remainder with seats.",
   batteryUnits: "Battery figures are always kWh (energy capacity), never kW (power).",
@@ -292,6 +291,43 @@ export const GENERAL_OPTIONS: GeneralOption[] = [
     effect: "Driver happiness boost and reduces sickness/turnover, feeding into the existing warning/dismissal system.",
     priceKind: "flat",
     priceGBP: 1_800,
+  },
+  {
+    // GreenRoad (real UK bus-fleet driver-behaviour telematics: an
+    // in-cab traffic-light-style indicator plus accelerometer/GPS
+    // hardware, giving real-time feedback on harsh braking/acceleration/
+    // cornering, backed by a fleet-manager scoring dashboard) — added
+    // 2026-11-20 at the user's own request, by name. No official
+    // per-vehicle fitting price is published anywhere (checked directly
+    // — GreenRoad doesn't disclose pricing, and the only figure in
+    // circulation is an unverified, undated "~80p/day" ROI claim that
+    // doesn't say what it covers). £350 one-off install is the user's
+    // own figure ("I think £350 install + your 10p per day"), replacing
+    // this entry's original £600 placeholder. The recurring 10p/day
+    // (greenroad-billing.mts, billed via the real monthly calendar-month
+    // mechanism this game already uses for every other recurring charge,
+    // since there is no daily tick) is NOT part of this catalogue price
+    // — it only starts once the vehicle is actually bought/collected
+    // with this option selected (greenroadFitted, db.mts), same as the
+    // lease/buy-outright split already works. The effect figures ARE
+    // real and sourced: East Yorkshire Motor Services' own GreenRoad
+    // case study reports a 5% fuel saving and 40% fewer driver-fault
+    // accidents — the cleanest single-source numbers among several
+    // vendor case studies (Yellow Buses 27% accidents/5% fuel, Compass
+    // Travel ~50% accidents, First Bus 20% injuries/8% fuel — picked
+    // EYMS rather than averaging across inconsistent baselines). Same as
+    // every other option's "effect" field in this table: descriptive
+    // only, not live-wired into the simulation yet — the systems it
+    // would actually feed (accidents, driver score/coaching) are Phase 8
+    // and Phase 6 respectively, neither built.
+    id: "greenroad",
+    label: "GreenRoad driver-behaviour system",
+    selectionType: "checkbox",
+    appliesTo: "all",
+    effect:
+      "Driver-behaviour telematics with real-time in-cab feedback, plus a 10p/day recurring charge once fitted. Real sourced effect (East Yorkshire Motor Services' own GreenRoad case study): around 5% lower fuel/energy consumption and 40% fewer driver-fault accidents. Not yet live in the simulation — accidents (Phase 8) and driver score (Phase 6) don't exist yet to feed.",
+    priceKind: "flat",
+    priceGBP: 350,
   },
   {
     id: "larger-fuel-tank",
@@ -390,7 +426,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "diesel", priceDeltaGBP: 0 },
       { powerType: "electric", priceDeltaGBP: 145_000 }, // 380,000 (old ADL Enviro400EV base) - 235,000 (old MMC base)
     ],
-    topSpeedMph: 50,
     basePriceGBP: 235_000,
     lengths: [
       {
@@ -458,7 +493,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     name: "ADL Enviro400 XLB",
     category: "Double-deckers",
     powerOptions: [{ powerType: "diesel", priceDeltaGBP: 0 }],
-    topSpeedMph: 50,
     basePriceGBP: 270_000,
     notes: ["Airlink 100's own vehicle requirement (13m Volvo 9700DD previously) now points at this XLB instead."],
     lengths: [
@@ -494,7 +528,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "electric", priceDeltaGBP: 250_000 }, // 560,000 (old Electroliner base) - 310,000 (old Ultroliner base)
       { powerType: "hydrogen", priceDeltaGBP: 240_000 }, // 550,000 (old Hydroliner base) - 310,000 (old Ultroliner base)
     ],
-    topSpeedMph: 50,
     basePriceGBP: 310_000,
     lengths: [
       {
@@ -579,7 +612,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "electric", priceDeltaGBP: 0 },
       { powerType: "hydrogen", priceDeltaGBP: 0 },
     ],
-    topSpeedMph: 50,
     basePriceGBP: null,
     priceNote: "Priced as its donor vehicle (Wrightbus StreetDeck Ultroliner/Electroliner/Hydroliner, by power type).",
     notes: [
@@ -636,7 +668,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "diesel", priceDeltaGBP: 0 },
       { powerType: "electric", priceDeltaGBP: 125_000 }, // 290,000 (old ADL Enviro200EV base) - 165,000 (old MMC base)
     ],
-    topSpeedMph: 50,
     basePriceGBP: 165_000,
     lengths: [
       { lengthM: 8.9, powerType: "diesel", capacity: { kind: "seatedStanding", seated: 30, standing: 14 }, energyOptions: [{ label: "Standard tank", capacity: 220, unit: "L", rangeMiles: 500 }], heightM: 2.86, widthM: 2.47, weightTonnes: 14.44 },
@@ -718,7 +749,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "hybrid", priceDeltaGBP: 0 },
       { powerType: "electric", priceDeltaGBP: 80_000 }, // 320,000 (old Electric base) - 240,000 (old Hybrid base)
     ],
-    topSpeedMph: 50,
     basePriceGBP: 240_000,
     priceNote: "Electric base price is NCA.",
     notes: ["Only Hybrid and Electric variants exist in Scotland. Plain diesel and the 10.6m length don't exist here and are dropped from the catalogue."],
@@ -759,7 +789,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     name: "MCV Evora",
     category: "Single-deckers / midibuses",
     powerOptions: [{ powerType: "diesel", priceDeltaGBP: 0 }],
-    topSpeedMph: 50,
     basePriceGBP: 155_000,
     notes: [
       "The wheelchair bay converts to extra standing space when unoccupied — a live, per-journey state depending on whether a wheelchair passenger is aboard, not a purchase-time configurator choice (confirmed by the user).",
@@ -802,7 +831,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "electric", priceDeltaGBP: 0 },
       { powerType: "hydrogen", priceDeltaGBP: 70_000 }, // 420,000 (old Hydroliner base) - 350,000 (old Electroliner base)
     ],
-    topSpeedMph: 50,
     basePriceGBP: 350_000,
     notes: ["Route 398 can use any length of Electroliner, or the Hydroliner."],
     lengths: [
@@ -875,7 +903,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
       { powerType: "diesel", priceDeltaGBP: 0 },
       { powerType: "electric", priceDeltaGBP: 50_000 }, // 125,000 (old electric base) - 75,000 (old diesel base)
     ],
-    topSpeedMph: 62,
     basePriceGBP: 75_000,
     notes: [
       "Fixed length 7.4m (7367mm).",
@@ -939,7 +966,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     name: "Volvo 9700",
     category: "Coaches",
     powerOptions: [{ powerType: "diesel", priceDeltaGBP: 0 }],
-    topSpeedMph: 62,
     basePriceGBP: 290_000,
     notes: ["Toilet standard, already included in the capacity figures — no separate seat deduction."],
     lengths: [
@@ -1016,7 +1042,6 @@ export const VEHICLE_MODELS: VehicleModel[] = [
     name: "Volvo 9700DD",
     category: "Coaches",
     powerOptions: [{ powerType: "diesel", priceDeltaGBP: 0 }],
-    topSpeedMph: 62,
     basePriceGBP: 420_000,
     notes: [
       "A separate buying menu entry from the single-deck 9700, not merged — single vs double deck is a fundamental distinction.",
@@ -1044,12 +1069,20 @@ export function findVehicleModel(id: string): VehicleModel | undefined {
 
 // Real max-speed cap for a route's own feasibility check, added
 // 2026-11-19 (live request: "Each vehicle should have a max speed" —
-// refined, 2026-11-19 same day, to "Each vehicle should have its own
-// limit as some are different, we will go through later": `topSpeedMph`
-// (above) is already a genuine per-model field, not a shared category
-// lookup, so a later per-model correction needs no architecture change
-// here — this function already reads each model's own real value).
-//
+// refined the same day to "Each vehicle should have its own limit as
+// some are different, we will go through later," which gave every model
+// its own topSpeedMph field). Dropped again 2026-11-20 (live request:
+// "Lets drop the max speed of individual vehicles and limit all coaches
+// to 60mph keeping buses at 50mph. I can't find real figures for most.")
+// — real per-model figures were never sourced for most of the catalogue,
+// so the per-model field is gone entirely in favour of this plain
+// category-based derivation: Coaches and the Minibus category (the EVM
+// Cityline/Sprinter, confirmed grouped with coaches rather than buses)
+// get 60mph, every other category gets 50mph.
+export function topSpeedMphForModel(model: VehicleModel): 50 | 60 {
+  return model.category === "Coaches" || model.category === "Minibus" ? 60 : 50;
+}
+
 // Journey timing is derived from a route's own real running time
 // (route-timetable.mts's `computeOffsets`, fed by `legTimesSeconds` from
 // the WASM router), shared by whichever vehicle happens to run that
@@ -1082,7 +1115,7 @@ export function minTopSpeedMphForRoute(routeNumber: string, liverySpecificRoute:
   // fake it, but don't crash either" convention used throughout this
   // codebase.
   const pool = eligible.length > 0 ? eligible : VEHICLE_MODELS;
-  return Math.min(...pool.map((v) => v.topSpeedMph));
+  return Math.min(...pool.map(topSpeedMphForModel));
 }
 
 export function vehicleModelsByCategory(): Map<string, VehicleModel[]> {

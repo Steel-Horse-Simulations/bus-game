@@ -99,6 +99,11 @@ import {
   recordGeneratedPrivateHireMonths,
   listGeneratedLeaseBillingMonths,
   recordLeaseBillingMonths,
+  createRouteAdvertisingBooking,
+  listAllRouteAdvertisingBookings,
+  createStopRouteLock,
+  listAllStopRouteLocks,
+  getStopRouteLock,
 } from "./db.mts";
 import { unlinkSync, existsSync, copyFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -2188,6 +2193,38 @@ db.close();
   }
   assert(threwOnBadBooking, "collecting a non-existent booking throws rather than silently doing nothing");
 
+  // --- Electric livery auto-switch on repower (2026-11-20) ---
+  const nelLivery = createLivery(db, "National Express Local", "#495D70", "#64E0F7");
+  const nelElectricLivery = createLivery(db, "National Express Local Electric", "#495D70", "#64E0F7");
+  const nelVehicle = buyVehicle(db, rg.id, rDepot.id, "evm-cityline", 7.4, null, "diesel", 75_000, nelLivery.id);
+  const nelBooking = createRepowerBooking(db, nelVehicle.id, secondEvmDealer.id, "electric", 62_500, 0, 1, 15);
+  const nelCollected = collectRepowerBooking(db, nelBooking.id);
+  assert(nelCollected.liveryId === nelElectricLivery.id, "repowering to electric auto-switches National Express Local to its real electric variant");
+
+  // RepowerPowerType only ever allows "electric" | "hydrogen" — there's no
+  // real way to repower back to diesel at all — so "away from electric"
+  // is exercised via hydrogen here, the only other real target. The
+  // electric-only vehicle lock (liveryVehicleLockReason) would equally
+  // reject this livery on a hydrogen vehicle, so switching back to the
+  // base livery is correct here too, not just for a diesel target.
+  const nelBackBooking = createRepowerBooking(db, nelVehicle.id, secondEvmDealer.id, "hydrogen", 10_000, 0, 1, 15);
+  const nelBackCollected = collectRepowerBooking(db, nelBackBooking.id);
+  assert(nelBackCollected.liveryId === nelLivery.id, "repowering away from electric (to hydrogen) switches it back to the real base livery");
+
+  // A vehicle with no electric-variant pairing (or no livery at all) is
+  // left completely untouched — Stagecoach Electric deliberately has no
+  // entry in ELECTRIC_LIVERY_VARIANT at all (the user's own words: "that's
+  // a special livery only for a few selected buses"), and the earlier
+  // dieselVehicle/secondVehicle in this same test block were bought with
+  // no livery assigned, so their own already-passing assertions above
+  // (power_type/fleet_number/condition) prove this path never throws or
+  // silently invents a livery where there isn't one to switch.
+  const stagecoachElectricLivery = createLivery(db, "Stagecoach Electric", "#ffffff", "#70c050");
+  const scVehicle = buyVehicle(db, rg.id, rDepot.id, "evm-cityline", 7.4, null, "diesel", 75_000, stagecoachElectricLivery.id);
+  const scBooking = createRepowerBooking(db, scVehicle.id, secondEvmDealer.id, "electric", 62_500, 0, 1, 15);
+  const scCollected = collectRepowerBooking(db, scBooking.id);
+  assert(scCollected.liveryId === stagecoachElectricLivery.id, "Stagecoach Electric is deliberately excluded — repowering never switches it to or from anything");
+
   db.close();
 }
 
@@ -2242,6 +2279,49 @@ db.close();
   } else {
     console.log("skip real save v31->v36 migration check: no save at", realSave);
   }
+}
+
+// --- Contract-stop bundling / airport-stop purchase (OPEN-ITEMS.md
+// "Phase 5/9 redesign: stop ownership dropped...") — real round-trips
+// against the fresh, already-migrated-to-SCHEMA_VERSION `db` used
+// throughout this file. See stop-route-locks.verify.mts for the pure
+// terminus-lookup/exclusivity-rule logic; this is just the storage layer.
+{
+  const lockGroup = createDepotGroup(db, "Stop-lock test group", "Test Region");
+  const lockedRoute = createRoute(db, lockGroup.id, "398", [{ kind: "stop", osmId: 441274332, lon: -4.258, lat: 55.8605 }], "inbound", null, null, "#002462", null, null, null);
+  const otherRoute = createRoute(db, lockGroup.id, "999", [{ kind: "stop", osmId: 999999, lon: -4.3, lat: 55.9 }], "inbound", null, null, "#000000", null, null, null);
+
+  assert(getStopRouteLock(db, 441274332) === null, "an unlocked stop reports null before any lock exists");
+  const contractLock = createStopRouteLock(db, 441274332, lockedRoute.id, "contract", "398", null, 10);
+  assert(contractLock.stopOsmId === 441274332 && contractLock.lockedRouteId === lockedRoute.id, "createStopRouteLock returns the real inserted row");
+  const readBackLock = getStopRouteLock(db, 441274332);
+  assert(readBackLock !== null && readBackLock.source === "contract" && readBackLock.contractKey === "398" && readBackLock.purchasePriceGbpPence === null, "a contract lock round-trips with its real contract key and no purchase price");
+
+  const purchasedLock = createStopRouteLock(db, 777777, otherRoute.id, "purchased", null, 1_500_000, 12);
+  assert(purchasedLock.purchasePriceGbpPence === 1_500_000, "a purchased lock round-trips with its real £15,000 price");
+  assert(listAllStopRouteLocks(db).length === 2, "both real locks are listed");
+
+  // The real exclusivity rule, enforced at the schema level (PRIMARY KEY
+  // on stop_osm_id): a second lock on an already-locked stop must throw,
+  // never silently overwrite the first one.
+  let threw = false;
+  try {
+    createStopRouteLock(db, 441274332, otherRoute.id, "purchased", null, 1_500_000, 20);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "locking an already-locked stop a second time throws rather than silently overwriting the original lock");
+
+  // Contract-bundled route advertising — the free, permanent sibling of
+  // an ordinary player-bought booking, reusing route_advertising_bookings'
+  // own real shape (is_contract_bundle) rather than a parallel record.
+  const bundledBooking = createRouteAdvertisingBooking(db, 441274332, lockGroup.id, "specific_route", lockedRoute.id, null, 10, 10, true);
+  assert(bundledBooking.isContractBundle === true, "a contract-bundled booking's own flag round-trips as true");
+  assert(bundledBooking.liveFromGameDay === bundledBooking.bookedGameDay, "a contract-bundled booking is live from the day it's booked — no 14-day delay");
+  const ordinaryBooking = createRouteAdvertisingBooking(db, 777777, lockGroup.id, "specific_route", otherRoute.id, null, 10, 24);
+  assert(ordinaryBooking.isContractBundle === false, "isContractBundle defaults to false for an ordinary call site that doesn't pass it at all");
+  const allBookings = listAllRouteAdvertisingBookings(db);
+  assert(allBookings.some((b) => b.id === bundledBooking.id && b.isContractBundle) && allBookings.some((b) => b.id === ordinaryBooking.id && !b.isContractBundle), "listAllRouteAdvertisingBookings reports the real isContractBundle flag for both rows, not a default");
 }
 
 unlinkSync(path);

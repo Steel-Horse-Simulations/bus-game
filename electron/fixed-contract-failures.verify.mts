@@ -21,6 +21,12 @@ import {
   deactivateFixedContractSuspension,
   listFinanceTransactions,
   getCompanyBalanceGBPPence,
+  createFixedContractAcceptance,
+  getFixedContractAcceptance,
+  listFixedContractAcceptances,
+  ensureRouteMilestone,
+  getRouteMilestone,
+  createDepot,
 } from "./db.mts";
 
 function assert(condition: unknown, message: string): void {
@@ -104,5 +110,29 @@ assert(listAllActiveFixedContractSuspensions(db).length === 1, "the active-suspe
 
 // The row itself is kept, not deleted — real history stays in the save.
 assert(afterDeactivate.length === 2, "a returned (deactivated) batch is kept as real history, not deleted");
+
+// --- Contracts menu: acceptance + route-milestone storage (OPEN-ITEMS.md
+// "Contracts redesign"/"Dounreay contracts") --------------------------
+assert(getFixedContractAcceptance(db, "398") === null, "no acceptance exists yet for a contract never accepted");
+const acceptance398 = createFixedContractAcceptance(db, "398", [route398.id], depotGroup.id, 100, 114, null);
+assert(acceptance398.contractKey === "398" && acceptance398.routeIds[0] === route398.id, "creating an acceptance round-trips its real fields");
+assert(getFixedContractAcceptance(db, "398")?.activationGameDay === 114, "the stored activation day round-trips");
+assert(listFixedContractAcceptances(db).length === 1, "one acceptance listed so far");
+
+// Dounreay/800/803/805 accept with NO real route content yet — empty
+// route_ids, optionally a granted depot id (800/803/805's own free
+// depot).
+const acceptanceDounreay74 = createFixedContractAcceptance(db, "dounreay_74", [], depotGroup.id, 200, 214, null);
+assert(acceptanceDounreay74.routeIds.length === 0, "a Dounreay contract can be accepted with no real route content yet");
+const { depot: endOfRoadDepot } = createDepot(db, depotGroup.id, "800 depot (end of the road)", -4.751181, 58.567887, []);
+const acceptance800 = createFixedContractAcceptance(db, "800", [], depotGroup.id, 300, 314, endOfRoadDepot.id);
+assert(acceptance800.grantedDepotId === endOfRoadDepot.id, "800/803/805's own free-depot grant round-trips its real depot id");
+assert(listFixedContractAcceptances(db).length === 3, "three acceptances listed now");
+
+assert(getRouteMilestone(db, route398.id) === null, "no milestone recorded yet for a route never checked");
+ensureRouteMilestone(db, route398.id, 50);
+assert(getRouteMilestone(db, route398.id) === 50, "the first observed day is recorded");
+ensureRouteMilestone(db, route398.id, 999); // a later call must NOT push the first-seen day forward
+assert(getRouteMilestone(db, route398.id) === 50, "a later ensureRouteMilestone call never overwrites the real first-seen day (INSERT OR IGNORE)");
 
 console.log("\nAll fixed-contract-failures storage checks passed.");

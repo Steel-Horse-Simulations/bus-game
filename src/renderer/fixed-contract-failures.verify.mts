@@ -23,8 +23,10 @@ import {
   totalActiveSuspendedUnits,
   isUnitSuspended,
   evaluateFixedContractDay,
+  isAcceptedFixedContractRoute,
   type ContractSuspension,
   type FixedContractTimetableComponent,
+  type AcceptedFixedContractRouteRef,
 } from "./fixed-contract-failures.mts";
 import { addMonths } from "./game-clock.mts";
 import type { PvrRoute, PvrTimetable } from "./route-statistics.mts";
@@ -225,6 +227,33 @@ assert(totalActiveSuspendedUnits([earlierBatch, laterBatch, saturdayBatch].filte
 
   const resultOnReturnDay = evalDay(sixMonthsLater, 2, []);
   assert(resultOnReturnDay.justExpired.some((s) => s.startGameDay === firstSuspension.startGameDay), "evaluateFixedContractDay itself reports the first batch as justExpired on its own real return day");
+}
+
+// --- The "accepted" gate (added once the Contracts menu made this a real
+// question, OPEN-ITEMS.md "Dounreay contracts") --------------------------
+{
+  const acceptances: AcceptedFixedContractRouteRef[] = [
+    { contractKey: "398", routeIds: [101] },
+    { contractKey: "dounreay_74", routeIds: [] }, // accepted, but no real route exists yet
+  ];
+  assert(isAcceptedFixedContractRoute(101, acceptances) === true, "a route id that IS the real accepted 398 route is accepted");
+  assert(isAcceptedFixedContractRoute(102, acceptances) === false, "a different route id is never accepted just because another route shares the contract key");
+
+  // The exact scenario the task brief itself calls out: an ORDINARY route
+  // a player happened to number "74" must NOT be treated as the Dounreay
+  // 74 contract — fixedContractKeyForRoute only even recognises 398/
+  // Airlink 100/Express 500/SkyLink by number (Dounreay's 74 isn't in that
+  // map at all, confirmed deliberately — number-matching alone was never
+  // enough), and even for a route id that happens to equal a real accepted
+  // route's id, isAcceptedFixedContractRoute is checked by ROUTE ID, not
+  // by number, so there's no path by which an ordinary player route
+  // numbered "74" could ever be matched here: its own route id would have
+  // to literally be the one real Dounreay-74 route's id, which only
+  // happens once that specific contract has genuinely been accepted and
+  // seeded.
+  assert(fixedContractKeyForRoute("74") === null, "fixedContractKeyForRoute never recognises Dounreay's own numbers at all — by design, see this file's own header");
+  const anOrdinaryRouteNumbered74Id = 9999; // not in any acceptance's routeIds
+  assert(isAcceptedFixedContractRoute(anOrdinaryRouteNumbered74Id, acceptances) === false, "an ordinary route merely NUMBERED 74 is never treated as the Dounreay 74 contract");
 }
 
 console.log("\nAll fixed-contract-failures checks passed.");

@@ -15,8 +15,16 @@
 import { createDropdown } from "./dropdown";
 import { gameClockState } from "./game-clock-engine";
 import { gameDateTimeFromSeconds, SECONDS_PER_DAY } from "./game-clock.mts";
-import { findVehicleModel } from "./vehicle-catalogue.mts";
+import { findVehicleModel, GENERAL_OPTIONS } from "./vehicle-catalogue.mts";
 import { chargeableMonthKeys, leaseMonthsElapsed, leaseMonthsRemaining, leaseMoneyRemainingGBP, shouldFlipLeaseToOwnToOutright } from "./vehicle-lease-billing.mts";
+import { chargeableMonthKeys as greenroadChargeableMonthKeys, greenroadMonthChargeGBPPence } from "./greenroad-billing.mts";
+import { scheduleGreenroadRetrofit, type ScheduledGreenroadVisit } from "./greenroad-retrofit-scheduling.mts";
+
+// GreenRoad retrofit's own £350 fee (user request 2026-11-20: "Greenroad
+// also needs to be retro-fitable for the same fee") — read directly off
+// the catalogue's own "greenroad" GeneralOption rather than a second,
+// separately-maintained constant, so the two can never drift apart.
+const GREENROAD_OPTION = GENERAL_OPTIONS.find((o) => o.id === "greenroad")!;
 
 export const fleetListPanelState: { open: (() => void) | null; close: (() => void) | null } = {
   open: null,
@@ -103,6 +111,31 @@ async function billLeaseCharges(vehiclesToBill: readonly Vehicle[]): Promise<voi
   }
 }
 
+// Real GreenRoad recurring billing (user request 2026-11-20) — same lazy
+// "re-checked fresh every time this screen opens" trigger as
+// billLeaseCharges above, for every vehicle with greenroadFitted set,
+// regardless of payment method (this charge is separate from the lease/
+// buy-outright cost — it's the ongoing GreenRoad subscription, not part
+// of the vehicle's own price). No term cap, unlike lease billing. The
+// amount isn't flat (see greenroad-billing.mts's own header comment) —
+// greenroadMonthChargeGBPPence already returns pence, so it's passed to
+// finance.record directly, unlike leaseMoneyRemainingGBP's whole-pounds
+// figure above which needs its own x100.
+async function billGreenroadCharges(vehiclesToBill: readonly Vehicle[]): Promise<void> {
+  const nowGameDay = todayDayIndex();
+  for (const vehicle of vehiclesToBill) {
+    if (!vehicle.greenroadFitted) continue;
+    const alreadyBilled = await window.greenroadBilling.listGeneratedMonths(vehicle.id);
+    const monthsToCharge = greenroadChargeableMonthKeys(vehicle.boughtGameDay, nowGameDay, alreadyBilled);
+    if (monthsToCharge.length === 0) continue;
+    for (const monthKey of monthsToCharge) {
+      const chargePence = greenroadMonthChargeGBPPence(monthKey);
+      await window.finance.record(-chargePence, "GreenRoad", vehicle.depotGroupId, `GreenRoad driver-behaviour system — fleet ${vehicle.fleetNumber}, ${monthKey}`, nowGameDay);
+    }
+    await window.greenroadBilling.recordMonthsBilled(vehicle.id, monthsToCharge);
+  }
+}
+
 export function mountFleetListPanel(): void {
   const panel = document.createElement("div");
   panel.className = "panel";
@@ -133,6 +166,23 @@ export function mountFleetListPanel(): void {
   let selectedDepotGroupId: number | null = null;
   let vehicles: Vehicle[] = [];
   let liveries: Livery[] = [];
+  let retrofitBookings: GreenroadRetrofitBooking[] = [];
+
+  // Collects any GreenRoad retrofit booking that's reached its own
+  // ready_game_day — the real scheduled engineer night (14-day lead
+  // time, then queued further out if the depot group's own nightly
+  // capacity is full, greenroad-retrofit-scheduling.mts) — via the same
+  // real lazy "collect when the screen next opens and it's ready"
+  // pattern as repower/repaint bookings elsewhere, rather than a special-
+  // cased instant-fit.
+  async function collectReadyGreenroadRetrofits(): Promise<void> {
+    const nowGameDay = todayDayIndex();
+    const ready = retrofitBookings.filter((b) => b.readyGameDay <= nowGameDay);
+    for (const booking of ready) {
+      await window.greenroadRetrofit.collect(booking.id);
+    }
+    if (ready.length > 0) retrofitBookings = await window.greenroadRetrofit.listAll();
+  }
 
   async function reload(): Promise<void> {
     depotGroups = await window.depotGroups.list();
@@ -140,16 +190,20 @@ export function mountFleetListPanel(): void {
     if (selectedDepotGroupId !== null && !depotGroups.some((g) => g.id === selectedDepotGroupId)) {
       selectedDepotGroupId = depotGroups[0]?.id ?? null;
     }
-    [vehicles, liveries] = await Promise.all([
+    [vehicles, liveries, retrofitBookings] = await Promise.all([
       selectedDepotGroupId === null ? Promise.resolve([]) : window.vehicles.listForDepotGroup(selectedDepotGroupId),
       window.liveries.list(),
+      window.greenroadRetrofit.listAll(),
     ]);
+    await collectReadyGreenroadRetrofits();
     // Bills any real lease charges due for this depot group's own leased
     // vehicles before the table renders, then re-reads vehicles so a
     // lease-to-own vehicle that just flipped to buy_outright (or a fresh
     // "Lease payment" transaction's effect on the figures below) shows up
-    // immediately, not a screen re-open later.
+    // immediately, not a screen re-open later. Also picks up any vehicle
+    // a retrofit just fitted.
     await billLeaseCharges(vehicles);
+    await billGreenroadCharges(vehicles);
     if (selectedDepotGroupId !== null) {
       vehicles = await window.vehicles.listForDepotGroup(selectedDepotGroupId);
     }
@@ -206,7 +260,7 @@ export function mountFleetListPanel(): void {
 
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
-    for (const label of ["Fleet #", "Model", "Length", "Power", "Livery", "Condition", "Age", "Payment", "Lease remaining"]) {
+    for (const label of ["Fleet #", "Model", "Length", "Power", "Livery", "Condition", "Age", "Payment", "Lease remaining", "GreenRoad"]) {
       const th = document.createElement("th");
       th.textContent = label;
       th.style.textAlign = "left";
@@ -240,6 +294,42 @@ export function mountFleetListPanel(): void {
       row.appendChild(cell(vehicleAgeLabel(vehicle.boughtGameDay, today)));
       row.appendChild(cell(paymentMethodLabel(vehicle.paymentMethod)));
       row.appendChild(cell(leaseRemainingLabel(vehicle, today)));
+
+      const greenroadCell = document.createElement("td");
+      greenroadCell.style.padding = "4px 6px";
+      const pendingBooking = retrofitBookings.find((b) => b.vehicleId === vehicle.id);
+      if (vehicle.greenroadFitted) {
+        greenroadCell.textContent = "Fitted";
+      } else if (pendingBooking) {
+        greenroadCell.textContent = `Fitting — ready day ${pendingBooking.readyGameDay}`;
+      } else {
+        const fitButton = document.createElement("button");
+        fitButton.className = "btn";
+        fitButton.textContent = `Fit — £${GREENROAD_OPTION.priceGBP}`;
+        fitButton.addEventListener("click", async () => {
+          fitButton.disabled = true;
+          const bookedGameDay = todayDayIndex();
+          // Real engineer scheduling (user request 2026-11-20: 14-day
+          // lead time, 6 vehicles/night per depot group, dropping by 1
+          // for each extra depot the engineer has to visit that night)
+          // — every OTHER currently-pending booking in this same depot
+          // group counts toward the contention, regardless of which
+          // depot within the group each one is at.
+          const alreadyScheduledInGroup: ScheduledGreenroadVisit[] = retrofitBookings
+            .filter((b) => b.depotGroupId === vehicle.depotGroupId)
+            .map((b) => ({ depotId: b.depotId, night: b.readyGameDay }));
+          const readyGameDay = scheduleGreenroadRetrofit(bookedGameDay, vehicle.depotId, alreadyScheduledInGroup);
+          // Charged at booking time (same convention as the airport-stop
+          // purchase/route-advertising setup fee — stops-layer.ts), not
+          // on collection once the engineer actually arrives.
+          await window.finance.record(-GREENROAD_OPTION.priceGBP! * 100, "GreenRoad", vehicle.depotGroupId, `GreenRoad retrofit booked — fleet ${vehicle.fleetNumber}`, bookedGameDay);
+          await window.greenroadRetrofit.create(vehicle.id, vehicle.depotId, vehicle.depotGroupId, bookedGameDay, readyGameDay);
+          await reload();
+          render();
+        });
+        greenroadCell.appendChild(fitButton);
+      }
+      row.appendChild(greenroadCell);
 
       tbody.appendChild(row);
     }

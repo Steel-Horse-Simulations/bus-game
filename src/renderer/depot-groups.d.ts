@@ -456,6 +456,13 @@ interface RouteAdvertisingBooking {
   operatorName: string | null;
   bookedGameDay: number;
   liveFromGameDay: number;
+  // True only for the one free, permanent booking a Fixed real contract
+  // grants its own real terminus stop on acceptance (OPEN-ITEMS.md
+  // "exactly ONE stop per contract" — see stop-route-locks.mts and
+  // contracts-panel.ts's acceptRealContract) — bypasses the setup fee/
+  // monthly fee/14-day delay entirely. False for every ordinary
+  // player-bought booking.
+  isContractBundle: boolean;
 }
 
 interface RouteAdvertisingApi {
@@ -469,10 +476,43 @@ interface RouteAdvertisingApi {
     operatorName: string | null,
     bookedGameDay: number,
     liveFromGameDay: number,
+    isContractBundle?: boolean,
   ): Promise<RouteAdvertisingBooking>;
   delete(id: number): Promise<void>;
   listGeneratedMonths(bookingId: number): Promise<string[]>;
   recordMonthsBilled(bookingId: number, monthKeys: string[]): Promise<void>;
+}
+
+// Stop route locks (OPEN-ITEMS.md "Phase 5/9 redesign: stop ownership
+// dropped...") — the one shared "a stop is exclusively tied to one
+// route" primitive behind contract-stop bundling (398/Airlink 100/
+// Express 500/AIR's own real terminus stop) and player-initiated
+// airport-stop purchase (flat £15,000 placeholder — stop-route-
+// locks.mts's own AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE). See
+// stop_route_locks' own CREATE TABLE comment in db.mts for the full
+// real design.
+type StopRouteLockSource = "contract" | "purchased";
+
+interface StopRouteLock {
+  stopOsmId: number;
+  lockedRouteId: number;
+  source: StopRouteLockSource;
+  contractKey: string | null;
+  purchasePriceGbpPence: number | null;
+  lockedGameDay: number;
+}
+
+interface StopRouteLocksApi {
+  listAll(): Promise<StopRouteLock[]>;
+  get(stopOsmId: number): Promise<StopRouteLock | null>;
+  create(
+    stopOsmId: number,
+    lockedRouteId: number,
+    source: StopRouteLockSource,
+    contractKey: string | null,
+    purchasePriceGbpPence: number | null,
+    lockedGameDay: number,
+  ): Promise<StopRouteLock>;
 }
 
 // Remote/rural route subsidies (OPEN-ITEMS.md "Contracts redesign",
@@ -510,6 +550,56 @@ interface RemoteRouteSubsidyApi {
     warningStartedGameDay: number | null,
   ): Promise<RemoteRouteSubsidy | null>;
   delete(routeId: number, departureMinutes: number, weekdayMask: number): Promise<void>;
+}
+
+// The real "Contracts" menu (DESIGN.md "Fixed real contracts";
+// OPEN-ITEMS.md "Contracts redesign"/"Dounreay contracts"/"Three further
+// contracts — 800, 803 & 805") — see fixed_contract_fine_events/
+// fixed_contract_suspensions/fixed_contract_acceptances/route_milestones'
+// own CREATE TABLE comments in db.mts, and fixed-contract-failures.mts/
+// fixed-contract-eligibility.mts for the real logic this storage API
+// persists.
+interface FixedContractFineEvent {
+  id: number;
+  routeId: number;
+  gameDay: number;
+  scheduledUnits: number;
+  missedUnits: number;
+  fineGBPPence: number;
+}
+
+interface FixedContractSuspensionRecord {
+  id: number;
+  routeId: number;
+  weekdayMask: number;
+  suspendedUnits: number;
+  totalUnits: number;
+  startGameDay: number;
+  returnGameDay: number;
+  active: boolean;
+}
+
+interface FixedContractAcceptance {
+  contractKey: string;
+  routeIds: number[];
+  depotGroupId: number;
+  acceptedGameDay: number;
+  activationGameDay: number;
+  grantedDepotId: number | null;
+}
+
+interface FixedContractsApi {
+  recordFineEvent(routeId: number, routeNumber: string, depotGroupId: number, gameDay: number, scheduledUnits: number, missedUnits: number, fineGBPPence: number): Promise<FixedContractFineEvent>;
+  listFineEvents(routeId: number): Promise<FixedContractFineEvent[]>;
+  createSuspension(routeId: number, weekdayMask: number, suspendedUnits: number, totalUnits: number, startGameDay: number, returnGameDay: number): Promise<FixedContractSuspensionRecord>;
+  listSuspensions(routeId: number): Promise<FixedContractSuspensionRecord[]>;
+  listAllActiveSuspensions(): Promise<FixedContractSuspensionRecord[]>;
+  deactivateSuspension(id: number): Promise<void>;
+  createAcceptance(contractKey: string, routeIds: number[], depotGroupId: number, acceptedGameDay: number, activationGameDay: number, grantedDepotId: number | null): Promise<FixedContractAcceptance>;
+  getAcceptance(contractKey: string): Promise<FixedContractAcceptance | null>;
+  listAcceptances(): Promise<FixedContractAcceptance[]>;
+  ensureRouteMilestone(routeId: number, todayGameDay: number): Promise<void>;
+  getRouteMilestone(routeId: number): Promise<number | null>;
 }
 
 interface RepaintBooking {
@@ -682,6 +772,9 @@ interface Vehicle {
   // How this vehicle was paid for (T185) — see db.mts's own vehicles
   // table SCHEMA comment for the full reasoning.
   paymentMethod: PaymentMethod;
+  // Whether GreenRoad is fitted (schema v68->v69, user request
+  // 2026-11-20) — see db.mts's own vehicles table SCHEMA comment.
+  greenroadFitted: boolean;
 }
 
 interface VehiclesApi {
@@ -709,6 +802,7 @@ interface BasketItem {
   isUsed: boolean;
   usedCondition: number | null;
   boughtForRouteId: number | null;
+  greenroadFitted: boolean;
 }
 
 interface BasketApi {
@@ -727,6 +821,7 @@ interface BasketApi {
     isUsed: boolean,
     usedCondition: number | null,
     boughtForRouteId?: number | null,
+    greenroadFitted?: boolean,
   ): Promise<BasketItem>;
   list(): Promise<BasketItem[]>;
   setQuantity(basketItemId: number, quantity: number): Promise<void>;
@@ -751,6 +846,7 @@ interface VehicleOrder {
   usedCondition: number | null;
   orderedAt: string;
   boughtForRouteId: number | null;
+  greenroadFitted: boolean;
 }
 
 interface OrdersApi {
@@ -847,6 +943,9 @@ interface CompanyUpgrades {
   hasUpgradableTicketApp: boolean;
   hasMobileAppLiveData: boolean;
   hasUpgradedAvlData: boolean;
+  // One-way, never cleared once true (user request 2026-11-20) — see
+  // db.mts's own company_upgrades table SCHEMA comment.
+  hasAdoptedGreenroad: boolean;
 }
 
 interface CompanyUpgradesApi {
@@ -854,6 +953,30 @@ interface CompanyUpgradesApi {
   setHasUpgradableTicketApp(value: boolean): Promise<void>;
   setHasMobileAppLiveData(value: boolean): Promise<void>;
   setHasUpgradedAvlData(value: boolean): Promise<void>;
+}
+
+// Separate from CompanyUpgradesApi's own setters above — no
+// setHasAdoptedGreenroad(value) exists at all, by design: the only way
+// this ever becomes true is buyVehicle/collectGreenroadRetrofitBooking
+// actually fitting it (db.mts's markGreenroadAdopted), never a direct
+// renderer-side toggle.
+interface GreenroadRetrofitBooking {
+  id: number;
+  vehicleId: number;
+  depotId: number;
+  depotGroupId: number;
+  bookedGameDay: number;
+  readyGameDay: number;
+}
+
+interface GreenroadRetrofitApi {
+  // readyGameDay is computed by the caller (fleet-list-panel.ts, via
+  // greenroad-retrofit-scheduling.mts's own real 14-day-lead-time-plus-
+  // nightly-capacity-per-depot-group math) and passed in here, not
+  // derived on the main-process side.
+  create(vehicleId: number, depotId: number, depotGroupId: number, bookedGameDay: number, readyGameDay: number): Promise<GreenroadRetrofitBooking>;
+  listAll(): Promise<GreenroadRetrofitBooking[]>;
+  collect(id: number): Promise<Vehicle>;
 }
 
 interface FinanceTransaction {
@@ -885,6 +1008,13 @@ interface LeaseBillingApi {
   recordMonthsBilled(vehicleId: number, monthKeys: string[], flipToOutright: boolean): Promise<void>;
 }
 
+// GreenRoad recurring billing (user request 2026-11-20) — plain storage
+// only, see greenroad_billing_months' own SCHEMA comment in db.mts.
+interface GreenroadBillingApi {
+  listGeneratedMonths(vehicleId: number): Promise<string[]>;
+  recordMonthsBilled(vehicleId: number, monthKeys: string[]): Promise<void>;
+}
+
 interface Window {
   deadMileage: DeadMileageApi;
   duties: DutiesApi;
@@ -898,7 +1028,9 @@ interface Window {
   repaintBookings: RepaintBookingsApi;
   stopUpgrades: StopUpgradesApi;
   routeAdvertising: RouteAdvertisingApi;
+  stopRouteLocks: StopRouteLocksApi;
   remoteRouteSubsidy: RemoteRouteSubsidyApi;
+  fixedContracts: FixedContractsApi;
   repowerBookings: RepowerBookingsApi;
   depotGroups: DepotGroupsApi;
   routes: RoutesApi;
@@ -915,4 +1047,6 @@ interface Window {
   finance: FinanceApi;
   privateHireIncome: PrivateHireIncomeApi;
   leaseBilling: LeaseBillingApi;
+  greenroadBilling: GreenroadBillingApi;
+  greenroadRetrofit: GreenroadRetrofitApi;
 }

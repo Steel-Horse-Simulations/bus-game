@@ -18,6 +18,7 @@ import {
   seatedCapacityOf,
   repowerTargetsFor,
   minTopSpeedMphForRoute,
+  topSpeedMphForModel,
 } from "./vehicle-catalogue.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -36,7 +37,15 @@ function assert(cond: boolean, msg: string): void {
 }
 
 {
-  assert(VEHICLE_MODELS.every((v) => v.topSpeedMph === 50 || v.topSpeedMph === 62), "every vehicle's top speed is exactly 50 or 62mph (VEHICLE-SPECS.md §1)");
+  // Per-model topSpeedMph was dropped 2026-11-20 ("Lets drop the max
+  // speed of individual vehicles and limit all coaches to 60mph keeping
+  // buses at 50mph. I can't find real figures for most.") — now a plain
+  // category derivation: Coaches and Minibus (the EVM Cityline/Sprinter,
+  // confirmed kept with coaches) get 60, every other category gets 50.
+  assert(VEHICLE_MODELS.every((v) => topSpeedMphForModel(v) === 50 || topSpeedMphForModel(v) === 60), "every vehicle's derived top speed is exactly 50 or 60mph");
+  assert(VEHICLE_MODELS.filter((v) => v.category === "Coaches").every((v) => topSpeedMphForModel(v) === 60), "every real coach is 60mph");
+  assert(topSpeedMphForModel(findVehicleModel("evm-cityline")!) === 60, "the EVM Cityline/Sprinter minibus stays grouped with coaches at 60mph, confirmed directly");
+  assert(VEHICLE_MODELS.filter((v) => v.category === "Double-deckers" || v.category === "Single-deckers / midibuses").every((v) => topSpeedMphForModel(v) === 50), "every ordinary bus category is 50mph");
 }
 
 {
@@ -282,6 +291,21 @@ function assert(cond: boolean, msg: string): void {
   assert(luggageRacks !== undefined && luggageRacks.priceKind === "flat" && luggageRacks.priceGBP === 1_500, "new luggage racks are a flat £1,500");
 }
 
+{
+  // GreenRoad driver-behaviour system (added 2026-11-20, user's own
+  // request, by name) — a flat, explicitly unsourced placeholder price,
+  // applies to every vehicle (checkbox, "all").
+  const greenroad = GENERAL_OPTIONS.find((o) => o.id === "greenroad")!;
+  assert(greenroad !== undefined, "the GreenRoad driver-behaviour system exists in the catalogue");
+  assert(greenroad.selectionType === "checkbox" && greenroad.appliesTo === "all", "GreenRoad is a checkbox available on every vehicle");
+  const enviro400ForGreenroad = findVehicleModel("adl-enviro400")!;
+  const dieselLengthForGreenroad = lengthsForPower(enviro400ForGreenroad, "diesel")[0];
+  assert(
+    priceForGeneralOption(greenroad, enviro400ForGreenroad, dieselLengthForGreenroad) === 350,
+    `GreenRoad should be a flat £350 install (user's own figure, revised from the original £600 placeholder), got ${priceForGeneralOption(greenroad, enviro400ForGreenroad, dieselLengthForGreenroad)}`,
+  );
+}
+
 // --- length-based pricing (2026-10-18): 0.5% of base price per 10cm over
 // the shortest length under that power, rounded to the nearest £100 with
 // round-half-to-even, plus a dynamic +£15,000 coach-only axle-crossing
@@ -411,15 +435,17 @@ function assert(cond: boolean, msg: string): void {
 }
 
 // --- minTopSpeedMphForRoute (2026-11-19, "Each vehicle should have a
-// max speed", real per-model topSpeedMph) ---
+// max speed"; per-model figures dropped again 2026-11-20 in favour of
+// the plain Coaches/Minibus-vs-everything-else category derivation,
+// topSpeedMphForModel above) ---
 {
   assert(
     minTopSpeedMphForRoute("398", {}) === 50,
     "ScotRail/398's real lock is Single-deckers/midibuses — every real model in that category is 50mph today, so the route's cap is 50",
   );
   assert(
-    minTopSpeedMphForRoute("57", { Citylink: "57" }) === 62,
-    "a route locked to a real coach-only livery (Citylink) gets the Coaches category's cap, 62",
+    minTopSpeedMphForRoute("57", { Citylink: "57" }) === 60,
+    "a route locked to a real coach-only livery (Citylink) gets the Coaches category's cap, 60",
   );
   assert(
     minTopSpeedMphForRoute("12", {}) === 50,
@@ -427,13 +453,11 @@ function assert(cond: boolean, msg: string): void {
   );
   // Real worked check of the actual catalogue data, not just the 3
   // bucket cases above — proves this genuinely reads each model's own
-  // topSpeedMph rather than a hardcoded 50/62 pair, so a future
-  // per-model correction (the user's own stated plan: "we will go
-  // through later") changes this function's real output automatically.
-  const coachSpeeds = VEHICLE_MODELS.filter((v) => v.category === "Coaches").map((v) => v.topSpeedMph);
+  // derived category speed rather than a hardcoded pair.
+  const coachSpeeds = VEHICLE_MODELS.filter((v) => v.category === "Coaches").map(topSpeedMphForModel);
   assert(
     minTopSpeedMphForRoute("57", { Citylink: "57" }) === Math.min(...coachSpeeds),
-    "the Coaches-bucket result is the real minimum across every actual Coaches-category model, not a hardcoded 62",
+    "the Coaches-bucket result is the real minimum across every actual Coaches-category model, not a hardcoded 60",
   );
 }
 

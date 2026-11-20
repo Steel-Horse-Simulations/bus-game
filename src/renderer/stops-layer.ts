@@ -44,6 +44,7 @@ import {
   chargeableRouteAdvertisingMonthKeys,
   longDistanceOperatorsAtStop,
 } from "./route-advertising.mts";
+import { AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE } from "./stop-route-locks.mts";
 
 function todayGameDayForAdvertising(): number {
   return Math.floor(gameClockState.accumulatedGameSeconds / SECONDS_PER_DAY);
@@ -1327,8 +1328,11 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
 
       // Lazy monthly billing for every existing booking here, live ones
       // only (a pending booking inside its own 14-day delay has nothing
-      // to bill yet).
+      // to bill yet). A contract-bundled booking (OPEN-ITEMS.md "exactly
+      // ONE stop per contract") is never billed at all — permanent, free,
+      // a term of the contract, not something the operator pays for.
       for (const booking of bookings) {
+        if (booking.isContractBundle) continue;
         if (!isRouteAdvertisingLive(booking.liveFromGameDay, today)) continue;
         const alreadyBilled = await window.routeAdvertising.listGeneratedMonths(booking.id);
         const due = chargeableRouteAdvertisingMonthKeys(booking.liveFromGameDay, today, alreadyBilled);
@@ -1356,6 +1360,15 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
           const row = document.createElement("div");
           const live = isRouteAdvertisingLive(booking.liveFromGameDay, today);
           const content = booking.mode === "specific_route" ? `Route ${routes.find((r) => r.id === booking.routeId)?.number ?? booking.routeId}` : `${booking.operatorName} (long-distance)`;
+          // Contract-bundled advertising is permanent — a term of the
+          // contract, not the player's own purchase to cancel (same
+          // "pre-owned, no player action" treatment as the contract's
+          // own terminus-stop lock). No cancel button for it at all.
+          if (booking.isContractBundle) {
+            row.textContent = `${content} — live (contract-bundled, free, permanent)`;
+            list.appendChild(row);
+            continue;
+          }
           row.textContent = live ? `${content} — live` : `${content} — live from day ${booking.liveFromGameDay} (today: day ${today})`;
           const cancelButton = document.createElement("button");
           cancelButton.type = "button";
@@ -1464,6 +1477,106 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       const refreshAdvertisingSection = async () => {
         const fresh = await buildRouteAdvertisingSection(osmId);
         section.replaceWith(fresh);
+      };
+
+      return section;
+    };
+
+    // Stop route locks (OPEN-ITEMS.md "Phase 5/9 redesign: stop
+    // ownership dropped..." — contract-stop bundling + airport-stop
+    // purchase, stop-route-locks.mts). Two real states to show:
+    //  - Already locked (either source) — read-only, since a lock is
+    //    permanent (no unlock/refund mechanism exists either way, same
+    //    "pre-owned, not the player's to undo" treatment the contract
+    //    side already gets).
+    //  - Not locked, and genuinely an airport stop (the existing
+    //    "is_airport" manual stop flag, checked just above, in this
+    //    same popup, before building this section) — offers the real
+    //    buy-and-lock-to-own-route flow. Nothing shown at all otherwise
+    //    (an ordinary, non-airport, unlocked stop has nothing relevant
+    //    here) — the caller only appends this section when it returns
+    //    non-null.
+    const buildStopRouteLockSection = async (osmId: number): Promise<HTMLElement | null> => {
+      const [lock, isAirport, routes, depotGroups] = await Promise.all([
+        window.stopRouteLocks.get(osmId),
+        osmId >= 0 ? window.overrides.get<boolean>("stop", osmId, "is_airport") : Promise.resolve(false),
+        window.routes.list(),
+        window.depotGroups.list(),
+      ]);
+
+      if (!lock && !isAirport) return null;
+
+      const section = document.createElement("div");
+      section.style.marginTop = "10px";
+      section.style.paddingTop = "10px";
+      section.style.borderTop = "1px solid var(--border)";
+      const heading = document.createElement("div");
+      heading.className = "label-muted";
+      heading.textContent = "Route lock";
+      section.appendChild(heading);
+
+      if (lock) {
+        const lockedRoute = routes.find((r) => r.id === lock.lockedRouteId);
+        const row = document.createElement("div");
+        row.style.fontSize = "11px";
+        const routeLabel = lockedRoute ? `route ${lockedRoute.number}` : `route #${lock.lockedRouteId}`;
+        row.textContent =
+          lock.source === "contract"
+            ? `Locked to ${routeLabel} — pre-owned by its real fixed contract ("${lock.contractKey}"), not for sale.`
+            : `Locked to ${routeLabel} — bought outright for £${((lock.purchasePriceGbpPence ?? 0) / 100).toLocaleString()}.`;
+        section.appendChild(row);
+        return section;
+      }
+
+      // Not locked yet, but a real airport stop — offer the purchase.
+      const info = document.createElement("div");
+      info.style.fontSize = "11px";
+      info.style.color = "var(--text-muted)";
+      info.textContent = `This is an airport stop — can be bought outright for £${(AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE / 100).toLocaleString()} (flat placeholder price, unsourced) and locked to one of your own routes.`;
+      section.appendChild(info);
+
+      if (routes.length === 0 || depotGroups.length === 0) {
+        const none = document.createElement("div");
+        none.style.fontSize = "11px";
+        none.style.color = "var(--text-muted)";
+        none.textContent = routes.length === 0 ? "No routes exist yet to lock it to." : "No depot groups exist yet to pay for it.";
+        section.appendChild(none);
+        return section;
+      }
+
+      const formRow = document.createElement("div");
+      formRow.style.marginTop = "6px";
+      formRow.style.display = "flex";
+      formRow.style.flexDirection = "column";
+      formRow.style.gap = "4px";
+
+      const routeLabels = routes.map((r) => r.number);
+      let chosenRouteId = routes[0].id;
+      const routeDropdown = createDropdown(routeLabels, routeLabels[0], (label) => {
+        chosenRouteId = routes.find((r) => r.number === label)?.id ?? chosenRouteId;
+      });
+      routeDropdown.el.style.width = "100%";
+      formRow.appendChild(routeDropdown.el);
+
+      const buyButton = document.createElement("button");
+      buyButton.type = "button";
+      buyButton.className = "btn";
+      buyButton.textContent = `Buy for £${(AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE / 100).toLocaleString()} and lock to this route`;
+      buyButton.addEventListener("click", () => {
+        const chosenRoute = routes.find((r) => r.id === chosenRouteId);
+        if (!chosenRoute) return;
+        const today = todayGameDayForAdvertising();
+        void window.stopRouteLocks.create(osmId, chosenRoute.id, "purchased", null, AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE, today).then(() => {
+          void window.finance.record(-AIRPORT_STOP_PURCHASE_PRICE_GBP_PENCE, "Infrastructure", chosenRoute.depotGroupId, `Airport stop purchase — route ${chosenRoute.number}`, today);
+          void refreshStopRouteLockSection();
+        });
+      });
+      formRow.appendChild(buyButton);
+      section.appendChild(formRow);
+
+      const refreshStopRouteLockSection = async () => {
+        const fresh = await buildStopRouteLockSection(osmId);
+        if (fresh) section.replaceWith(fresh);
       };
 
       return section;
@@ -2442,6 +2555,13 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       container.appendChild(pickupDropoffDropdown.el);
       container.appendChild(await buildCallingServicesSection(osmId));
       container.appendChild(await buildRouteAdvertisingSection(osmId));
+
+      // Stop route locks (contract-stop bundling / airport-stop
+      // purchase) — appended only when actually relevant (already
+      // locked, or a real unlocked airport stop); see
+      // buildStopRouteLockSection's own comment.
+      const stopRouteLockSection = await buildStopRouteLockSection(osmId);
+      if (stopRouteLockSection) container.appendChild(stopRouteLockSection);
 
       // Council-triggered stop upgrades (OPEN-ITEMS.md "Phase 5/9
       // redesign...", 2026-11-16) — real OSM stops only (osmId >= 0); a
