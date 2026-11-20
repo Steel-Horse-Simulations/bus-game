@@ -240,6 +240,49 @@ export function effectiveRouteColour<T extends ComposableRoute & { isMinorVariat
   return effectiveRouteColour(parent, allRoutes, new Set(seen).add(route.id));
 }
 
+// A route's whole variation family — every route anywhere in its
+// parentRouteId tree, not just the given route's own immediate parent
+// and that parent's direct children. Two real call sites
+// (route-timetable-panel.ts's family tabs, stops-layer.ts's full-screen
+// grid) used to each hand-roll a ONE-LEVEL-ONLY version of this
+// ("rootId = route.parentRouteId ?? route.id", then every route whose
+// own parentRouteId === rootId) — correct only when the whole family is
+// exactly two levels deep (a root plus its direct variations). Real live
+// bug, 2026-11-20: "why won't minor variations on the 274 show in the
+// 74, which the 274 is a variation of" — 274 is itself a variation of
+// 74 (274.parentRouteId === 74's id), and 274's OWN minor variations
+// have parentRouteId === 274's id, not 74's, so the old filter never
+// reached them. This codebase already models arbitrarily deep nesting
+// elsewhere (effectiveRouteColour above, resolveRoutePoints: "a composed
+// variation's own parent can itself be composed") — this just applies
+// the same recursion to family MEMBERSHIP instead of colour/points.
+// Walks up via parentRouteId to find the true top-level root (defensive
+// against a cycle or a dangling parentRouteId — stops climbing rather
+// than looping forever or throwing), then walks back down the WHOLE tree
+// reachable from that root, at any depth, not just its direct children.
+export function resolveRouteFamily<T extends { id: number; parentRouteId: number | null; number: string }>(route: T, allRoutes: readonly T[]): T[] {
+  let root = route;
+  const seenUp = new Set<number>([route.id]);
+  while (root.parentRouteId !== null) {
+    const parent = allRoutes.find((r) => r.id === root.parentRouteId);
+    if (!parent || seenUp.has(parent.id)) break;
+    root = parent;
+    seenUp.add(parent.id);
+  }
+  const family: T[] = [];
+  const seenDown = new Set<number>();
+  const collect = (r: T): void => {
+    if (seenDown.has(r.id)) return;
+    seenDown.add(r.id);
+    family.push(r);
+    for (const child of allRoutes) {
+      if (child.parentRouteId === r.id) collect(child);
+    }
+  };
+  collect(root);
+  return family.sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+}
+
 // A small set of mutually distinct, high-contrast colours — originally a
 // pure display fallback (route-timetable-panel.ts's family tabs), never
 // written back to a route's own stored colour there. Exported too (T169)

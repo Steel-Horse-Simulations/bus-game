@@ -15,7 +15,7 @@ export type SaveDb = DatabaseSync;
 // hardcoded literal (2026-11-01) — a hardcoded copy in each test went
 // stale on every schema bump this session (3 times), each one only
 // caught by the test failing rather than being naturally correct.
-export const SCHEMA_VERSION = 70;
+export const SCHEMA_VERSION = 71;
 
 const SCHEMA = `
 -- "ticket_machine_tier" and "has_tap_on_tap_off" (TICKETING.md §1/§2,
@@ -1353,6 +1353,26 @@ CREATE TABLE IF NOT EXISTS fixed_contract_suspensions (
   active INTEGER NOT NULL DEFAULT 1
 );
 
+-- Schema v70->v71 (2026-11-20): the real "how far has this route's daily
+-- fine/suspension evaluation already caught up to" cursor for the lazy
+-- catch-up caller that actually invokes fixed-contract-failures.mts's
+-- evaluateFixedContractDay (contracts-panel.ts's own reload(), see that
+-- file for the real wiring) — this mechanic was built in full, including
+-- its own storage (fixed_contract_fine_events/fixed_contract_suspensions
+-- above), but nothing ever called it until now. Neither of those two
+-- tables can answer "which days have already been evaluated at all,"
+-- since fine_events only gets a row on a day that actually produced a
+-- fine (a clean day leaves no trace) — this is the smallest table that
+-- fixes that, one row per route, overwritten (not INSERT OR IGNORE) each
+-- time the cursor advances, deliberately NOT route_milestones (that
+-- table's own "first observed, never changes again" semantic is wrong
+-- for an advancing cursor — see its own INSERT OR IGNORE and this file's
+-- header comment on ensureRouteMilestone).
+CREATE TABLE IF NOT EXISTS fixed_contract_evaluation_cursor (
+  route_id INTEGER PRIMARY KEY REFERENCES routes(id),
+  evaluated_through_game_day INTEGER NOT NULL
+);
+
 -- The real "Contracts" menu (DESIGN.md "Fixed real contracts": "Offered
 -- alongside council, event, lifeline and cruise contracts through a
 -- single contracts menu"; OPEN-ITEMS.md "Contracts redesign"/"Dounreay
@@ -2594,6 +2614,18 @@ export function openSave(path: string): SaveDb {
     if (!retrofitColumns.some((c) => c.name === "depot_group_id")) {
       db.exec("ALTER TABLE greenroad_retrofit_bookings ADD COLUMN depot_group_id INTEGER REFERENCES depot_groups(id)");
     }
+    // Steps to exactly the next version (70), not straight to
+    // SCHEMA_VERSION — same same-session-stacking fix as every other
+    // branch that used to be terminal (this one was terminal when
+    // SCHEMA_VERSION was still 70 itself; now that v70->v71 exists below,
+    // this must stop at 70 or a save sitting at v69 would skip it).
+    db.exec("PRAGMA user_version = 70");
+  } else if (currentVersion === 70) {
+    // v70 -> v71 (2026-11-20, same day): fixed_contract_evaluation_cursor
+    // is a brand-new table, already created unconditionally by the SCHEMA
+    // string above on every openSave() call (same precedent as
+    // route_milestones/stop_route_locks/greenroad_billing_months etc.) —
+    // nothing to ALTER, this branch only advances the version number.
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (currentVersion !== SCHEMA_VERSION) {
     throw new Error(
@@ -6572,6 +6604,25 @@ export function listAllActiveFixedContractSuspensions(db: SaveDb): FixedContract
 // rather than vanishing.
 export function deactivateFixedContractSuspension(db: SaveDb, id: number): void {
   db.prepare("UPDATE fixed_contract_suspensions SET active = 0 WHERE id = ?").run(id);
+}
+
+// --- Fixed-contract daily evaluation cursor (fixed_contract_evaluation_
+// cursor's own SCHEMA comment above) — plain storage only, the real
+// lazy-catch-up loop lives in contracts-panel.ts. null means this route
+// has never been evaluated at all yet.
+export function getFixedContractEvaluationCursor(db: SaveDb, routeId: number): number | null {
+  const row = db.prepare("SELECT evaluated_through_game_day FROM fixed_contract_evaluation_cursor WHERE route_id = ?").get(routeId) as unknown as { evaluated_through_game_day: number } | undefined;
+  return row ? row.evaluated_through_game_day : null;
+}
+
+// Upsert, not INSERT OR IGNORE — the whole point is that this value keeps
+// advancing as more real days get evaluated (see this table's own SCHEMA
+// comment for why it's deliberately NOT the route_milestones pattern).
+export function setFixedContractEvaluationCursor(db: SaveDb, routeId: number, throughGameDay: number): void {
+  db.prepare(
+    `INSERT INTO fixed_contract_evaluation_cursor (route_id, evaluated_through_game_day) VALUES (?, ?)
+     ON CONFLICT(route_id) DO UPDATE SET evaluated_through_game_day = excluded.evaluated_through_game_day`,
+  ).run(routeId, throughGameDay);
 }
 
 // --- Contracts menu: acceptance storage (see fixed_contract_acceptances'

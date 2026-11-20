@@ -549,23 +549,18 @@ const KERB_OFFSET_M: f64 = 4.5;
 // `HighwayClass`'s own numeric index (`rust/pipeline/src/road_graph.rs`
 // — the enum's plain declaration-order discriminant, `self as usize`,
 // which is exactly what `graph_build.rs` stores as this field; LOWER
-// means more major: 0 Motorway ... 14 Track). User request, 2026-11-15,
-// anticipating a real problem before it fully showed up, then refined
-// with a real measured example: "the type of road that Main Road is
-// should be the smallest type of road the zone boundary snaps to" —
-// checked directly against the real road graph at the coordinates the
-// user gave for their own real Main Street (57.285616, -5.714840):
-// class 8, Tertiary. So Tertiary and anything more major (0-8) counts as
-// "a road" for the fare-zone push check; TertiaryLink and everything
-// smaller (9 upward — Unclassified, Residential, LivingStreet, Service,
-// Track) does not. This also directly covers the originally-reported
-// problem (a driveway/access lane — Service, 13 — nudging a boundary
-// point that was otherwise correctly on its own real landuse edge), as a
-// consequence of the same single threshold rather than a separate
-// special case for it.
+// means more major: 0 Motorway ... 14 Track).
+//
+// **No longer used to filter `nearest_road_edge_info` (removed
+// 2026-11-20) — see that function's own doc comment for why.** Kept only
+// as a reference constant in case a future class-based decision needs
+// the same threshold; dead code otherwise, intentionally not removed
+// outright so the Tertiary number (8) and its real-world justification
+// (Main Street, 57.285616, -5.714840) stay on record.
+#[allow(dead_code)]
 const MAX_ROAD_CLASS_FOR_FARE_ZONE_PUSH: u8 = 8; // Tertiary
 
-fn nearest_edge_with_width(router: &Router, p_lon_e7: i32, p_lat_e7: i32, exclude_minor_classes: bool) -> Option<(f64, i32, i32, i32, i32, i32, i32, f32)> {
+fn nearest_edge_with_width(router: &Router, p_lon_e7: i32, p_lat_e7: i32) -> Option<(f64, i32, i32, i32, i32, i32, i32, f32)> {
     let mut best_dist = f64::INFINITY;
     // distance, foot point, segment a, segment b, this edge's real width_m.
     let mut best: Option<(f64, i32, i32, i32, i32, i32, i32, f32)> = None;
@@ -586,9 +581,6 @@ fn nearest_edge_with_width(router: &Router, p_lon_e7: i32, p_lat_e7: i32, exclud
                         continue;
                     }
                     let edge = &router.graph.edges[edge_idx as usize];
-                    if exclude_minor_classes && edge.class > MAX_ROAD_CLASS_FOR_FARE_ZONE_PUSH {
-                        continue;
-                    }
                     let from = &router.graph.nodes[edge.from as usize];
                     let to = &router.graph.nodes[edge.to as usize];
                     let mut prev = (from.lon_e7, from.lat_e7);
@@ -1415,7 +1407,7 @@ impl Router {
         // excluding it here would reintroduce the "won't snap to the
         // correct road" bug that justified this function's own every-
         // class search in the first place).
-        let Some((dist_m, foot_lon_e7, foot_lat_e7, _, _, _, _, _)) = nearest_edge_with_width(self, p_lon_e7, p_lat_e7, false) else {
+        let Some((dist_m, foot_lon_e7, foot_lat_e7, _, _, _, _, _)) = nearest_edge_with_width(self, p_lon_e7, p_lat_e7) else {
             return Vec::new();
         };
 
@@ -1459,20 +1451,41 @@ impl Router {
     /// b_lat, width_m]`, or an empty array if the graph has no edges at
     /// all (never true against real pipeline data).
     ///
-    /// Excludes anything smaller than Tertiary (`MAX_ROAD_CLASS_FOR_
-    /// FARE_ZONE_PUSH`) — user request, 2026-11-15, Main Street itself
-    /// measured as the real example: a residential street, service lane
-    /// or track isn't "a road" in the sense a fare-zone boundary needs to
-    /// clear, and counting one anyway is exactly what nudged a boundary
-    /// point that was otherwise correctly on its own real landuse edge,
-    /// confirmed live during that same session's zone-boundary
-    /// investigation.
+    /// **No longer filters by road class (changed 2026-11-20, see
+    /// MAX_ROAD_CLASS_FOR_FARE_ZONE_PUSH's own comment).** It used to
+    /// exclude anything smaller than Tertiary — a direct 2026-11-15 user
+    /// request, reacting to a real bug where a Service-class driveway
+    /// right next to a boundary point that was correctly sitting on its
+    /// own real landuse edge (nothing to do with a road at all) wrongly
+    /// nudged it. That fix worked for the reported case, but as a side
+    /// effect also silently zeroed out push-out for every ordinary
+    /// Residential street — the single most common real boundary road for
+    /// a city zone (confirmed live, 2026-11-20: a real Glasgow zone drawn
+    /// and road-followed along Auckland Street, a Residential road,
+    /// got *no* push-out at all, while `snap_to_any_road`/
+    /// `find_any_road_route` — the functions that actually did the
+    /// snapping/following while drawing — never excluded it).
+    ///
+    /// The real fix for the original driveway bug isn't a road-class
+    /// ban, it's asking the right question: was this specific boundary
+    /// point actually put here by snapping to/following a road while
+    /// drawing, or did it land here some other way (a landuse-edge snap,
+    /// a coastline snap, a raw click) and merely happen to sit near an
+    /// unrelated road afterwards? `fare-zone-drawing.ts` now tracks that
+    /// provenance directly as each point is added to the draft, and
+    /// `pushOutRoadSnappedPoints` (fare-zone-road-pushout.mts) only ever
+    /// offers a point to this function's result when that flag is true —
+    /// the driveway case is excluded because the point next to it was
+    /// never actually road-snapped, not because its class happens to be
+    /// Service. This function itself just reports the real nearest edge,
+    /// whatever its class, mirroring `snap_to_any_road` exactly, so the
+    /// two are never out of sync about what counts as a road again.
     pub fn nearest_road_edge_info(&self, lon: f64, lat: f64) -> Vec<f64> {
         let to_e7 = |deg: f64| (deg * 1e7).round() as i32;
         let (p_lon_e7, p_lat_e7) = (to_e7(lon), to_e7(lat));
 
         let Some((dist_m, _foot_lon_e7, _foot_lat_e7, a_lon_e7, a_lat_e7, b_lon_e7, b_lat_e7, width_m)) =
-            nearest_edge_with_width(self, p_lon_e7, p_lat_e7, true)
+            nearest_edge_with_width(self, p_lon_e7, p_lat_e7)
         else {
             return Vec::new();
         };
@@ -4177,63 +4190,66 @@ mod tests {
         assert!((result[5] - 5.5).abs() < 1e-6, "expected the near road's own width_m (5.5), proving the near edge (not the far 99m-wide one) was picked, got {}", result[5]);
     }
 
-    /// User request, 2026-11-15, anticipating a real problem: a driveway
-    /// or access lane (`Service` class, 13) right next to the point must
-    /// be ignored entirely for this fare-zone-specific lookup — a real,
-    /// further-away genuine road is found instead, proving this isn't
-    /// just "picks whichever is closer" but a real class exclusion.
+    /// Changed 2026-11-20 (see `nearest_road_edge_info`'s own doc comment):
+    /// this used to exclude a Service-class driveway right next to the
+    /// point, but that road-class ban also silently zeroed out push-out
+    /// for ordinary Residential streets, a live-confirmed real bug. The
+    /// driveway-vs-landuse-edge problem the old exclusion was built for is
+    /// now solved in TypeScript via real road-snap provenance tracking
+    /// instead (`pushOutRoadSnappedPoints` only offers a point here when
+    /// it was genuinely road-snapped while drawing) — this function itself
+    /// must now find a Service-class road exactly like any other, mirroring
+    /// `snap_to_any_road`.
     #[test]
-    fn nearest_road_edge_info_ignores_a_service_road_right_next_to_the_point() {
-        let nodes = vec![
-            graph_node(1, 0, 0),
-            graph_node(2, 0, 1_000_000), // a Service road directly under the query point
-            graph_node(3, 500_000, 0),
-            graph_node(4, 500_000, 1_000_000), // a genuine Residential road, ~5.5km east — well within the grid search's own range, but clearly not the driveway
-        ];
+    fn nearest_road_edge_info_now_finds_a_service_road_right_next_to_the_point() {
+        let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)]; // a Service road directly under the query point
         let driveway = edge(0, 1, 900, 13, 100.0); // Service
-        let real_road = edge(2, 3, 901, 8, 100.0); // Tertiary
-        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![driveway, real_road], restrictions: vec![], geometry_points: vec![] });
+        let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![driveway], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         let result = router.nearest_road_edge_info(0.0, 0.05); // sits exactly on the driveway's own centreline
-        assert!(!result.is_empty(), "expected the farther genuine road to still be found, not an empty result");
-        assert!(result[0] > 1000.0, "expected a real distance of several km to the farther road, proving the driveway right under the point was skipped, got {}", result[0]);
+        assert!(!result.is_empty(), "a Service-class road must now be found, matching snap_to_any_road");
+        assert!(result[0] < 1.0, "expected to find the driveway itself (~0m away), not skip past it to something farther, got dist {}", result[0]);
     }
 
-    /// The mirror case: a `Track` class (14) edge is excluded the same way.
+    /// The mirror case: a `Track` class (14) edge is found too, not excluded.
     #[test]
-    fn nearest_road_edge_info_ignores_a_track_right_next_to_the_point() {
+    fn nearest_road_edge_info_now_finds_a_track_right_next_to_the_point() {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let track = edge(0, 1, 900, 14, 100.0); // Track
         let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![track], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         let result = router.nearest_road_edge_info(0.0, 0.05);
-        assert!(result.is_empty(), "a lone Track-class edge must be excluded entirely, expected an empty result, got {:?}", result);
+        assert!(!result.is_empty(), "a lone Track-class edge must now be found, not excluded");
     }
 
-    /// The real threshold the user specified directly, measured against
-    /// their own real Main Street: Tertiary and anything more major
-    /// counts, Residential (and everything smaller) does not — not just
-    /// Service/Track. A plain ordinary residential street is far more
-    /// common than a driveway, so this is worth its own explicit test,
-    /// not just an inference from the Service/Track cases above.
+    /// The real case that actually prompted this whole rewrite: an
+    /// ordinary Residential street (the single most common real fare-zone
+    /// boundary road in a city) must be found, not silently skipped —
+    /// confirmed directly against a real live save (Glasgow, 2026-11-20)
+    /// where a zone boundary road-followed along Residential streets got
+    /// zero push-out under the old Tertiary-only filter, even though
+    /// `snap_to_any_road`/`find_any_road_route` (the functions that
+    /// actually did the snapping/following while drawing) never excluded
+    /// them in the first place.
     #[test]
-    fn nearest_road_edge_info_ignores_a_residential_road() {
+    fn nearest_road_edge_info_now_finds_a_residential_road() {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let residential = edge(0, 1, 900, 11, 100.0); // Residential
         let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![residential], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
         let result = router.nearest_road_edge_info(0.0, 0.05);
-        assert!(result.is_empty(), "a lone Residential-class edge must be excluded, expected an empty result, got {:?}", result);
+        assert!(!result.is_empty(), "a lone Residential-class edge must now be found, matching snap_to_any_road");
     }
 
-    /// The exact threshold boundary: Tertiary (8) itself must still
-    /// count — this isn't "everything below Secondary," it's specifically
-    /// "Tertiary and more major," matching Main Street's own real class.
+    /// A Tertiary road (Main Street's own real class, the road the
+    /// original filter was tuned around) still has to work too — this
+    /// isn't "every class now behaves differently," it's "every class now
+    /// behaves the SAME," so the previously-passing case must keep passing.
     #[test]
-    fn nearest_road_edge_info_still_includes_a_tertiary_road() {
+    fn nearest_road_edge_info_still_finds_a_tertiary_road() {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let tertiary = edge(0, 1, 900, 8, 100.0); // Tertiary
         let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![tertiary], restrictions: vec![], geometry_points: vec![] });
@@ -4243,19 +4259,21 @@ mod tests {
         assert!(!result.is_empty(), "a Tertiary-class edge (Main Street's own real class) must still be found");
     }
 
-    /// Confirms the exclusion is specific to `nearest_road_edge_info` —
-    /// `snap_to_any_road` must still find a Service road (depot access
-    /// roads are very often exactly this class; see that function's own
-    /// doc comment).
+    /// `nearest_road_edge_info` and `snap_to_any_road` must now agree on
+    /// what counts as "a road" for every class — the real invariant this
+    /// whole rewrite exists to restore, confirmed directly rather than
+    /// inferred from the individual class tests above: both find the
+    /// same Service-class driveway at the same place.
     #[test]
-    fn snap_to_any_road_still_finds_a_service_road() {
+    fn nearest_road_edge_info_and_snap_to_any_road_agree_on_a_service_road() {
         let nodes = vec![graph_node(1, 0, 0), graph_node(2, 0, 1_000_000)];
         let driveway = edge(0, 1, 900, 13, 100.0); // Service
         let bytes = game_data::encode(&RoadGraph { nodes, edges: vec![driveway], restrictions: vec![], geometry_points: vec![] });
         let router = Router::new(&bytes, vec![]);
 
-        let result = router.snap_to_any_road(0.0001, 0.05);
-        assert!(!result.is_empty(), "snap_to_any_road must still snap onto a Service-class road, unlike nearest_road_edge_info");
+        let edge_info = router.nearest_road_edge_info(0.0001, 0.05);
+        let snap = router.snap_to_any_road(0.0001, 0.05);
+        assert!(!edge_info.is_empty() && !snap.is_empty(), "both functions must find the same Service-class road");
     }
 
     /// A real user request against stop groups: "each stop needs to know

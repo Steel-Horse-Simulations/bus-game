@@ -461,12 +461,58 @@ expense.
 
 **Support vehicles** (category digit 9, above) — Ford Transit Custom
 (diesel); Ford E-Transit Custom; Mercedes Sprinter crew van, diesel and
-electric; Skoda Octavia Estate; Vauxhall Corsa; Vauxhall Corsa Electric;
-Skoda Enyaq; heavy recovery unit.
+electric; Vauxhall Corsa (petrol — the diesel Corsa was discontinued
+years ago in reality, corrected 2026-11-20); Vauxhall Corsa Electric;
+heavy recovery unit, diesel and electric. Skoda Octavia Estate/Enyaq
+dropped (2026-11-20, confirmed with the user) — the Corsa/Corsa Electric
+pair already covers the pool-car role with a genuine diesel/electric
+match of the same model, which Octavia/Enyaq never were (Enyaq is
+Škoda's EV-only model, with no diesel equivalent). **Real prices/
+ranges: VEHICLE-SPECS.md §3/§4a/§5.** Car/van prices are trade-discounted
+20% off real UK list (confirmed with the user, 2026-11-20 — a genuine
+fleet-buyer figure, not a nerf); both heavy recovery unit prices are
+user-confirmed (£190,000 diesel, £215,000 electric); the Sprinter crew
+van's own price is derived from those two facts rather than a found
+list price. Only the electric heavy recovery unit's real driving range
+remains an open gap.
+
+The **heavy recovery unit is a Volvo FMX** (diesel) or **Volvo FMX Electric**
+(2026-11-20) — real UK recovery vehicles are commonly built on exactly this
+chassis by specialist bodybuilders (e.g. Falkom, who fitted the UK's first
+Volvo FMX recovery vehicle), confirmed directly rather than assumed. The
+diesel version matches how
+real heavy recovery trucks are actually built; no production electric
+heavy recovery vehicle exists in the real world yet, so the electric
+version is a deliberate, confirmed exception to this project's usual
+"every figure stays realistic" rule, kept for gameplay parity with every
+other support vehicle role having both options.
 
 The **heavy recovery unit needs an HGV licence**, which engineers gain through
 external training. It lets the player recover a bus themselves instead of paying
 the contractor.
+
+**Repower** (2026-11-20, confirmed with the user) — the heavy recovery
+unit, bought diesel, can later go through the same repower conversion
+process already used for buses to become electric. None of the other
+support vehicles can: a Transit Custom, Sprinter or Corsa bought diesel
+stays diesel for good — there's no conversion path, the electric version
+has to be bought outright from new instead.
+
+**Charging a support fleet** (2026-11-20) — the small electric support
+vehicles (E-Transit Custom, Sprinter electric, Corsa Electric) are
+car/van-scale EVs and don't need this game's own heavy bus-charger
+infrastructure (below) at all: a depot can have a **Zappi** charging unit
+installed for them, **£1,200 installed** (a real domestic/commercial
+22kW unit, grounded in myenergi's own retail pricing and typical UK
+installed quotes) — a flat, one-off per-depot purchase, not metered
+against the bus fleet's own grid-connection/charger-sharing rules at all,
+since a 22kW unit's draw is trivial next to a bus charger's. The Volvo
+FMX Electric recovery unit is a different scale of problem entirely — a
+heavy truck's battery is far beyond what a 22kW unit could usefully
+charge — so it plugs into the **same depot charger infrastructure the bus
+fleet uses** (floor/drop-down chargers, grid-connection tiers, and the
+per-charger/depot-wide power-sharing rules, all below), sharing capacity
+with the buses rather than getting its own dedicated charger type.
 
 ### Electric vehicles
 Range varies with weather and hilly routes. Charging blocks the vehicle. A duty

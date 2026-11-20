@@ -538,16 +538,25 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
 }
 
 // --- end-to-end: the TEST zone (id 58)'s own real near-duplicate pair,
-// through the real finalize pipeline (dedupeRing, then a road push-out),
-// confirming the fix actually prevents the divergence mechanism
-// fare-zone-road-pushout.verify.mts's own "duplicate-neighbour input"
-// tests already document: pushOutRoadSnappedPoints pushes every point
-// independently BY ARRAY INDEX, using THAT point's own real ring
-// neighbours — so two near- (not bit-) identical entries, each with its
-// own slightly different neighbours, can get pushed to two genuinely
-// different final positions. That divergence, not any one single
-// previously-fixed bug, is the actual "spike" mechanism behind this
-// whole saga's repeated reports. ---
+// through the real finalize pipeline (dedupeRing, then a road push-out).
+//
+// **Updated 2026-11-20** — the divergence mechanism this test originally
+// documented (pushOutRoadSnappedPoints pushing every point independently
+// BY ARRAY INDEX using its own distinct `prev`/`next` tangent, so two
+// near-identical entries could diverge) only ever applied to the
+// tangent-slide algorithm (`pushPointOffRoad`). That same day's rewrite
+// restricted tangent-sliding to a genuinely ISOLATED road-snapped point
+// (no road-snapped ring neighbour on either side) — every point in a
+// multi-point run (like this one, where every point is road-snapped) now
+// uses the plain, direction-agnostic `pushPointPerpendicular` instead,
+// which depends only on the point's own projection onto the road edge,
+// not on its neighbours at all. That incidentally makes this exact
+// divergence mechanism impossible for a run even WITHOUT dedup — a
+// genuine improvement, not a regression — so this test now confirms
+// that directly instead of asserting the old (now extinct) failure mode.
+// dedupeRing still runs as part of the real pipeline regardless (it
+// guards other cases, e.g. an isolated point's tangent-slide, which is
+// still neighbour-sensitive) and is still confirmed to collapse the pair.
 {
   const testZone58Ring: FareZonePoint[] = [
     { lon: -5.715338485595438, lat: 57.287364564881344 }, // 11
@@ -556,30 +565,27 @@ assert(nearestPointOnCoastline({ lon: 0, lat: 0 }, [], 500) === null, "no coastl
     { lon: -5.7154494524002075, lat: 57.287595237793454 }, // 14
   ];
   // A real-shaped road edge running close to the near-duplicate pair, so
-  // both points qualify for push-out — the exact condition under which
-  // the divergence bites.
+  // both points qualify for push-out.
   const nearestRoadEdge = (lon: number, lat: number) => ({ distM: 0.3, aLon: lon - 0.01, aLat: lat, bLon: lon + 0.01, bLat: lat, widthM: 5.5 });
 
-  // WITHOUT the fix: pushing the raw (non-deduped) ring independently by
-  // index moves points 12 and 13 using two different (prev, next) pairs
-  // — exactly the divergence mechanism.
-  const pushedWithoutDedup = pushOutRoadSnappedPoints([...testZone58Ring], nearestRoadEdge);
+  // Every point here is standing in for a genuinely road-snapped draft
+  // point (DESIGN.md §9, 2026-11-20 rewrite) — all true.
+  const allRoadSnapped = testZone58Ring.map(() => true);
+  const pushedWithoutDedup = pushOutRoadSnappedPoints([...testZone58Ring], allRoadSnapped, nearestRoadEdge);
   const rawGapM = distanceForTest(pushedWithoutDedup[1], pushedWithoutDedup[2]);
+  assert(
+    rawGapM < 0.05,
+    `the perpendicular-for-runs redesign should keep the near-duplicate pair's pushed copies just as close together as they started (~2.3cm), even without dedup — got ${rawGapM}m`,
+  );
 
-  // WITH the fix: dedupeRing collapses the near-duplicate pair first, so
-  // there is only ever ONE point there to push — no divergence possible.
+  // dedupeRing still runs as part of the real Save pipeline regardless,
+  // and still correctly collapses the pair — confirmed directly, not
+  // assumed just because it's no longer load-bearing for THIS specific
+  // divergence.
   const deduped = dedupeRing(testZone58Ring);
   assert(deduped.length === 3, `the real near-duplicate pair collapses before push-out ever sees it, got ${deduped.length}`);
-  const pushedWithDedup = pushOutRoadSnappedPoints(deduped, nearestRoadEdge);
+  const pushedWithDedup = pushOutRoadSnappedPoints(deduped, deduped.map(() => true), nearestRoadEdge);
   assert(pushedWithDedup.length === 3, "push-out doesn't change the point count, only positions");
-
-  // Sanity: confirm the bug this is guarding against is real on the
-  // UN-deduped input (otherwise this test would be proving nothing) —
-  // the raw gap between the pushed copies of 12/13 should be
-  // meaningfully larger than their own ~2.3cm starting gap, since each
-  // was pushed by a different amount/direction using its own distinct
-  // neighbours.
-  assert(rawGapM > 0.05, `sanity: pushing the un-deduped pair independently should visibly diverge them (>5cm), got ${rawGapM}m — if this fails, the test fixture no longer demonstrates the bug`);
 }
 
 console.log("All coastline-clip checks passed.");

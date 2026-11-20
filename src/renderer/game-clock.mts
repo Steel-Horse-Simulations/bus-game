@@ -160,6 +160,17 @@ export function addMonths(gameDay: number, months: number): number {
   return daysFromCivil(nextYear, nextMonth, clampedDay) - GAME_EPOCH_DAYS_SINCE_1970;
 }
 
+// The real weekday BIT (route-timetable.mts's own WEEKDAY_BITS
+// convention: bit 0 = Monday ... bit 6 = Sunday, so `1 << weekday` lines
+// up directly with GameDateTime's own `weekday: 0 = Monday` field with
+// no remapping) for a given whole real game day — added 2026-11-20 for
+// fixed-contract-failures.mts's own daily evaluation (contracts-panel.ts
+// needs to know which of a route's real timetable components, by their
+// own weekdayMask, actually covers "today").
+export function weekdayBitForGameDay(gameDay: number): number {
+  return 1 << gameDateTimeFromSeconds(gameDay * SECONDS_PER_DAY).weekday;
+}
+
 // "Wages are paid every Thursday (weekly)" — weekday 3 (0=Monday).
 export function isWageDay(dt: GameDateTime): boolean {
   return dt.weekday === 3;

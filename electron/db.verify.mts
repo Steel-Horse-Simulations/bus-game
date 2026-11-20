@@ -99,6 +99,8 @@ import {
   recordGeneratedPrivateHireMonths,
   listGeneratedLeaseBillingMonths,
   recordLeaseBillingMonths,
+  getFixedContractEvaluationCursor,
+  setFixedContractEvaluationCursor,
   createRouteAdvertisingBooking,
   listAllRouteAdvertisingBookings,
   createStopRouteLock,
@@ -2084,6 +2086,20 @@ db.close();
     listVehiclesForDepotGroup(db, bg.id).find((v) => v.id === collected.id)?.paymentMethod === "buy_outright",
     "recordLeaseBillingMonths with flipToOutright=true flips the vehicle's own paymentMethod to buy_outright in the same call",
   );
+
+  // --- fixed_contract_evaluation_cursor (2026-11-20) — the real lazy
+  // catch-up cursor for contracts-panel.ts's own fixed-contract failure/
+  // fine/suspension wiring. Deliberately an upsert (never INSERT OR
+  // IGNORE like route_milestones) since this value keeps advancing — see
+  // that table's own SCHEMA comment for the full reasoning. Run against
+  // `restrictionRoute`, a real route already created earlier in this
+  // same test block, so the FK to a real route id holds.
+  assert(getFixedContractEvaluationCursor(db, restrictionRoute.id) === null, "a route never evaluated yet has no cursor at all");
+  setFixedContractEvaluationCursor(db, restrictionRoute.id, 1000);
+  assert(getFixedContractEvaluationCursor(db, restrictionRoute.id) === 1000, "setFixedContractEvaluationCursor/getFixedContractEvaluationCursor round-trip");
+  setFixedContractEvaluationCursor(db, restrictionRoute.id, 1014);
+  assert(getFixedContractEvaluationCursor(db, restrictionRoute.id) === 1014, "a later call genuinely ADVANCES the cursor (upsert), not an INSERT OR IGNORE no-op — the real difference from route_milestones");
+  assert(getFixedContractEvaluationCursor(db, 999_999) === null, "a route with no cursor row at all (a different, unrelated route id) returns null, not 0 or a crash");
 
   // Real bug found and fixed while writing this test (T185): deleteVehicle
   // only ever cleared private_hire_income_months before, never

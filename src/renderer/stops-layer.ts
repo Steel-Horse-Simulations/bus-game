@@ -31,7 +31,7 @@ import {
 } from "./route-timetable-grid.mts";
 import { pickContrastColorForHex } from "./icon-contrast";
 import { buildMergedGridTable } from "./merged-grid-table";
-import { resolveFamilyDisplayColours } from "./route-combine-variations.mts";
+import { resolveFamilyDisplayColours, resolveRouteFamily } from "./route-combine-variations.mts";
 import type { CrowdingTier } from "./stop-crowding.mts";
 import { accelerateCostGBPPence, upgradeTriggered, UPGRADE_THRESHOLDS, UPGRADE_INSTALL_COST_GBP_PENCE, type StopUpgradeType } from "./stop-upgrades.mts";
 import { gameClockState } from "./game-clock-engine";
@@ -940,23 +940,21 @@ export async function drawStops(map: maplibregl.Map, router: Router): Promise<vo
       panel.style.overflow = "hidden";
       overlay.appendChild(panel);
 
-      // A route's variation family, same definition and reasoning as the
-      // side-panel timetable editor's own family tabs
-      // (route-timetable-panel.ts's loadRouteFamily) — the root (this
-      // route if it has no parent, else its parent) plus every route
-      // whose parentRouteId points at that same root. User feedback: the
-      // full-screen grid only ever showed whichever single route you
-      // clicked into, with no way to see a variation's own full grid
-      // without leaving and re-clicking a different stop's own expand
-      // button.
+      // A route's variation family, same shared resolver the side-panel
+      // timetable editor's own family tabs use (route-timetable-panel.ts's
+      // loadRouteFamily, both backed by route-combine-variations.mts's
+      // resolveRouteFamily — fixed 2026-11-20 to recurse through the
+      // WHOLE parentRouteId tree, not just a route's immediate parent and
+      // that parent's direct children, see resolveRouteFamily's own
+      // comment). User feedback: the full-screen grid only ever showed
+      // whichever single route you clicked into, with no way to see a
+      // variation's own full grid without leaving and re-clicking a
+      // different stop's own expand button.
       // A mirroring component (2026-11-15) can reference any route's
       // timetable, not just a family member — built once from the full
       // lists this modal was already given.
       const resolveReference = makeTimetableReferenceResolver(allRoutes, allTimetables);
-      const rootId = route.parentRouteId ?? route.id;
-      const family = allRoutes
-        .filter((r) => r.id === rootId || r.parentRouteId === rootId)
-        .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+      const family = resolveRouteFamily(route, allRoutes);
       // Same collision-aware colours route-timetable-panel.ts's own family
       // tabs use (T164's resolveFamilyDisplayColours) — live bug report,
       // 2026-11-08: "it's only showing 2 colours in the timetable even

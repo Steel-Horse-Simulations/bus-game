@@ -404,10 +404,88 @@ tank size only).
 
 ### Category 9 — support fleet
 
-Unchanged from the existing OPERATIONS.md spec — Ford Transit Custom /
-E-Transit Custom, Mercedes Sprinter crew van (diesel and electric), Skoda
-Octavia Estate, Vauxhall Corsa / Corsa Electric, Skoda Enyaq, heavy recovery
-unit. Not part of this session's work.
+Matches OPERATIONS.md's own spec for the model list and reasoning
+(updated 2026-11-20) — real figures researched and confirmed 2026-11-20.
+No seated/standing capacity for any of these (they don't carry fare
+passengers); "range" below is WLTP combined where the manufacturer
+publishes it, a derived tank-and-consumption estimate where flagged as
+such. Unlike every bus/coach category, none of these have a "longer
+length/bigger battery" configurator — one real spec each.
+
+**Trade-discounted prices (2026-11-20)**: the game's own "feels too
+expensive" read on the researched UK retail list prices below led to a
+flat **20% trade/fleet discount** applied to every car/van in this
+category — a genuine real-world fact (a business buying support
+vehicles pays trade/fleet prices, not private retail list price), not
+an arbitrary nerf. Each entry below gives the real list price researched
+first, then the discounted figure actually used in `4a. Base prices`.
+
+**Ford Transit Custom (diesel)** — 70L tank (UK figure unconfirmed —
+sourced from an Australian-market listing, flagged, not assumed
+identical); **~620 miles range, derived from that tank size and a real
+UK-trim 40.4 MPG combined figure** (not itself a published range). List
+price £32,350 (ex VAT, base trim) → **£26,000 trade-discounted**.
+
+**Ford E-Transit Custom** — 71kWh battery, 232 miles WLTP range (the
+2026-model-year figure — earlier 64/65kWh builds are lower, down to 201
+miles, and still in the real-world fleet, but this is the current
+on-sale spec). List price £45,095 (ex VAT, base trim, corrected
+2026-11-20 from an earlier higher-trim figure) → **£36,000
+trade-discounted**.
+
+**Mercedes Sprinter crew van (diesel)** — 93L tank (the large 5.0t crew
+van spec). Range: not confirmed — no verified consumption figure found
+for this exact variant. **Price derived, not researched (2026-11-20,
+by the user's own explicit method)**: no real new-UK list price exists
+anywhere findable (§5's own open-gap history) — the user asked for it
+to be worked out from the eSprinter's own price and the Ford pair's own
+diesel/electric difference instead. Ford's trade-discounted gap
+(E-Transit Custom £36,000 − Transit Custom £26,000 = **£10,000**)
+applied the same way to the Sprinter pair: eSprinter £41,500 (below) −
+£10,000 = **£31,500**.
+
+**Mercedes eSprinter** — **corrected 2026-11-20 to the actual base
+configuration** (an earlier figure here used the larger, pricier 113kWh
+battery option, not the cheapest one, same error as the E-Transit
+Custom above): 81kWh battery, ~180 mile range. List price £51,950 (ex
+VAT) → **£41,500 trade-discounted**. A 113kWh/271mi version also exists
+at a real premium over this, not used as the catalogue default.
+
+**Vauxhall Corsa (petrol)** — current generation is petrol-only; the
+diesel Corsa was discontinued years ago, corrected here from
+OPERATIONS.md's own unspecified wording. Tank ~44L (a representative
+current-generation petrol figure, not confirmed for every trim). List
+price £19,085 → **£15,250 trade-discounted**.
+
+**Vauxhall Corsa Electric** — 50kWh usable battery (current generation),
+up to 222 miles WLTP range (a Long Range variant claims up to 266 miles
+on a larger pack — not used as the catalogue default here). List price
+£26,895 (the current cheapest "Yes Edition" trim) → **£21,500
+trade-discounted**.
+
+**Volvo FMX (diesel) heavy recovery unit** — real UK heavy recovery
+vehicles are commonly built on exactly this chassis (Falkom, Dave Bland
+Engineering). **Full built price (chassis + recovery body + crane/winch):
+£190,000**, confirmed directly by the user (2026-11-20, revised down
+from an initial £250,000 the same day).
+
+**Volvo FMX Electric heavy recovery unit** — 2 to 6 battery packs, up to
+540kWh total. **Price: £215,000**, confirmed directly by the user
+(2026-11-20) — a £25,000 premium over the diesel version's own £190,000.
+**Range: open gap, §5** (Volvo's own UK spec page says "up to 300km," a
+2026-04 press release says the FH/FM/FMX Electric range was upgraded to
+"up to 470km" via a new driveline — unclear which figure is current for
+FMX specifically, or whether both are real depending on pack count).
+
+**Repower**: the heavy recovery unit, bought diesel, can go through the
+same repower conversion process already used for buses
+(repower-booking.mts) to become electric later. None of the other
+support vehicles (Transit Custom, Sprinter, Corsa) have a repower path —
+bought diesel, they stay diesel for good; the electric version has to be
+bought outright instead (confirmed with the user, 2026-11-20).
+
+Skoda Octavia Estate/Enyaq dropped — the Corsa pair already covers the
+pool-car role as a genuine diesel/electric match of the same model.
 
 ---
 
@@ -504,12 +582,30 @@ premium on top, not yet worked out.
 | ADL Enviro200EV | £290,000 |
 | ADL Enviro400EV | £380,000 |
 | Wrightbus StreetDeck Electroliner | £560,000 |
+| Ford Transit Custom (diesel) | £26,000 (trade-discounted from £32,350 list) |
+| Ford E-Transit Custom | £36,000 (trade-discounted from £45,095 list) |
+| Mercedes Sprinter crew van (diesel) | £31,500 (derived — see §3's own working) |
+| Mercedes eSprinter | £41,500 (trade-discounted from £51,950 list) |
+| Vauxhall Corsa (petrol) | £15,250 (trade-discounted from £19,085 list) |
+| Vauxhall Corsa Electric | £21,500 (trade-discounted from £26,895 list) |
+| Volvo FMX heavy recovery unit (diesel) | £190,000 (confirmed by the user) |
+| Volvo FMX Electric heavy recovery unit | £215,000 (confirmed by the user) |
 
 (Yutong coach and Yutong E10/E12 dropped from this table — both fully
 removed from the catalogue, §4 above.)
 
 ## 5. Open gaps — need real figures, don't estimate
 
-None remaining — every gap from previous versions of this file, including
-the MCV Evora's 10.8m capacity, has now been closed with confirmed real
-figures.
+**Support fleet (category 9), added 2026-11-20** — researched directly,
+not guessed. Both heavy recovery unit prices (£190,000 diesel, £215,000
+electric) are confirmed by the user directly; the Sprinter crew van's
+own price has no real findable new-UK list figure (only used/leasing
+prices, ~£37,500-£49,000 +VAT territory) so it's derived instead, by the
+user's own explicit method, from the eSprinter's price and the Ford
+pair's own diesel/electric gap (§3's own working) — not a guess, but
+worth real confirmation if a genuine list price ever surfaces. One gap
+remains:
+- **Volvo FMX Electric heavy recovery unit — real current driving
+  range.** Volvo's own UK spec page says "up to 300km," a 2026-04 press
+  release says the range was upgraded to "up to 470km" — unclear which
+  applies here, or whether both are real depending on pack count.

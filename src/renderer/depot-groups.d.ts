@@ -600,6 +600,11 @@ interface FixedContractsApi {
   listAcceptances(): Promise<FixedContractAcceptance[]>;
   ensureRouteMilestone(routeId: number, todayGameDay: number): Promise<void>;
   getRouteMilestone(routeId: number): Promise<number | null>;
+  // Daily evaluation cursor (schema v70->v71, 2026-11-20) — see
+  // fixed_contract_evaluation_cursor's own SCHEMA comment in db.mts. Real
+  // caller: contracts-panel.ts's own lazy daily catch-up loop.
+  getEvaluationCursor(routeId: number): Promise<number | null>;
+  setEvaluationCursor(routeId: number, throughGameDay: number): Promise<void>;
 }
 
 interface RepaintBooking {

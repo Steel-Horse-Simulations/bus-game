@@ -794,6 +794,15 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
 
     async function renderList(): Promise<void> {
       const myGeneration = ++renderGeneration;
+      // Live user request, 2026-11-20: "when selecting a stop in the
+      // timetable... can the list not jump to the top please" — every
+      // click that toggles a timing point, sets a pickup/dropoff
+      // override, or edits a timing point's own minutes re-renders this
+      // whole list via `list.innerHTML = ""` below, which silently reset
+      // scroll position to the top every time, even for a stop the player
+      // had scrolled a long way down to reach. Captured before the clear,
+      // restored once the rebuild is done (below).
+      const preservedScrollTop = list.scrollTop;
       hideToggle.textContent = hideNonTimingPoints ? "Show all stops" : "Hide non-timing-point stops";
       list.innerHTML = "";
       const routeOverrideByIndex = new Map(route.pickupDropoffOverrides.map((o) => [o.pointIndex, o.value]));
@@ -1247,6 +1256,7 @@ export async function mountRoutePanel(map: maplibregl.Map, router: Router): Prom
 
         list.appendChild(row);
       }
+      list.scrollTop = preservedScrollTop;
     }
 
     void renderList();

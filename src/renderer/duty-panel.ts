@@ -120,7 +120,33 @@ function canFollow(router: Router, last: Journey, next: Journey, routes: Route[]
   if (next.startClockMinutes < last.endClockMinutes) return null;
   const dr = deadRun(router, last.endPoint, next.startPoint);
   if (!dr) return null;
-  if (last.endClockMinutes + dr.timeS / 60 + MIN_LAYOVER_MINUTES > next.startClockMinutes) return null;
+  // A circular route's own next lap needs no artificial recovery buffer —
+  // live user request, 2026-11-20: "the minimum time in-between services
+  // ... shouldn't count on services that are on a circular route." The
+  // vehicle never actually arrives and stops the way a there-and-back
+  // route's terminus changeover does; it just keeps driving round the
+  // loop, so MIN_LAYOVER_MINUTES's whole reason for existing (slack for a
+  // service running late before the NEXT one sets off) doesn't apply.
+  //
+  // Scoped to a REAL loop, not just "same route, same point" — corrected
+  // immediately after the first pass, live: "It should still have the
+  // same 5 minute gap if it is on the same route and isn't a circular
+  // route." A same-route same-point zero dead-run can also happen for an
+  // ordinary terminus-loop route (terminusIndex/startIndex both set) whose
+  // own loop insert happens to be trivial — a plain same-stand reversal,
+  // not a genuine one-way circuit — and that case still needs the real
+  // buffer. `routeDirectionRanges`'s own documented convention is the
+  // right test: terminusIndex/startIndex BOTH null is what "a route that
+  // runs its own full circuit in one direction and never reverses (a loop
+  // route in the ordinary sense)" actually means here, as opposed to a
+  // there-and-back route's own reversal point. A route this module can't
+  // even resolve (shouldn't happen — every journey's own routeId comes
+  // from the same list) falls back to requiring the buffer, never assumed
+  // circular from missing data.
+  const isCircularRoute = lastRoute !== undefined && lastRoute.terminusIndex === null && lastRoute.startIndex === null;
+  const isCircularContinuation = last.routeId === next.routeId && dr.distanceM === 0 && dr.timeS === 0 && isCircularRoute;
+  const requiredLayoverMinutes = isCircularContinuation ? 0 : MIN_LAYOVER_MINUTES;
+  if (last.endClockMinutes + dr.timeS / 60 + requiredLayoverMinutes > next.startClockMinutes) return null;
   return dr;
 }
 

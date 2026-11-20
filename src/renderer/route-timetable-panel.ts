@@ -42,7 +42,7 @@ import {
   type MergedGridMember,
 } from "./route-timetable-grid.mts";
 import { buildMergedGridTable } from "./merged-grid-table";
-import { resolveFamilyDisplayColours } from "./route-combine-variations.mts";
+import { resolveFamilyDisplayColours, resolveRouteFamily } from "./route-combine-variations.mts";
 import { pickContrastColorForHex } from "./icon-contrast";
 
 function stopLabel(point: RoutePoint): string {
@@ -153,10 +153,7 @@ export interface RouteTimetableEditor {
 // route's own remaining relationships still say.
 async function loadRouteFamily(route: Route): Promise<Route[]> {
   const all = await window.routes.list();
-  const rootId = route.parentRouteId ?? route.id;
-  return all
-    .filter((r) => r.id === rootId || r.parentRouteId === rootId)
-    .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+  return resolveRouteFamily(route, all);
 }
 
 export function createRouteTimetableEditor(
@@ -402,14 +399,42 @@ export function createRouteTimetableEditor(
   mirrorWarning.style.color = STATUS_COLOUR_WARNING;
   mirrorControls.append(mirrorSourceContainer, mirrorOffsetRow, mirrorWarning);
 
+  // The real stop this component's own generated departures will leave
+  // from — point[fromPointIndex] of whichever leg `currentDirection` is
+  // (point[0] for a non-loop route's single "both" component). This is
+  // the terminus a mirror source's own arrival has to match: DESIGN.md
+  // §7's "return journeys" idea only makes physical sense when the
+  // vehicle genuinely turns round at the same stop it just arrived at,
+  // not an unrelated one elsewhere in the game.
+  function editedRouteDepartureTerminusOsmId(): number | null {
+    const segment = currentDirection === "both" ? undefined : routeDirectionRanges(route).find((r) => r.label === currentDirection);
+    const fromPointIndex = segment?.fromPointIndex ?? 0;
+    const point = route.points[fromPointIndex];
+    return point && point.kind === "stop" && point.osmId != null ? point.osmId : null;
+  }
+
   // Flat "route number — day type (direction)" picker across every
   // timetable in the whole game (a mirror can reference any route, not
-  // just a family member's) — rebuilt whenever the game-wide lists are
-  // (re)fetched, since createDropdown has no way to swap its own option
-  // set after construction.
+  // just a family member's — it just has to genuinely terminate at the
+  // same stop this component departs from, see
+  // editedRouteDepartureTerminusOsmId above) — rebuilt whenever the
+  // game-wide lists are (re)fetched, since createDropdown has no way to
+  // swap its own option set after construction.
+  //
+  // Live correction, 2026-11-20: this used to list every timetable in
+  // the whole game with no terminus check at all — "why does the mirror
+  // another services arrival show every route in the game, it should
+  // only show routes that terminate at the same terminus." If the
+  // edited component's own departure point genuinely can't be resolved
+  // (its leg's own start isn't a real stop — shouldn't happen against a
+  // real drawn route, but not impossible), this falls back to the old
+  // unfiltered list rather than showing nothing, the same "can't
+  // determine it, don't silently break the feature" convention used
+  // elsewhere in this file.
   function renderMirrorUI(): void {
     const optionLabels: string[] = [];
     const optionIds: number[] = [];
+    const departureTerminusOsmId = editedRouteDepartureTerminusOsmId();
     for (const t of allTimetablesForMirror) {
       // Excludes this route's own component being edited (can't mirror
       // itself) and any timetable that's ITSELF already mirroring
@@ -418,12 +443,20 @@ export function createRouteTimetableEditor(
       if (t.mirrorSourceTimetableId != null) continue;
       const r = allRoutesForMirror.find((rt) => rt.id === t.routeId);
       if (!r) continue;
+      if (departureTerminusOsmId !== null) {
+        const candidateSegment = t.direction === "both" ? undefined : routeDirectionRanges(r).find((rd) => rd.label === t.direction);
+        const toPointIndex = candidateSegment?.toPointIndex ?? r.points.length - 1;
+        const arrivalPoint = r.points[toPointIndex];
+        const arrivalOsmId = arrivalPoint && arrivalPoint.kind === "stop" && arrivalPoint.osmId != null ? arrivalPoint.osmId : null;
+        if (arrivalOsmId !== departureTerminusOsmId) continue;
+      }
       const directionSuffix = t.direction === "both" ? "" : ` (${t.direction})`;
       optionLabels.push(`${r.number} — ${describeWeekdayMask(t.weekdayMask)}${directionSuffix}`);
       optionIds.push(t.id);
     }
     const selectedIndex = optionIds.indexOf(currentMirrorSourceTimetableId ?? -1);
-    const dropdown = createDropdown(optionLabels.length > 0 ? optionLabels : ["No other timetables exist yet"], selectedIndex >= 0 ? optionLabels[selectedIndex] : optionLabels[0] ?? "", (value) => {
+    const noOptionsLabel = departureTerminusOsmId !== null ? "No other service arrives at this terminus yet" : "No other timetables exist yet";
+    const dropdown = createDropdown(optionLabels.length > 0 ? optionLabels : [noOptionsLabel], selectedIndex >= 0 ? optionLabels[selectedIndex] : optionLabels[0] ?? "", (value) => {
       const i = optionLabels.indexOf(value);
       currentMirrorSourceTimetableId = i >= 0 ? optionIds[i] : null;
       renderGeneratedDepartures();

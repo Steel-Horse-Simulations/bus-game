@@ -128,6 +128,8 @@ import {
   listFixedContractAcceptances,
   ensureRouteMilestone,
   getRouteMilestone,
+  getFixedContractEvaluationCursor,
+  setFixedContractEvaluationCursor,
   recordRouteAdvertisingMonthsBilled,
   type RouteAdvertisingMode,
   createStopRouteLock,
@@ -785,6 +787,8 @@ function registerFixedContractHandlers(): void {
   ipcMain.handle("fixedContracts:listAcceptances", () => listFixedContractAcceptances(save));
   ipcMain.handle("fixedContracts:ensureRouteMilestone", (_e, routeId: number, todayGameDay: number) => ensureRouteMilestone(save, routeId, todayGameDay));
   ipcMain.handle("fixedContracts:getRouteMilestone", (_e, routeId: number) => getRouteMilestone(save, routeId));
+  ipcMain.handle("fixedContracts:getEvaluationCursor", (_e, routeId: number) => getFixedContractEvaluationCursor(save, routeId));
+  ipcMain.handle("fixedContracts:setEvaluationCursor", (_e, routeId: number, throughGameDay: number) => setFixedContractEvaluationCursor(save, routeId, throughGameDay));
 }
 
 function registerRouteAdvertisingHandlers(): void {

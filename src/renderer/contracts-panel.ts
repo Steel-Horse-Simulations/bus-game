@@ -28,7 +28,17 @@
 // route exists) and whichever Dounreay/800/803/805 gates aren't met yet.
 import { createDropdown } from "./dropdown";
 import { BOTTOM_BAR_CLEARANCE_PX } from "./bottom-bar";
-import { SECONDS_PER_DAY, addMonths } from "./game-clock.mts";
+import { SECONDS_PER_DAY, addMonths, weekdayBitForGameDay } from "./game-clock.mts";
+import {
+  type FixedContractKey,
+  type AcceptedFixedContractRouteRef,
+  type FixedContractTimetableComponent,
+  evaluateFixedContractDay,
+  isAcceptedFixedContractRoute,
+  awayCountForRoute,
+  availableVehiclesForRoute,
+} from "./fixed-contract-failures.mts";
+import type { PvrRoute, PvrTimetable } from "./route-statistics.mts";
 import {
   type EligibilityRoute,
   type EligibilityDepot,
@@ -142,6 +152,157 @@ export async function mountContractsPanel(): Promise<void> {
     } else {
       route77FirstSeenGameDay = null;
     }
+
+    // The real fixed-contract failure/fine/suspension mechanic
+    // (fixed-contract-failures.mts) — built in full 2026-11-19 together
+    // with its own storage, but never actually invoked by anything until
+    // now (OPEN-ITEMS.md's own flagged gap, "isAcceptedFixedContract
+    // Route"). Re-reads suspensions afterwards since this call can
+    // create new ones (or expire old ones) that the Promise.all fetch
+    // above already missed.
+    await evaluateFixedContractFailures();
+    activeSuspensions = await window.fixedContracts.listAllActiveSuspensions();
+  }
+
+  // --- Fixed-contract failure/fine/suspension mechanic — the real lazy
+  // daily catch-up caller --------------------------------------------------
+  //
+  // Scoped to the 4 real keys fixed-contract-failures.mts covers — 398,
+  // Airlink 100, Express 500, SkyLink — NEVER "air" (DESIGN.md §10: AIR
+  // is a one-off reward with "genuinely zero fines for anything... a true
+  // exception to the warning-and-review pattern every other contract
+  // follows" — see that module's own header for why AIR and Railair are
+  // both deliberately out of scope). SkyLink has no real route built yet,
+  // so its own acceptance (if one ever exists) naturally has no routeIds
+  // to evaluate — nothing is faked for it.
+  //
+  // Runs once per reload() (this screen's own lazy "re-checked fresh
+  // every time it opens" convention, same as fleet-list-panel.ts's
+  // billLeaseCharges/billGreenroadCharges, vehicle-lease-billing.mts,
+  // greenroad-billing.mts — there is still no real central game-tick
+  // anywhere in this codebase to hang this off instead).
+  const FAILURE_MECHANIC_KEYS: readonly FixedContractKey[] = ["398", "airlink100", "express500", "skylink"];
+
+  async function evaluateFixedContractFailures(): Promise<void> {
+    const failureAcceptances = acceptances.filter((a): a is FixedContractAcceptance & { contractKey: FixedContractKey } =>
+      (FAILURE_MECHANIC_KEYS as readonly string[]).includes(a.contractKey),
+    );
+    if (failureAcceptances.length === 0) return;
+
+    // The real documented gate (fixed-contract-failures.mts's own header:
+    // "evaluateFixedContractDay... must only ever be called for a route
+    // the caller has ALREADY confirmed is the real accepted route for
+    // that contract... identified by ROUTE ID, never by number") — built
+    // from the SAME acceptances this function is already iterating, so
+    // every routeId reached below trivially passes it, but the explicit
+    // check stays in as the real enforcement point this module's own
+    // header says must exist, not an inlined assumption.
+    const acceptedRefs: AcceptedFixedContractRouteRef[] = failureAcceptances.map((a) => ({ contractKey: a.contractKey, routeIds: a.routeIds }));
+
+    const [allVehicles, repaintBookings, repowerBookings] = await Promise.all([window.vehicles.listAll(), window.repaintBookings.listAll(), window.repowerBookings.listAll()]);
+    const awayBookings = [...repaintBookings, ...repowerBookings].map((b) => ({ vehicleId: b.vehicleId, startGameDay: b.startGameDay, completionGameDay: b.completionGameDay }));
+
+    for (const acceptance of failureAcceptances) {
+      for (const routeId of acceptance.routeIds) {
+        if (!isAcceptedFixedContractRoute(routeId, acceptedRefs)) continue;
+        const route = routes.find((r) => r.id === routeId);
+        if (!route) continue; // a route id recorded on acceptance but since deleted — nothing real left to evaluate
+        await evaluateOneRouteFailures(route, acceptance, allVehicles, awayBookings);
+      }
+    }
+  }
+
+  async function evaluateOneRouteFailures(
+    route: Route,
+    acceptance: FixedContractAcceptance,
+    allVehicles: readonly Vehicle[],
+    awayBookings: readonly { vehicleId: number; startGameDay: number; completionGameDay: number }[],
+  ): Promise<void> {
+    const timetables = await window.routeTimetables.listForRoute(route.id);
+    if (timetables.length === 0) return; // no real timetable at all yet — nothing scheduled, nothing to evaluate
+
+    const pvrRoute: PvrRoute & { id: number } = { id: route.id, points: route.points, terminusIndex: route.terminusIndex, startIndex: route.startIndex };
+    const pvrTimetables: PvrTimetable[] = timetables.map((t) => ({ weekdayMask: t.weekdayMask, direction: t.direction, timeBands: t.timeBands, departureOffsetsSeconds: t.departureOffsetsSeconds }));
+    const timetableComponents: FixedContractTimetableComponent[] = timetables.map((t) => ({
+      weekdayMask: t.weekdayMask,
+      direction: t.direction,
+      timeBands: t.timeBands,
+      excludedDepartureMinutes: t.excludedDepartureMinutes,
+      customDepartureMinutes: t.customDepartureMinutes,
+    }));
+
+    // "Vehicles locked to a contract" (this file's own header, reusing
+    // boughtForRouteId as the one real per-route vehicle-assignment
+    // signal that exists — see fixed-contract-failures.mts's own comment
+    // on awayCountForRoute for the full reasoning).
+    const dedicatedVehicleIds = allVehicles.filter((v) => v.boughtForRouteId === route.id).map((v) => v.id);
+
+    const [cursor, fineEvents, suspensionRecords] = await Promise.all([
+      window.fixedContracts.getEvaluationCursor(route.id),
+      window.fixedContracts.listFineEvents(route.id),
+      window.fixedContracts.listSuspensions(route.id),
+    ]);
+
+    // Never evaluate before the contract was actually live — a day
+    // before activationGameDay isn't a real obligation yet
+    // (computeActivationGameDay, fixed-contract-eligibility.mts: "starts
+    // on the first Monday after a minimum of 10 days have passed").
+    const startGameDay = cursor !== null ? cursor + 1 : acceptance.activationGameDay;
+    if (startGameDay > todayGameDay) return; // already fully caught up, or the contract hasn't gone live yet
+
+    // In-memory running state, seeded from real DB history and updated as
+    // this loop walks forward — a day evaluated later in THIS SAME loop
+    // must see fine-days/suspensions created earlier in this same
+    // catch-up run, not just what was already on disk before it started.
+    const fineDayGameDays = fineEvents.map((e) => e.gameDay);
+    const suspensions: FixedContractSuspensionRecord[] = [...suspensionRecords];
+
+    for (let day = startGameDay; day <= todayGameDay; day++) {
+      const dayBit = weekdayBitForGameDay(day);
+      const coveringComponent = timetables.find((t) => (t.weekdayMask & dayBit) !== 0);
+      if (!coveringComponent) continue; // no real component covers this weekday at all (e.g. no Sunday service) — nothing scheduled, nothing to miss
+      const weekdayMask = coveringComponent.weekdayMask;
+
+      const awayCount = awayCountForRoute(dedicatedVehicleIds, awayBookings, day);
+      const availableVehicles = availableVehiclesForRoute(dedicatedVehicleIds.length, awayCount);
+      const recentFineDayGameDays = fineDayGameDays.filter((d) => d < day);
+
+      const result = evaluateFixedContractDay({
+        route: pvrRoute,
+        pvrTimetables,
+        timetableComponents,
+        weekdayMask,
+        todayGameDay: day,
+        availableVehicles,
+        recentFineDayGameDays,
+        existingSuspensions: suspensions,
+      });
+
+      if (result.missedUnits > 0) {
+        await window.fixedContracts.recordFineEvent(route.id, route.number, acceptance.depotGroupId, day, result.scheduledUnits, result.missedUnits, result.fineGBPPence);
+        fineDayGameDays.push(day);
+      }
+      if (result.newSuspension) {
+        const created = await window.fixedContracts.createSuspension(
+          result.newSuspension.routeId,
+          result.newSuspension.weekdayMask,
+          result.newSuspension.suspendedUnits,
+          result.newSuspension.totalUnits,
+          result.newSuspension.startGameDay,
+          result.newSuspension.returnGameDay,
+        );
+        suspensions.push(created);
+      }
+      for (const expired of result.justExpired) {
+        const real = suspensions.find((s) => s.routeId === expired.routeId && s.weekdayMask === expired.weekdayMask && s.startGameDay === expired.startGameDay && s.active);
+        if (real) {
+          await window.fixedContracts.deactivateSuspension(real.id);
+          real.active = false;
+        }
+      }
+    }
+
+    await window.fixedContracts.setEvaluationCursor(route.id, todayGameDay);
   }
 
   function eligRoutes(): EligibilityRoute[] {

@@ -456,6 +456,8 @@ contextBridge.exposeInMainWorld("fixedContracts", {
   listAcceptances: () => ipcRenderer.invoke("fixedContracts:listAcceptances") as Promise<FixedContractAcceptance[]>,
   ensureRouteMilestone: (routeId: number, todayGameDay: number) => ipcRenderer.invoke("fixedContracts:ensureRouteMilestone", routeId, todayGameDay) as Promise<void>,
   getRouteMilestone: (routeId: number) => ipcRenderer.invoke("fixedContracts:getRouteMilestone", routeId) as Promise<number | null>,
+  getEvaluationCursor: (routeId: number) => ipcRenderer.invoke("fixedContracts:getEvaluationCursor", routeId) as Promise<number | null>,
+  setEvaluationCursor: (routeId: number, throughGameDay: number) => ipcRenderer.invoke("fixedContracts:setEvaluationCursor", routeId, throughGameDay) as Promise<void>,
 });
 
 // Re-power bookings (T179, OPEN-ITEMS.md) — same capacity/scheduling

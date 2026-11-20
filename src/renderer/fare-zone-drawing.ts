@@ -32,7 +32,7 @@ import type { GeoJSON } from "geojson";
 import { decode_coastline, type Router } from "./wasm/game_wasm.js";
 import { createDropdown } from "./dropdown";
 import { createColourPicker } from "./colour-picker";
-import { clipRingToCoastline, dedupeRing, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, type CoastlineSnap } from "./coastline-clip.mts";
+import { clipRingToCoastline, nearestPointOnCoastline, coastlineFollowBetween, sameRealPoint, type CoastlineSnap } from "./coastline-clip.mts";
 import { computeZoneLetters } from "./fare-journey.mts";
 import { unionAreaPolygons, nearestPointOnAreaBoundary, areaClusterFollowBetween } from "./area-cluster.mts";
 import { pushOutRoadSnappedPoints } from "./fare-zone-road-pushout.mts";
@@ -554,6 +554,34 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   let allZones: FareZone[] = [];
   let errorMessage = "";
   let draftPoints: FareZonePoint[] = [];
+  // Parallel to `draftPoints` (always the same length, same indices) —
+  // true for exactly the points that were genuinely produced by snapping
+  // to or following a real road while drawing (2026-11-20 rewrite, see
+  // fare-zone-road-pushout.mts's own header comment for the full story:
+  // this replaces deciding push-out eligibility from road class on the
+  // Rust side, which broke plain Residential-street tracing). Set at the
+  // one place each point is actually pushed (`pushDraftPoints` below);
+  // every other array mutation (erase, undo, discard/cancel) keeps this
+  // in lockstep with `draftPoints` itself.
+  let draftPointRoadSnapped: boolean[] = [];
+  // Parallel to `draftPoints` and `draftPointRoadSnapped`, independently —
+  // true for exactly the points that won via coastline-snapping (2026-11-21,
+  // live user priority fix: "the zone stays in the middle" at Kyle of
+  // Lochalsh, Main Street, which runs right along the real shore). Being
+  // coastline-snapped and being genuinely on a real road are two
+  // independent facts about the same point, not mutually exclusive — the
+  // click-handling priority (coastline wins over road-snapping, so a
+  // shore-hugging road's own points are tagged coastline-snapped, never
+  // road-snapped) is a real, deliberate rule for TRACING the shore
+  // correctly, but it isn't evidence the point ISN'T also sitting on a
+  // real road that still needs its own kerb+margin push-out. Tracked
+  // separately (not folded into `draftPointRoadSnapped`, which keeps
+  // meaning "the click handler's own winning snap was specifically
+  // road") so the Save-time push-out gate below can check real road
+  // proximity independently for a coastline-snapped point and let it
+  // stack with the coastline behaviour, rather than being blocked by it
+  // — see that gate's own comment.
+  let draftPointCoastlineSnapped: boolean[] = [];
   // Defensive backstop (2026-11-15, widened 2026-11-19) against
   // near-duplicate points reaching `draftPoints` at all, from ANY
   // source — a real live bug (confirmed via a human-driven click trace
@@ -579,12 +607,46 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
   // track `draftClickPointCounts` record the real count, not the
   // pre-dedup one (an all-duplicate click would otherwise still log a
   // nonzero undo entry for a click that visibly added nothing new).
-  function pushDraftPoints(...points: readonly FareZonePoint[]): number {
+  // Same adjacent-duplicate-removal shape as coastline-clip.mts's own
+  // `dedupeRing` (including its wrap-around pop against the first point),
+  // but zipped against a parallel flags array so `draftPointRoadSnapped`
+  // stays correctly aligned with `draftPoints` through the same whole-ring
+  // dedup pass at Save time (see that pass's own comment, below, for why
+  // it exists independently of pushDraftPoints' own per-insertion dedup).
+  // Kept local rather than changing dedupeRing itself, which has no
+  // reason to know about road-snap provenance.
+  function dedupeRingWithFlags(
+    points: readonly FareZonePoint[],
+    roadFlags: readonly boolean[],
+    coastlineFlags: readonly boolean[],
+  ): { points: FareZonePoint[]; roadFlags: boolean[]; coastlineFlags: boolean[] } {
+    if (points.length === 0) return { points: [], roadFlags: [], coastlineFlags: [] };
+    const resultPoints: FareZonePoint[] = [points[0]];
+    const resultRoadFlags: boolean[] = [roadFlags[0]];
+    const resultCoastlineFlags: boolean[] = [coastlineFlags[0]];
+    for (let i = 1; i < points.length; i++) {
+      if (!sameRealPoint(resultPoints[resultPoints.length - 1], points[i])) {
+        resultPoints.push(points[i]);
+        resultRoadFlags.push(roadFlags[i]);
+        resultCoastlineFlags.push(coastlineFlags[i]);
+      }
+    }
+    while (resultPoints.length > 1 && sameRealPoint(resultPoints[0], resultPoints[resultPoints.length - 1])) {
+      resultPoints.pop();
+      resultRoadFlags.pop();
+      resultCoastlineFlags.pop();
+    }
+    return { points: resultPoints, roadFlags: resultRoadFlags, coastlineFlags: resultCoastlineFlags };
+  }
+
+  function pushDraftPoints(isRoadSnapped: boolean, isCoastlineSnapped: boolean, ...points: readonly FareZonePoint[]): number {
     let added = 0;
     for (const point of points) {
       const last = draftPoints[draftPoints.length - 1];
       if (last && sameRealPoint(last, point)) continue;
       draftPoints.push(point);
+      draftPointRoadSnapped.push(isRoadSnapped);
+      draftPointCoastlineSnapped.push(isCoastlineSnapped);
       added++;
     }
     return added;
@@ -695,6 +757,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     const before = draftPoints.length;
     const keep = draftPoints.map((p) => map.project([p.lon, p.lat]).dist(screenPoint) > ERASE_BRUSH_RADIUS_PX);
     draftPoints = draftPoints.filter((_, i) => keep[i]);
+    draftPointRoadSnapped = draftPointRoadSnapped.filter((_, i) => keep[i]);
+    draftPointCoastlineSnapped = draftPointCoastlineSnapped.filter((_, i) => keep[i]);
     if (draftPoints.length === before) return;
     draftClickPointCounts.length = 0;
     for (let i = 0; i < draftPoints.length; i++) draftClickPointCounts.push(1);
@@ -1039,21 +1103,40 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           // neighbour input" tests). Run on the whole ring, including its
           // wrap-around closing edge (last point back to first), since a
           // near-duplicate there is exactly as real as one anywhere else.
-          const dedupedPoints = dedupeRing(draftPoints);
-          // DESIGN.md §9: every point that's actually at the side of a
-          // road (a real-distance decision made entirely inside
-          // pushOutRoadSnappedPoints, not by any remembered snap history)
-          // gets pushed off the road, away from the zone's own real (now
-          // fully known) centroid — unconditionally, even on a road
-          // shared with another zone — sliding along the ring's own
-          // local line direction wherever possible rather than jumping
-          // perpendicular to the road (2026-11-14 live bug: the old
-          // perpendicular-only push put a visible kink in a boundary
-          // line that was merely passing near a road, not running along
-          // it). Done before the existing coastline clip below, which
-          // stays the last safety net against a boundary ending up in
-          // the sea.
-          const pushedOutPoints = pushOutRoadSnappedPoints(dedupedPoints, (lon, lat) => {
+          const {
+            points: dedupedPoints,
+            roadFlags: dedupedRoadSnapped,
+            coastlineFlags: dedupedCoastlineSnapped,
+          } = dedupeRingWithFlags(draftPoints, draftPointRoadSnapped, draftPointCoastlineSnapped);
+          // Push-out eligibility (2026-11-21, live user priority fix —
+          // "the zone stays in the middle" at Kyle of Lochalsh, Main
+          // Street, which runs right along the real shore): a point that
+          // won via coastline-snapping is independently ALSO eligible —
+          // being coastline-snapped and genuinely sitting on a real road
+          // are two separate facts about the same point, not mutually
+          // exclusive, and the coastline-wins-priority click-handling
+          // rule (needed for correctly tracing the shore) is not itself
+          // evidence the point isn't also on a road that still needs
+          // pushing out. `pushOutRoadSnappedPoints`'s own real distance
+          // check (ROAD_SIDE_CUTOFF_M) still applies per point regardless
+          // of which provenance let it through, so a coastline point
+          // nowhere near any real road still correctly gets left alone.
+          const pushEligible = dedupedRoadSnapped.map((isRoad, i) => isRoad || dedupedCoastlineSnapped[i]);
+          // DESIGN.md §9: every eligible point still genuinely at the
+          // side of a real road by distance gets pushed off it, away from
+          // the zone's own real (now fully known) centroid —
+          // unconditionally, even on a road shared with another zone —
+          // sliding along the ring's own local line direction wherever
+          // possible rather than jumping perpendicular to the road
+          // (2026-11-14 live bug: the old perpendicular-only push put a
+          // visible kink in a boundary line that was merely passing near
+          // a road, not running along it), with a hard cap on how far
+          // that slide can ever go (2026-11-20, see pushPointOffRoad's
+          // own comment — the real cause of the "sticking out points"
+          // live bug report). Done before the existing coastline clip
+          // below, which stays the last safety net against a boundary
+          // ending up in the sea.
+          const pushedOutPoints = pushOutRoadSnappedPoints(dedupedPoints, pushEligible, (lon, lat) => {
             const info = router.nearest_road_edge_info(lon, lat);
             if (info.length === 0) return null;
             const [distM, aLon, aLat, bLon, bLat, widthM] = info;
@@ -1066,7 +1149,17 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           // landing somewhere unexpected after Save can be checked
           // against exactly what each stage did, not re-derived from the
           // saved result alone.
-          console.log("[fare-zone-save]", { draftPoints, dedupedPoints, pushedOutPoints, clippedPoints });
+          console.log("[fare-zone-save]", {
+            draftPoints,
+            draftPointRoadSnapped,
+            draftPointCoastlineSnapped,
+            dedupedPoints,
+            dedupedRoadSnapped,
+            dedupedCoastlineSnapped,
+            pushEligible,
+            pushedOutPoints,
+            clippedPoints,
+          });
           // Real-geography auto-default (2026-11-15) — only while the
           // player hasn't picked a type of their own (typeTouched), checks
           // whether the zone's own real centroid lands on land the actual
@@ -1091,6 +1184,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           const effectiveColour = !colourTouched ? DEFAULT_ZONE_COLOUR[effectiveZoneType] : pendingZoneColour;
           await window.fareZones.create(selectedDepotGroupId, name, effectiveZoneType, clippedPoints, effectiveColour, townParentZoneId);
           draftPoints = [];
+          draftPointRoadSnapped = [];
+          draftPointCoastlineSnapped = [];
           draftClickPointCounts.length = 0;
           pendingZone = false;
           pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
@@ -1107,6 +1202,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       cancel.textContent = "Discard";
       cancel.addEventListener("click", () => {
         draftPoints = [];
+        draftPointRoadSnapped = [];
+        draftPointCoastlineSnapped = [];
         draftClickPointCounts.length = 0;
         pendingZone = false;
         pendingZoneColour = DEFAULT_ZONE_COLOUR.city;
@@ -1140,6 +1237,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         // one go, matching what the player actually did.
         const countToRemove = draftClickPointCounts.pop() ?? 1;
         draftPoints.splice(draftPoints.length - countToRemove, countToRemove);
+        draftPointRoadSnapped.splice(draftPointRoadSnapped.length - countToRemove, countToRemove);
+        draftPointCoastlineSnapped.splice(draftPointCoastlineSnapped.length - countToRemove, countToRemove);
         recomputeLastSnapState();
         updateDraftLayers();
         render();
@@ -1179,6 +1278,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       cancel.addEventListener("click", () => {
         fareZoneDrawState.isDrawing = false;
         draftPoints = [];
+        draftPointRoadSnapped = [];
+        draftPointCoastlineSnapped = [];
         draftClickPointCounts.length = 0;
         lastSnap = { kind: "none" };
         stopErasing();
@@ -1196,6 +1297,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       draw.addEventListener("click", () => {
         fareZoneDrawState.isDrawing = true;
         draftPoints = [];
+        draftPointRoadSnapped = [];
+        draftPointCoastlineSnapped = [];
         draftClickPointCounts.length = 0;
         lastSnap = { kind: "none" };
         errorMessage = "";
@@ -1256,7 +1359,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     // boundary, not a road.
     const zoneSnap = snapToExistingZones(map, e.lngLat, allZones);
     if (zoneSnap) {
-      draftClickPointCounts.push(pushDraftPoints(zoneSnap));
+      draftClickPointCounts.push(pushDraftPoints(false, false, zoneSnap));
       lastSnap = { kind: "none" };
       updateDraftLayers();
       render();
@@ -1326,7 +1429,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         const previousSnap = previousPoint && lastSnap.kind === "area" ? nearestPointOnAreaBoundary(previousPoint, boundaries, LANDUSE_SNAP_DISTANCE_M) : null;
         const follow = previousSnap ? areaClusterFollowBetween(previousSnap, clusterSnap, boundaries) : null;
         if (follow) {
-          draftClickPointCounts.push(pushDraftPoints(...follow.slice(1)));
+          draftClickPointCounts.push(pushDraftPoints(false, false, ...follow.slice(1)));
         } else {
           // Bridge-corner gap-jumping removed (2026-11-19, user's own
           // instruction): "I don't actually use the gap jumping as we
@@ -1341,7 +1444,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
           // (previously) a bridge candidate — just the new point on its
           // own, matching the confirmed spec's own straight-line
           // fallback.
-          draftClickPointCounts.push(pushDraftPoints(clusterSnap.point));
+          draftClickPointCounts.push(pushDraftPoints(false, false, clusterSnap.point));
         }
       } else {
         // Ctrl held but nothing area-like close enough (no landuse
@@ -1349,7 +1452,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
         // falls back to the raw click rather than silently doing
         // nothing, the same honesty every other snap in this file
         // already has.
-        draftClickPointCounts.push(pushDraftPoints(clickPoint));
+        draftClickPointCounts.push(pushDraftPoints(false, false, clickPoint));
       }
       lastSnap = clusterSnap !== null ? { kind: "area" } : { kind: "none" };
       // Diagnostic trace, same convention/purpose as the plain-click one
@@ -1430,7 +1533,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // single road-snapped point, same as a normal click — never silently
       // drops the click entirely.
       if (newPoints.length === 0) newPoints.push(roadSnap);
-      draftClickPointCounts.push(pushDraftPoints(...newPoints));
+      draftClickPointCounts.push(pushDraftPoints(true, false, ...newPoints));
     } else if (coastlineFollow) {
       // Coastline-following (2026-11-01, "snapping to the coast line
       // should work like the other snapping for building, jump big gaps
@@ -1441,7 +1544,7 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // through to the plain single-point branch below instead — no
       // distance cutoff, see coastlineFollowBetween's own comment for why
       // one was tried and then removed).
-      draftClickPointCounts.push(pushDraftPoints(...coastlineFollow.slice(1)));
+      draftClickPointCounts.push(pushDraftPoints(false, true, ...coastlineFollow.slice(1)));
     } else {
       const point = coastlineSnap?.point ?? roadSnap ?? { lon: e.lngLat.lng, lat: e.lngLat.lat };
       // Bridge-corner gap-jumping removed (2026-11-19, user's own
@@ -1453,7 +1556,24 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
       // from the road and straight back (visible spikes at Main Street,
       // Kyle of Lochalsh, and again near Portree Depot). The point-
       // removal/undo button now covers the case this used to handle.
-      draftClickPointCounts.push(pushDraftPoints(point));
+      //
+      // Road-snapped provenance (2026-11-20): true only when this point
+      // is genuinely the road snap, not a coastline snap or a raw click
+      // that happened to coincide with it — `roadSnap` is already null
+      // whenever a coastline point took priority (see its own assignment
+      // above), so this is simply "did we actually use it."
+      const isRoadSnapped = point === roadSnap;
+      // Coastline-snapped provenance, independently (2026-11-21) — not
+      // mutually exclusive with road-snapped at all here (one or the
+      // other always wins for THIS point's own coordinates, since
+      // coastlineSnap takes priority when both are in range), but a
+      // coastline-snapped point can still be genuinely sitting on a real
+      // road too (Main Street, Kyle of Lochalsh, runs right along the
+      // shore) — see `draftPointCoastlineSnapped`'s own comment for why
+      // this is tracked separately rather than folded into the one flag
+      // above.
+      const isCoastlineSnapped = coastlineSnap !== null;
+      draftClickPointCounts.push(pushDraftPoints(isRoadSnapped, isCoastlineSnapped, point));
     }
     lastSnap = coastlineSnap ? { kind: "coastline", snap: coastlineSnap } : roadSnap ? { kind: "road" } : { kind: "none" };
     // Diagnostic trace for the road/coastline-follow click path, kept
@@ -1501,6 +1621,8 @@ export async function mountFareZones(map: maplibregl.Map, router: Router): Promi
     if (fareZoneDrawState.isDrawing) {
       fareZoneDrawState.isDrawing = false;
       draftPoints = [];
+      draftPointRoadSnapped = [];
+      draftPointCoastlineSnapped = [];
       updateDraftLayers();
       render();
     }

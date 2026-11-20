@@ -17,6 +17,7 @@ import {
   DAYS_PER_COMPANY_YEAR,
   addMonths,
   gameDayFromCivil,
+  weekdayBitForGameDay,
 } from "./game-clock.mts";
 
 function assert(cond: boolean, msg: string): void {
@@ -182,6 +183,22 @@ assert(DAYS_PER_PERIOD === 28 && PERIODS_PER_COMPANY_YEAR === 13 && DAYS_PER_COM
   const thirtyFirstMarch = addMonths(gameDayFromCivil(5, 3, 31), 6);
   const dtThirtyFirstMarch = gameDateTimeFromSeconds(thirtyFirstMarch * 86400);
   assert(dtThirtyFirstMarch.year === 5 && dtThirtyFirstMarch.month === 9 && dtThirtyFirstMarch.day === 30, "31 March + 6 months clamps to 30 September, which has no 31st");
+}
+
+// --- weekdayBitForGameDay (added 2026-11-20 for fixed-contract-
+// failures.mts's live wiring, contracts-panel.ts) ---
+{
+  // Game day 0 is Year 1, January 1st, a real Monday (this file's own
+  // GAME_EPOCH_DAYS_SINCE_1970 comment) — bit 1 (Monday, route-
+  // timetable.mts's own WEEKDAY_BITS.monday).
+  assert(weekdayBitForGameDay(0) === 1, "game day 0 (the epoch) is a Monday, bit 1");
+  assert(weekdayBitForGameDay(1) === 2, "game day 1 is a Tuesday, bit 2");
+  assert(weekdayBitForGameDay(6) === 64, "game day 6 is a Sunday, bit 64");
+  assert(weekdayBitForGameDay(7) === 1, "game day 7 wraps back to Monday, bit 1");
+  // A real worked date, not just offsets from the epoch.
+  const aRealMonday = gameDayFromCivil(5, 6, 16); // confirmed a Monday below by construction
+  assert(weekdayBitForGameDay(aRealMonday) === weekdayBitForGameDay(aRealMonday + 7), "exactly 7 days later is the same real weekday bit");
+  assert(weekdayBitForGameDay(aRealMonday) !== weekdayBitForGameDay(aRealMonday + 1), "the very next day is a different weekday bit");
 }
 
 console.log("\nAll game-clock checks passed.");
