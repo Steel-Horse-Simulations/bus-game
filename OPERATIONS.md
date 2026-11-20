@@ -473,8 +473,9 @@ ranges: VEHICLE-SPECS.md §3/§4a/§5.** Car/van prices are trade-discounted
 fleet-buyer figure, not a nerf); both heavy recovery unit prices are
 user-confirmed (£190,000 diesel, £215,000 electric); the Sprinter crew
 van's own price is derived from those two facts rather than a found
-list price. Only the electric heavy recovery unit's real driving range
-remains an open gap.
+list price. The electric heavy recovery unit's range is 292 miles
+(470km) — Volvo's real current FH/FM/FMX Electric driveline figure. No
+gaps remain in this category.
 
 The **heavy recovery unit is a Volvo FMX** (diesel) or **Volvo FMX Electric**
 (2026-11-20) — real UK recovery vehicles are commonly built on exactly this

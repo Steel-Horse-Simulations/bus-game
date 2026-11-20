@@ -472,10 +472,13 @@ from an initial £250,000 the same day).
 **Volvo FMX Electric heavy recovery unit** — 2 to 6 battery packs, up to
 540kWh total. **Price: £215,000**, confirmed directly by the user
 (2026-11-20) — a £25,000 premium over the diesel version's own £190,000.
-**Range: open gap, §5** (Volvo's own UK spec page says "up to 300km," a
-2026-04 press release says the FH/FM/FMX Electric range was upgraded to
-"up to 470km" via a new driveline — unclear which figure is current for
-FMX specifically, or whether both are real depending on pack count).
+**Range: up to 292 miles (470km)**, settled 2026-11-20 — Volvo's own
+2026-04 UK press release names FH/FM/FMX Electric specifically as
+gaining a new driveline that raises maximum range to this figure,
+treated as the current, correct spec over the older "up to 300km" the
+general spec page still shows (likely not yet updated for the new
+driveline). Real figure, picked as the genuine current max rather than
+an estimate — a smaller battery pack count would give less.
 
 **Repower**: the heavy recovery unit, bought diesel, can go through the
 same repower conversion process already used for buses
@@ -603,9 +606,7 @@ own price has no real findable new-UK list figure (only used/leasing
 prices, ~£37,500-£49,000 +VAT territory) so it's derived instead, by the
 user's own explicit method, from the eSprinter's price and the Ford
 pair's own diesel/electric gap (§3's own working) — not a guess, but
-worth real confirmation if a genuine list price ever surfaces. One gap
-remains:
-- **Volvo FMX Electric heavy recovery unit — real current driving
-  range.** Volvo's own UK spec page says "up to 300km," a 2026-04 press
-  release says the range was upgraded to "up to 470km" — unclear which
-  applies here, or whether both are real depending on pack count.
+worth real confirmation if a genuine list price ever surfaces. The
+electric heavy recovery unit's own range is now settled too (§3: 292
+miles/470km, the real current Volvo FH/FM/FMX Electric driveline
+figure) — no gaps remain in this category.
